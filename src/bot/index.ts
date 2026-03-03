@@ -945,13 +945,11 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     const slashCommandHandler = new SlashCommandHandler(templateRepo);
 
     // Discord platform — only initialise the Discord client when the platform is enabled
-    if (config.platforms.includes('discord') && !config.discordToken) {
-        logger.error('Discord platform enabled but discordToken is missing. Skipping Discord initialization.');
-    }
-    if (config.platforms.includes('discord') && !config.clientId) {
-        logger.error('Discord platform enabled but clientId is missing. Skipping Discord initialization.');
-    }
-    if (config.platforms.includes('discord') && config.discordToken && config.clientId) {
+    if (config.platforms.includes('discord')) {
+
+    if (!config.discordToken || !config.clientId) {
+        logger.error('Discord platform enabled but discordToken or clientId is missing. Skipping Discord initialization.');
+    } else {
 
     const discordToken = config.discordToken;
     const discordClientId = config.clientId;
@@ -1175,6 +1173,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
     await client.login(discordToken);
 
+    } // end: else (credentials present)
     } // end: Discord platform gate
 
     // Telegram platform

@@ -91,12 +91,26 @@ describe('WorkspaceQueue', () => {
             expect(executed).toEqual([2, 3]);
         });
 
-        it('cleans up queue entry after the last task in the chain completes', async () => {
+        it('cleans up queue map entry after the last task in the chain completes', async () => {
+            // Access internal queues Map via casting to verify cleanup
+            const internalQueues = (queue as any).queues as Map<string, Promise<void>>;
+
             await queue.enqueue('/ws/cleanup', async () => {});
 
-            // After the promise resolves, the queue entry should be removed
-            // Access internal state to verify cleanup
-            expect(queue.getDepth('/ws/cleanup')).toBe(0);
+            // After the single-task chain resolves, the entry should be removed
+            expect(internalQueues.has('/ws/cleanup')).toBe(false);
+        });
+
+        it('does not clean up queue entry while chained tasks are pending', async () => {
+            const internalQueues = (queue as any).queues as Map<string, Promise<void>>;
+
+            // Enqueue two tasks — the second keeps the chain alive
+            const p1 = queue.enqueue('/ws/chain', async () => { await delay(10); });
+            queue.enqueue('/ws/chain', async () => { await delay(10); });
+
+            // While the first task is still running, the entry should exist
+            expect(internalQueues.has('/ws/chain')).toBe(true);
+            await p1;
         });
 
         it('catches and logs task errors without rejecting the returned promise', async () => {
