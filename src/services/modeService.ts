@@ -49,6 +49,7 @@ export interface ModeSetResult {
  */
 export class ModeService {
     private currentMode: Mode = DEFAULT_MODE;
+    private pendingSync: boolean = false;
 
     /**
      * Get the current execution mode
@@ -58,10 +59,25 @@ export class ModeService {
     }
 
     /**
+     * Check if the current mode is pending sync to Antigravity
+     */
+    public isPendingSync(): boolean {
+        return this.pendingSync;
+    }
+
+    /**
+     * Mark the pending mode as synced (clears pendingSync flag)
+     */
+    public markSynced(): void {
+        this.pendingSync = false;
+    }
+
+    /**
      * Switch execution mode
      * @param modeName Mode name to set (case-insensitive)
+     * @param synced Whether the mode has been synced to Antigravity (default: false)
      */
-    public setMode(modeName: string): ModeSetResult {
+    public setMode(modeName: string, synced: boolean = false): ModeSetResult {
         if (!modeName || modeName.trim() === '') {
             return {
                 success: false,
@@ -79,6 +95,7 @@ export class ModeService {
         }
 
         this.currentMode = normalized;
+        this.pendingSync = !synced;
         return {
             success: true,
             mode: this.currentMode,

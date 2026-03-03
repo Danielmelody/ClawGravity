@@ -508,8 +508,7 @@ export class ResponseMonitor {
         this.pollIntervalMs = options.pollIntervalMs ?? 2000;
         this.maxDurationMs = options.maxDurationMs ?? 300000;
         this.stopGoneConfirmCount = options.stopGoneConfirmCount ?? 3;
-        this.extractionMode = options.extractionMode
-            ?? (process.env.EXTRACTION_MODE === 'legacy' ? 'legacy' : 'structured');
+        this.extractionMode = options.extractionMode ?? 'structured';
         this.onProgress = options.onProgress;
         this.onComplete = options.onComplete;
         this.onTimeout = options.onTimeout;

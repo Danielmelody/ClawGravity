@@ -7,15 +7,16 @@
   <img src="https://img.shields.io/badge/Antigravity-1.19.5-ff6b35?style=flat-square" alt="Antigravity" />
   <img src="https://img.shields.io/badge/node-18.x+-brightgreen?style=flat-square&logo=node.js" alt="Node.js" />
   <img src="https://img.shields.io/badge/discord.js-14.x-5865F2?style=flat-square&logo=discord&logoColor=white" alt="discord.js" />
+  <img src="https://img.shields.io/badge/telegram-optional-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram" />
   <img src="https://img.shields.io/badge/protocol-CDP%20%2F%20WebSocket-orange?style=flat-square" alt="CDP/WebSocket" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>
 
 # LazyGravity
 
-**LazyGravity** is a local, secure Discord Bot that lets you remotely operate [Antigravity](https://antigravity.dev) on your home PC — from your smartphone's Discord app, anywhere.
+**LazyGravity** is a local, secure bot that lets you remotely operate [Antigravity](https://antigravity.dev) on your home PC — from your smartphone, anywhere. Supports **Discord** and **Telegram** (optional).
 
-Send natural language instructions like "fix that bug" or "start designing the new feature" from your phone. Antigravity executes them locally on your home PC using its full resources, and reports results back to Discord.
+Send natural language instructions like "fix that bug" or "start designing the new feature" from your phone. Antigravity executes them locally on your home PC using its full resources, and reports results back to your chat platform.
 
 https://github.com/user-attachments/assets/08eac63e-5ede-469b-ac6c-1c40ec77b0c0
 
@@ -33,7 +34,7 @@ The interactive wizard walks you through Discord bot creation, token setup, and 
 
 ```bash
 lazy-gravity open     # Launch Antigravity with CDP enabled
-lazy-gravity start    # Start the Discord bot
+lazy-gravity start    # Start the bot (Discord by default, or both platforms)
 ```
 
 Or run directly without installing:
@@ -47,23 +48,30 @@ npx lazy-gravity
 ## Features
 
 1. **Fully Local & Secure**
-   - **No external server or port exposure** — runs as a local process on your PC, communicating directly with Discord.
-   - **Whitelist access control**: only authorized Discord user IDs (`allowedUserIds`) can interact with the bot.
+   - **No external server or port exposure** — runs as a local process on your PC, communicating directly with Discord/Telegram.
+   - **Whitelist access control**: only authorized user IDs can interact with the bot (per-platform allowlists).
    - **Secure credential management**: Bot tokens and API keys are stored locally (never in source code).
    - **Path traversal prevention & resource protection**: sandboxed directory access and concurrent task limits prevent abuse.
 
-2. **Project Management (Channel-Directory Binding)**
-   - Use `/project` to bind a Discord channel to a local project directory via an interactive select menu with buttons.
-   - Messages sent in a bound channel are automatically forwarded to Antigravity with the correct project context.
+2. **Multi-Platform Support**
+   - **Discord** (default): Full feature set with slash commands, rich embeds, reactions, and channel management.
+   - **Telegram** (optional): Send prompts, receive responses, and use inline keyboard buttons. Requires [grammy](https://grammy.dev/) (`npm install grammy`).
+   - Run both platforms simultaneously from a single process, or use either one standalone.
 
-3. **Context-Aware Embed Replies**
-   - Results are delivered as rich Discord Embeds. Use Discord's Reply feature on any result to continue the conversation — the bot preserves full context (directory, task history) across reply chains.
+3. **Project Management (Channel-Directory Binding)**
+   - **Discord**: Use `/project` to bind a channel to a local project directory via an interactive select menu.
+   - **Telegram**: Use `/project` to bind a chat to a workspace directory.
+   - Messages sent in a bound channel/chat are automatically forwarded to Antigravity with the correct project context.
 
-4. **Real-Time Progress Monitoring**
+4. **Context-Aware Replies**
+   - **Discord**: Results delivered as rich Embeds. Use Reply to continue the conversation with full context preserved.
+   - **Telegram**: Results delivered as formatted HTML messages with inline keyboard buttons.
+
+5. **Real-Time Progress Monitoring**
    - Long-running Antigravity tasks report progress as a series of messages (delivery confirmed / planning / analysis / execution / implementation / final summary).
 
-5. **File Attachments & Context Parsing**
-   - Send images (screenshots, mockups) or text files via Discord — they are automatically forwarded to Antigravity as context.
+6. **File Attachments & Context Parsing**
+   - Send images (screenshots, mockups) or text files — they are automatically forwarded to Antigravity as context.
 
 ## Usage & Commands
 
@@ -93,6 +101,25 @@ Just type in any bound channel:
 - `🏓 /ping` — Check bot latency
 - `🧹 /cleanup [days]` — Scan and clean up inactive session channels (default: 7 days)
 - `❓ /help` — Display list of available commands
+
+### Telegram Commands
+
+Telegram commands use underscores instead of subcommand syntax (Telegram does not allow hyphens or spaces in command names).
+
+- `/project` — Manage workspace bindings (list, select, create)
+- `/project_create <name>` — Create a new workspace directory
+- `/template` — List prompt templates with execute buttons
+- `/template_add <name> <prompt>` — Add a new prompt template
+- `/template_delete <name>` — Delete a prompt template
+- `/mode` — Switch execution mode
+- `/model` — Switch LLM model
+- `/screenshot` — Capture Antigravity screenshot
+- `/autoaccept [on|off]` — Toggle auto-accept mode
+- `/logs [count]` — Show recent log entries
+- `/stop` — Interrupt active LLM generation
+- `/status` — Show bot status and connections
+- `/ping` — Check bot latency
+- `/help` — Show available commands
 
 ### CLI Commands
 
@@ -160,6 +187,20 @@ Then start the bot:
 ```bash
 npm run start
 ```
+
+#### Adding Telegram Support (Optional)
+
+1. Install grammy: `npm install grammy`
+2. Create a bot via [@BotFather](https://t.me/BotFather) on Telegram and copy the token.
+3. Add the following to your `.env`:
+
+```env
+PLATFORMS=discord,telegram        # or just "telegram" for Telegram-only
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+TELEGRAM_ALLOWED_USER_IDS=123456789    # Your Telegram numeric user ID
+```
+
+For Telegram-only deployments, Discord credentials (`DISCORD_BOT_TOKEN`, `CLIENT_ID`, `ALLOWED_USER_IDS`) are not required.
 
 Alternatively, you can build and use the CLI:
 
@@ -232,7 +273,27 @@ Run `lazy-gravity doctor` to diagnose configuration and connectivity issues.
 2. Connects via WebSocket to CDP (`Runtime.evaluate` for DOM operations)
 3. Injects messages into the chat input, monitors Antigravity responses, and captures screenshots
 
-**On disconnect**: automatically retries up to 3 times (`maxReconnectAttempts`). If all retries fail, an error notification is sent to Discord.
+**On disconnect**: automatically retries up to 3 times (`maxReconnectAttempts`). If all retries fail, an error notification is sent to the active chat platform.
+
+## Platform Architecture
+
+LazyGravity uses a **platform abstraction layer** so the core bot logic is platform-independent:
+
+```
+src/platform/
+├── types.ts              # Shared interfaces (PlatformMessage, PlatformChannel, etc.)
+├── adapter.ts            # PlatformAdapter interface
+├── richContentBuilder.ts # Immutable builder for rich content (embeds/HTML)
+├── discord/              # Discord adapter (discord.js wrappers)
+│   ├── discordAdapter.ts
+│   └── wrappers.ts
+└── telegram/             # Telegram adapter (grammy-compatible wrappers)
+    ├── telegramAdapter.ts
+    ├── telegramFormatter.ts  # Markdown → Telegram HTML conversion
+    └── wrappers.ts
+```
+
+Both adapters implement the same `PlatformAdapter` interface and emit events through `PlatformAdapterEvents`. The `EventRouter` dispatches events to platform-agnostic handlers, and the `WorkspaceQueue` serializes concurrent requests per workspace across platforms.
 
 ## License
 

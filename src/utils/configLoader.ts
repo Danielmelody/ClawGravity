@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as dotenv from 'dotenv';
 import type { AppConfig, ExtractionMode } from './config';
 import type { LogLevel } from './logger';
+import type { PlatformType } from '../platform/types';
 
 // Load .env at module init time (same as the original config.ts behavior).
 // dotenv will NOT override already-set env vars by default.
@@ -26,6 +27,9 @@ export interface PersistedConfig {
     autoApproveFileEdits?: boolean;
     logLevel?: LogLevel;
     extractionMode?: 'legacy' | 'structured';
+    telegramToken?: string;
+    telegramAllowedUserIds?: string[];
+    platforms?: PlatformType[];
 }
 
 // ---------------------------------------------------------------------------
@@ -62,19 +66,32 @@ function readPersistedConfig(filePath: string): PersistedConfig {
  * Returns a fresh AppConfig object (immutable pattern).
  */
 function mergeConfig(persisted: PersistedConfig): AppConfig {
-    const token = process.env.DISCORD_BOT_TOKEN ?? persisted.discordToken;
-    if (!token) {
-        throw new Error('Missing required environment variable: DISCORD_BOT_TOKEN');
-    }
+    // Resolve platforms FIRST so we only validate credentials for enabled platforms
+    const platforms = resolvePlatforms(
+        process.env.PLATFORMS,
+        persisted.platforms,
+    );
 
-    const clientId = process.env.CLIENT_ID ?? persisted.clientId;
-    if (!clientId) {
-        throw new Error('Missing required environment variable: CLIENT_ID');
-    }
+    // Discord credentials — only required when Discord is an active platform
+    let discordToken: string | undefined;
+    let clientId: string | undefined;
+    let allowedUserIds: string[] = [];
 
-    const allowedUserIds = resolveAllowedUserIds(persisted);
-    if (allowedUserIds.length === 0) {
-        throw new Error('Missing required environment variable: ALLOWED_USER_IDS');
+    if (platforms.includes('discord')) {
+        discordToken = process.env.DISCORD_BOT_TOKEN ?? persisted.discordToken;
+        if (!discordToken) {
+            throw new Error('Missing required environment variable: DISCORD_BOT_TOKEN');
+        }
+
+        clientId = process.env.CLIENT_ID ?? persisted.clientId;
+        if (!clientId) {
+            throw new Error('Missing required environment variable: CLIENT_ID');
+        }
+
+        allowedUserIds = resolveAllowedUserIds(persisted);
+        if (allowedUserIds.length === 0) {
+            throw new Error('Missing required environment variable: ALLOWED_USER_IDS');
+        }
     }
 
     const defaultDir = path.join(os.homedir(), 'Code');
@@ -99,8 +116,18 @@ function mergeConfig(persisted: PersistedConfig): AppConfig {
         persisted.extractionMode,
     );
 
+    // Telegram credentials — only required when Telegram is an active platform
+    const telegramToken = process.env.TELEGRAM_BOT_TOKEN ?? persisted.telegramToken ?? undefined;
+    const telegramAllowedUserIds = resolveTelegramAllowedUserIds(persisted);
+
+    if (platforms.includes('telegram') && !telegramToken) {
+        throw new Error(
+            'TELEGRAM_BOT_TOKEN is required when platforms include "telegram"',
+        );
+    }
+
     return {
-        discordToken: token,
+        discordToken,
         clientId,
         guildId,
         allowedUserIds,
@@ -108,6 +135,9 @@ function mergeConfig(persisted: PersistedConfig): AppConfig {
         autoApproveFileEdits,
         logLevel,
         extractionMode,
+        telegramToken,
+        telegramAllowedUserIds,
+        platforms,
     };
 }
 
@@ -147,6 +177,42 @@ function resolveExtractionMode(
     return 'structured';
 }
 
+function resolveTelegramAllowedUserIds(persisted: PersistedConfig): string[] | undefined {
+    const envValue = process.env.TELEGRAM_ALLOWED_USER_IDS;
+    if (envValue) {
+        return envValue
+            .split(',')
+            .map((id) => id.trim())
+            .filter((id) => id.length > 0);
+    }
+    if (persisted.telegramAllowedUserIds && persisted.telegramAllowedUserIds.length > 0) {
+        return [...persisted.telegramAllowedUserIds];
+    }
+    return undefined;
+}
+
+const VALID_PLATFORMS: readonly PlatformType[] = ['discord', 'telegram'];
+
+function resolvePlatforms(
+    envValue: string | undefined,
+    persistedValue: PlatformType[] | undefined,
+): PlatformType[] {
+    if (envValue) {
+        const parsed = envValue
+            .split(',')
+            .map((p) => p.trim().toLowerCase())
+            .filter((p): p is PlatformType => VALID_PLATFORMS.includes(p as PlatformType));
+        if (parsed.length > 0) return parsed;
+    }
+    if (persistedValue && persistedValue.length > 0) {
+        const validated = persistedValue.filter(
+            (p): p is PlatformType => VALID_PLATFORMS.includes(p as PlatformType),
+        );
+        if (validated.length > 0) return validated;
+    }
+    return ['discord'];
+}
+
 function resolveBoolean(
     envValue: string | undefined,
     persistedValue: boolean | undefined,
@@ -174,6 +240,11 @@ export const ConfigLoader = {
     /** Check whether ~/.lazy-gravity/config.json exists on disk. */
     configExists(): boolean {
         return fs.existsSync(getConfigFilePath());
+    },
+
+    /** Read persisted config from disk. Returns empty object if file doesn't exist. */
+    readPersisted(): PersistedConfig {
+        return readPersistedConfig(getConfigFilePath());
     },
 
     /**

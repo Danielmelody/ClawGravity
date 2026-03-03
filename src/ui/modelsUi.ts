@@ -1,6 +1,15 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
 
 import { CdpService } from '../services/cdpService';
+import type { MessagePayload, ButtonDef, ComponentRow } from '../platform/types';
+import {
+    createRichContent,
+    withTitle,
+    withDescription,
+    withColor,
+    withFooter,
+    withTimestamp,
+} from '../platform/richContentBuilder';
 
 export interface ModelsUiDeps {
     getCurrentCdp: () => CdpService | null;
@@ -10,6 +19,125 @@ export interface ModelsUiDeps {
 export interface ModelsUiPayload {
     embeds: EmbedBuilder[];
     components: ActionRowBuilder<ButtonBuilder>[];
+}
+
+/**
+ * Build a platform-agnostic MessagePayload for model selection UI.
+ */
+export function buildModelsPayload(
+    models: string[],
+    currentModel: string | null,
+    quotaData: any[],
+    defaultModel: string | null = null,
+): MessagePayload | null {
+    if (models.length === 0) return null;
+
+    function formatQuota(mName: string, current: boolean) {
+        if (!mName) return `${current ? '[x]' : '[ ]'} Unknown`;
+
+        const normalize = (s: string) => s.toLowerCase().replace(/[\s\-_]/g, '');
+        const nName = normalize(mName);
+        const q = quotaData.find(q => {
+            const nLabel = normalize(q.label);
+            const nModel = normalize(q.model || '');
+            return nLabel === nName || nModel === nName
+                || nName.includes(nLabel) || nLabel.includes(nName)
+                || (nModel && (nName.includes(nModel) || nModel.includes(nName)));
+        });
+        if (!q || !q.quotaInfo) return `${current ? '[x]' : '[ ]'} ${mName}`;
+
+        const rem = q.quotaInfo.remainingFraction;
+        const resetTime = q.quotaInfo.resetTime ? new Date(q.quotaInfo.resetTime) : null;
+        const diffMs = resetTime ? resetTime.getTime() - Date.now() : 0;
+        let timeStr = 'Ready';
+        if (diffMs > 0) {
+            const mins = Math.ceil(diffMs / 60000);
+            if (mins < 60) timeStr = `${mins}m`;
+            else timeStr = `${Math.floor(mins / 60)}h ${mins % 60}m`;
+        }
+
+        if (rem !== undefined && rem !== null) {
+            const percent = Math.round(rem * 100);
+            return `${current ? '[x]' : '[ ]'} ${mName} ${percent}% (${timeStr})`;
+        }
+
+        return `${current ? '[x]' : '[ ]'} ${mName} (${timeStr})`;
+    }
+
+    const currentModelFormatted = currentModel ? formatQuota(currentModel, true) : 'Unknown';
+    const defaultLine = defaultModel
+        ? `\n**Default:** ⭐ ${defaultModel}`
+        : '\n**Default:** Not set';
+
+    const modelLines = models.map(m => {
+        const isCurrent = m === currentModel;
+        const isDefault = defaultModel != null && m.toLowerCase() === defaultModel.toLowerCase();
+        const star = isDefault ? ' ⭐' : '';
+        return `${formatQuota(m, isCurrent)}${star}`;
+    }).join('\n');
+
+    const rc = withTimestamp(
+        withFooter(
+            withDescription(
+                withColor(
+                    withTitle(createRichContent(), 'Model Management'),
+                    0x5865F2,
+                ),
+                `**Current Model:**\n${currentModelFormatted}${defaultLine}\n\n` +
+                `**Available Models (${models.length})**\n` +
+                modelLines,
+            ),
+            'Latest quota information retrieved',
+        ),
+    );
+
+    // Use 1 button per row so model names are fully readable on Telegram.
+    // Telegram inline keyboard buttons are narrow; 5-per-row truncates names.
+    const rows: ComponentRow[] = [];
+
+    for (const mName of models.slice(0, 24)) {
+        const safeName = mName.length > 80 ? mName.substring(0, 77) + '...' : mName;
+        const isDefault = defaultModel != null && mName.toLowerCase() === defaultModel.toLowerCase();
+        const prefix = mName === currentModel ? '✓ ' : '';
+        const suffix = isDefault ? ' ⭐' : '';
+        rows.push({
+            components: [{
+                type: 'button',
+                customId: `model_btn_${mName}`,
+                label: `${prefix}${safeName}${suffix}`,
+                style: mName === currentModel ? 'success' : 'secondary',
+            }],
+        });
+    }
+
+    // Default model action buttons
+    const defaultBtnRow: ComponentRow = {
+        components: defaultModel
+            ? [{
+                type: 'button',
+                customId: 'model_clear_default_btn',
+                label: 'Clear Default',
+                style: 'danger',
+            }]
+            : [{
+                type: 'button',
+                customId: 'model_set_default_btn',
+                label: 'Set Current as Default',
+                style: 'primary',
+            }],
+    };
+    rows.push(defaultBtnRow);
+
+    rows.push({
+        components: [{
+            type: 'button',
+            customId: 'model_refresh_btn',
+            label: 'Refresh',
+            style: 'primary',
+        }],
+    });
+
+    return { richContent: rc, components: rows };
 }
 
 /**

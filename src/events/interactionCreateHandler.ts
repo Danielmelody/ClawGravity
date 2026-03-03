@@ -459,6 +459,50 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                     return;
                 }
 
+                if (interaction.customId === 'model_set_default_btn') {
+                    await interaction.deferUpdate();
+                    const cdp = deps.getCurrentCdp(deps.bridge);
+                    if (!cdp) {
+                        await interaction.followUp({ content: 'Not connected to CDP.', flags: MessageFlags.Ephemeral });
+                        return;
+                    }
+                    const currentModel = await cdp.getCurrentModel();
+                    if (!currentModel) {
+                        await interaction.followUp({ content: 'No current model detected.', flags: MessageFlags.Ephemeral });
+                        return;
+                    }
+                    deps.modelService.setDefaultModel(currentModel);
+                    if (deps.userPrefRepo) {
+                        deps.userPrefRepo.setDefaultModel(interaction.user.id, currentModel);
+                    }
+                    await deps.sendModelsUI(
+                        { editReply: async (data: any) => await interaction.editReply(data) },
+                        {
+                            getCurrentCdp: () => deps.getCurrentCdp(deps.bridge),
+                            fetchQuota: async () => deps.bridge.quota.fetchQuota(),
+                        },
+                    );
+                    await interaction.followUp({ content: `Default model set to **${currentModel}**.`, flags: MessageFlags.Ephemeral });
+                    return;
+                }
+
+                if (interaction.customId === 'model_clear_default_btn') {
+                    await interaction.deferUpdate();
+                    deps.modelService.setDefaultModel(null);
+                    if (deps.userPrefRepo) {
+                        deps.userPrefRepo.setDefaultModel(interaction.user.id, null);
+                    }
+                    await deps.sendModelsUI(
+                        { editReply: async (data: any) => await interaction.editReply(data) },
+                        {
+                            getCurrentCdp: () => deps.getCurrentCdp(deps.bridge),
+                            fetchQuota: async () => deps.bridge.quota.fetchQuota(),
+                        },
+                    );
+                    await interaction.followUp({ content: 'Default model cleared.', flags: MessageFlags.Ephemeral });
+                    return;
+                }
+
                 if (interaction.customId === 'model_refresh_btn') {
                     await interaction.deferUpdate();
                     await deps.sendModelsUI(

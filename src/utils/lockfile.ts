@@ -20,7 +20,7 @@ function isProcessRunning(pid: number): boolean {
  * Stop an existing process and wait for it to exit
  */
 function killExistingProcess(pid: number): void {
-    logger.error(`🔄 Stopping existing Bot process (PID: ${pid})...`);
+    logger.warn(`🔄 Stopping existing Bot process (PID: ${pid})...`);
     try {
         process.kill(pid, 'SIGTERM');
     } catch {
@@ -32,7 +32,7 @@ function killExistingProcess(pid: number): void {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
         if (!isProcessRunning(pid)) {
-            logger.error(`✅ Existing process (PID: ${pid}) stopped`);
+            logger.info(`✅ Existing process (PID: ${pid}) stopped`);
             return;
         }
         // Wait 50ms (busy wait)
@@ -41,7 +41,7 @@ function killExistingProcess(pid: number): void {
     }
 
     // Timeout: force kill with SIGKILL
-    logger.error(`⚠️  Process did not exit with SIGTERM, force killing (SIGKILL)`);
+    logger.warn(`⚠️  Process did not exit with SIGTERM, force killing (SIGKILL)`);
     try {
         process.kill(pid, 'SIGKILL');
     } catch {
@@ -74,7 +74,7 @@ export function acquireLock(): () => void {
 
     // Create new lock file
     fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf-8');
-    logger.error(`🔒 Lock acquired (PID: ${process.pid})`);
+    logger.info(`🔒 Lock acquired (PID: ${process.pid})`);
 
     // Cleanup function
     const releaseLock = () => {
@@ -83,7 +83,7 @@ export function acquireLock(): () => void {
                 const content = fs.readFileSync(LOCK_FILE, 'utf-8').trim();
                 if (parseInt(content, 10) === process.pid) {
                     fs.unlinkSync(LOCK_FILE);
-                    logger.error(`🔓 Lock released (PID: ${process.pid})`);
+                    logger.info(`🔓 Lock released (PID: ${process.pid})`);
                 }
             }
         } catch {

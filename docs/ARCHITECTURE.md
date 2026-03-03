@@ -1,88 +1,128 @@
 # Architecture & Core Design
 
-## 1. システム全体構成 / System Overview
-LazyGravity は外部の中間サーバーを経由せず、ユーザーのローカルPC内で完結してDiscord API（WSS経由）とやり取りします。
+## 1. System Overview
+LazyGravity communicates with the Discord/Telegram APIs entirely within the user's local PC, without routing through any external intermediary server.
 
 ```mermaid
 graph TD
-    A[📱 Discord アプリ (スマホ/PC)] -->|WebSocket (Gateway)| B[🔒 Local PC (LazyGravity Bot)]
+    A[📱 Discord App] -->|WebSocket Gateway| B[🔒 Local PC - LazyGravity Bot]
+    T[📱 Telegram App] -->|Long Polling| B
     B -->|REST API| A
-    
+    B -->|Bot API| T
+
     subgraph Local Environment (Your PC)
-        B -->|Spawn/Execute| C[Antigravity CLI / AI Coding Agent]
+        B -->|Platform Abstraction Layer| PA[PlatformAdapter]
+        PA -->|CDP / WebSocket| C[Antigravity / AI Coding Agent]
         B -->|Read/Write| D[📁 Local Workspaces]
         B -.->|Secure Storage| E[.env File (Local)]
         B -.->|Persist State| F[SQLite Database]
     end
 ```
 
-## 2. 認証・セキュリティ設計
-外部公開をしないためポートマッピングやWebhookは使用しません。
+## 1.5. Platform Abstraction Layer
 
-- **Bot TokenとAPI Keyの管理:**
-  - `dotenv`パッケージを利用し、ローカルの `.env` ファイルに保存しますが、セキュリティを高めるため、**ファイルパーミッションを厳格化 (例: `chmod 600`)** することを推奨します（必要に応じてOSネイティブのクレデンシャル連携も検討）。
-  - GitHub上には `.env.example` のみを提供し、機密情報の漏洩を防止します。
-- **認可 (Authorization):**
-  - メッセージ受信イベント (`messageCreate`), インタラクション受信 (`interactionCreate`) イベントの冒頭にミドルウェア層を設け、発信者の `userId` がホワイトリストの `allowedUserIds` に含まれるか**必ず最初に評価**する。
-- **入力値の検証とパストラバーサル対策 (Directory Traversal Protection):**
-  - ユーザー入力やワークスペース指定に対するディレクトリトラバーサル攻撃（例: `../../etc/passwd`）を防ぐため、基準となるルートディレクトリ（`WORKSPACE_BASE_DIR`）を定義し、すべてのパス解決がその配下に収まることを `path.resolve` 等を用いて厳格にバリデーションします。
+An abstraction layer decouples core logic from platform-specific details.
 
-## 3. プロジェクト管理（カテゴリ↔プロジェクト、チャンネル↔チャットセッション）
-Discordの **カテゴリ = プロジェクト**、**チャンネル = チャットセッション** として管理します。
-
-### 実装済みの機能
-- **`/project`**: ベースディレクトリ配下のサブディレクトリ一覧（最大25件）をセレクトメニューで表示。選択するとカテゴリ + `session-1` チャンネルを自動作成しバインド。
-- **`/new`**: 現在のプロジェクトカテゴリ配下に新しいセッションチャンネル（`session-N`）を作成し、Antigravityで新規チャットを開始。
-- **`/chat`**: 現在のチャットセッション情報（セッション番号、プロジェクト、リネーム状態）と同プロジェクトの全セッション一覧を統合表示。
-- **自動リネーム**: セッションチャンネルで初回メッセージ送信時、プロンプト内容からチャンネル名を自動生成してリネーム（例: `session-1` → `1-react認証バグ修正`）。
-
-### データフロー
-1. ユーザーが `/project` → セレクトメニューでプロジェクトを選択
-2. `ChannelManager.ensureCategory()` でカテゴリを作成、`createSessionChannel()` で `session-1` チャンネルを作成
-3. `WorkspaceBindingRepository` が `workspace_bindings` テーブルに channel_id ↔ workspace_path を永続化
-4. `ChatSessionRepository` が `chat_sessions` テーブルにセッション情報（カテゴリID、セッション番号、リネーム状態）を永続化
-5. `/new` → 同カテゴリ配下に `session-N` を新規作成 + Antigravityで新規チャット開始
-6. 初回メッセージ送信時 → `TitleGeneratorService` がタイトル生成 → `ChannelManager.renameChannel()` でリネーム
-
-### アーキテクチャ
 ```
-src/database/workspaceBindingRepository.ts  — SQLite CRUD (workspace_bindings テーブル)
-src/database/chatSessionRepository.ts       — SQLite CRUD (chat_sessions テーブル)
-src/services/workspaceService.ts            — FS操作・パス検証 (scanWorkspaces, validatePath)
-src/services/channelManager.ts              — Discord カテゴリ/チャンネル管理 (ensureCategory, createSessionChannel, renameChannel)
-src/services/titleGeneratorService.ts       — チャンネル名自動生成 (CDP経由 + テキスト抽出フォールバック)
-src/services/chatSessionService.ts          — Antigravity UI操作 (CDP経由で新規チャット開始・セッション情報取得)
-src/commands/workspaceCommandHandler.ts     — /project コマンド + セレクトメニュー処理
-src/commands/chatCommandHandler.ts          — /new, /chat コマンド
+src/platform/
+├── types.ts              # Common interfaces (PlatformMessage, PlatformChannel, RichContent, etc.)
+├── adapter.ts            # PlatformAdapter / PlatformAdapterEvents interfaces
+├── richContentBuilder.ts # Immutable builder (createRichContent → withTitle → addField → pipe)
+├── discord/
+│   ├── discordAdapter.ts # DiscordAdapter implements PlatformAdapter
+│   └── wrappers.ts       # discord.js objects ↔ Platform type conversions
+└── telegram/
+    ├── telegramAdapter.ts    # TelegramAdapter implements PlatformAdapter
+    ├── telegramFormatter.ts  # Markdown → Telegram HTML conversion
+    └── wrappers.ts           # Telegram objects ↔ Platform type conversions
 ```
 
-### 将来の拡展
-- CDP経由でAntigravityのワークスペースを直接切り替え（現在はプロンプトプレフィックス方式）
-- LLM APIによる高精度タイトル生成（現在はテキスト抽出ベース）
+### Core Shared Types
+- `PlatformMessage` — Message (author, channel, text, attachments)
+- `PlatformChannel` — Channel/chat (sends MessagePayload via `send`)
+- `RichContent` — Abstraction over Discord Embed / Telegram HTML (title, description, fields, color, footer)
+- `MessagePayload` — Outgoing content (text + richContent + components + ephemeral)
+- `PlatformButtonInteraction` / `PlatformSelectInteraction` — Button/select menu abstractions
 
-## 4. コンテキスト（文脈）の引継ぎ
-LLMエージェントへの指示と実行結果を、Discordの「リプライチェーン」によって管理・永続化する。
+### Event Flow
+1. `PlatformAdapter.start(events)` registers platform-specific event handlers
+2. `EventRouter` dispatches events from all platforms to unified handlers
+3. Platform-agnostic `messageHandler`, `buttonHandler`, `selectHandler`, `commandHandler` process events
+4. `WorkspaceQueue` serializes requests per workspace (cross-platform)
 
-- **Embedへのメタデータ埋め込み:**
-  - 長いログや結果はEmbedに格納。
-  - Embedの `Footer` や `Author URL` などの見えにくい部分、またはローカルのSQLiteにメッセージIDをキーとしたステートを保存し、対象のファイルパスや直前の指示履歴（タスクID）を保持。
-- **リプライ(Reply)による後続指示:**
-  - ユーザーがBotの出力したEmbedに対して「返信」を行った場合、Botは親メッセージに含まれるメタデータ（あるいはSQLiteから引いた文脈）を元に、「続きから作業している」状態として元のディレクトリとコンテキストをAntigravityに渡す。
+## 2. Authentication & Security
+No port mapping or webhooks are used since nothing is exposed externally.
 
-## 5. 定期実行タスク (Cron / Scheduling) **※将来実装予定 (Coming Soon)**
-- コードレベルでのバックエンドは実装が進んでいますが、Discordコマンドとの接合は今後のフェーズで対応予定です。
-- ローカルPCの `node-cron` を使用。
-- SQLiteでスケジュール設定を永続化（`id`, `cron_expression`, `prompt`, `workspace_id`, `status`）。
-- Bot起動時にSQLiteから定義を読み込み、オンメモリのnode-cronに再スケジュールする機能が必要。
+- **Bot Token & API Key Management:**
+  - Stored in a local `.env` file via the `dotenv` package. For enhanced security, **tightening file permissions (e.g., `chmod 600`)** is recommended (OS-native credential integration may also be considered).
+  - Only `.env.example` is committed to GitHub to prevent credential leaks.
+- **Authorization:**
+  - **Discord**: `allowedUserIds` whitelist check at the top of `messageCreate` and `interactionCreate` event handlers.
+  - **Telegram**: `EventRouter` authenticates via `telegramAllowedUserIds`. If unset, all users are rejected (warn log emitted).
+  - Cross-platform auth managed in `platform:userId` format.
+- **Input Validation & Directory Traversal Protection:**
+  - To prevent directory traversal attacks (e.g., `../../etc/passwd`) via user input or workspace specification, a root directory (`WORKSPACE_BASE_DIR`) is defined and all path resolutions are strictly validated to stay within it using `path.resolve`.
 
-## 6. プログレスバーのリアルタイム更新
-- Antigravityなどの裏側のAIエージェントのログやステータス出力（標準出力や特定フォーマットのログ）をストリームで監視する。
-- 数秒（例: 3〜5秒）に一度だけDiscordのメッセージ編集API (`message.edit`) を叩き、Rate Limit（API制限）に引っかからないようDebounce/Throttle制御を強くかけること。
+## 3. Project Management (Category ↔ Project, Channel ↔ Chat Session)
+Discord **categories = projects** and **channels = chat sessions**.
 
-> **詳細:** ResponseMonitor による CDP ベースの応答監視・プロセスログ抽出の仕組みについては [RESPONSE_MONITOR.md](./RESPONSE_MONITOR.md) を参照。
+### Implemented Features
+- **`/project`**: Displays subdirectories under the base directory (up to 25) in a select menu. Selecting one auto-creates a category + `session-1` channel and binds them.
+- **`/new`**: Creates a new session channel (`session-N`) under the current project category and starts a new chat in Antigravity.
+- **`/chat`**: Shows current chat session info (session number, project, rename status) along with a list of all sessions in the same project.
+- **Auto-rename**: On the first message in a session channel, a channel name is auto-generated from the prompt content (e.g., `session-1` → `1-react-auth-bug-fix`).
 
-## 7. Antigravity プロセスの起動方式 (CLI Spawn) とリソース制御
-- **CLI Spawn:** Antigravity(または対象ディレクトリのAIコーディングツール)は、`child_process.spawn` を用いて、独立したバックグラウンドプロセスとして起動します。
-- **排他制御とキューイング (Task Queue):** ローカルPCのリソース枯渇（DoS状態）を防ぐため、ワークスペース単位、または全体での同時実行タスク数を制限（Mutex/Queue）します。
-- **強制終了機能 (Kill Switch):** 無限ループや暴走に備え、発行したプロセスのPIDを管理し、Discordからの中断コマンド (`/stop`) でプロセスツリーを強制終了（kill）できる仕組みを設けます。
-- **Discord制限の回避 (Message Chunking):** Discordの文字数制限（通常2000文字、Embedで4096文字）を超える大量の出力に対しては、長文を分割送信する、またはテキストファイルとして添付送信するフォールバック機構を実装します。
+### Data Flow
+1. User runs `/project` → selects a project from the select menu
+2. `ChannelManager.ensureCategory()` creates a category, `createSessionChannel()` creates the `session-1` channel
+3. `WorkspaceBindingRepository` persists channel_id ↔ workspace_path in the `workspace_bindings` table
+4. `ChatSessionRepository` persists session info (category ID, session number, rename status) in the `chat_sessions` table
+5. `/new` → creates a new `session-N` under the same category + starts a new chat in Antigravity
+6. On first message → `TitleGeneratorService` generates a title → `ChannelManager.renameChannel()` renames the channel
+
+### Architecture
+```
+src/database/workspaceBindingRepository.ts  — SQLite CRUD (workspace_bindings table)
+src/database/chatSessionRepository.ts       — SQLite CRUD (chat_sessions table)
+src/database/telegramBindingRepository.ts   — SQLite CRUD (telegram_bindings table: chat_id ↔ workspace)
+src/services/workspaceService.ts            — FS operations & path validation (scanWorkspaces, validatePath)
+src/services/channelManager.ts              — Discord category/channel management (ensureCategory, createSessionChannel, renameChannel)
+src/services/titleGeneratorService.ts       — Auto channel name generation (CDP-based + text extraction fallback)
+src/services/chatSessionService.ts          — Antigravity UI operations (new chat & session info via CDP)
+src/commands/workspaceCommandHandler.ts     — /project command + select menu handling
+src/commands/chatCommandHandler.ts          — /new, /chat commands
+src/bot/telegramMessageHandler.ts           — Telegram message → CDP direct integration handler
+src/bot/eventRouter.ts                      — Multi-platform event routing + authentication
+src/bot/workspaceQueue.ts                   — Per-workspace exclusive queue (cross-platform)
+```
+
+### Future Enhancements
+- Switch Antigravity workspaces directly via CDP (currently uses prompt prefix approach)
+- High-accuracy title generation via LLM API (currently text-extraction based)
+
+## 4. Context Continuity
+Instructions to the LLM agent and execution results are managed and persisted through Discord's reply chains.
+
+- **Metadata Embedding in Embeds:**
+  - Long logs and results are stored in Embeds.
+  - State is persisted in less-visible Embed fields (`Footer`, `Author URL`) or in local SQLite keyed by message ID, holding file paths and recent instruction history (task IDs).
+- **Follow-up via Reply:**
+  - When a user replies to a Bot-generated Embed, the Bot uses metadata from the parent message (or context pulled from SQLite) to resume work from where it left off, passing the original directory and context to Antigravity.
+
+## 5. Scheduled Tasks (Cron / Scheduling) — *Coming Soon*
+- Backend implementation is in progress, but Discord command integration is planned for a future phase.
+- Uses `node-cron` on the local PC.
+- Schedule definitions are persisted in SQLite (`id`, `cron_expression`, `prompt`, `workspace_id`, `status`).
+- On bot startup, definitions are loaded from SQLite and re-scheduled in-memory via node-cron.
+
+## 6. Real-Time Progress Bar Updates
+- Monitors logs and status output (stdout or structured log formats) from backend AI agents like Antigravity via streaming.
+- Discord's message edit API (`message.edit`) is called at most once every few seconds (e.g., 3–5s) with aggressive Debounce/Throttle to avoid hitting rate limits.
+
+> **Details:** See [RESPONSE_MONITOR.md](./RESPONSE_MONITOR.md) for the CDP-based response monitoring and process log extraction mechanism via ResponseMonitor.
+
+## 7. Antigravity Process Launch (CLI Spawn) & Resource Control
+- **CLI Spawn:** Antigravity (or the target directory's AI coding tool) is launched as an independent background process via `child_process.spawn`.
+- **Exclusive Locking & Queuing (Task Queue):** To prevent local PC resource exhaustion (DoS), concurrent task counts are limited per workspace or globally (Mutex/Queue).
+- **Kill Switch:** To guard against infinite loops or runaway processes, spawned process PIDs are tracked and can be forcefully terminated (kill) via the `/stop` Discord command.
+- **Message Chunking (Discord Limit Workaround):** For output exceeding Discord's character limits (2000 for messages, 4096 for Embeds), a fallback mechanism splits long text into multiple messages or sends it as an attached text file.

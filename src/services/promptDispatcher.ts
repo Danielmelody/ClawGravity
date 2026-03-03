@@ -17,6 +17,7 @@ export interface PromptDispatchOptions {
     channelManager: ChannelManager;
     titleGenerator: TitleGeneratorService;
     userPrefRepo?: UserPreferenceRepository;
+    extractionMode?: import('../utils/config').ExtractionMode;
 }
 
 export interface PromptDispatchRequest {

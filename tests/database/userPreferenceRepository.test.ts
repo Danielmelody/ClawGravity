@@ -62,6 +62,71 @@ describe('UserPreferenceRepository', () => {
         });
     });
 
+    describe('getDefaultModel', () => {
+        it('returns null for unknown user', () => {
+            expect(repo.getDefaultModel('unknown-user')).toBeNull();
+        });
+
+        it('returns null when user exists but no default is set', () => {
+            repo.setOutputFormat('user-1', 'embed');
+            expect(repo.getDefaultModel('user-1')).toBeNull();
+        });
+
+        it('returns the stored default model', () => {
+            repo.setDefaultModel('user-1', 'claude-sonnet-4.6-thinking');
+            expect(repo.getDefaultModel('user-1')).toBe('claude-sonnet-4.6-thinking');
+        });
+    });
+
+    describe('setDefaultModel', () => {
+        it('inserts a new record when user does not exist', () => {
+            repo.setDefaultModel('new-user', 'gemini-3-flash');
+            expect(repo.getDefaultModel('new-user')).toBe('gemini-3-flash');
+        });
+
+        it('updates existing record via upsert', () => {
+            repo.setDefaultModel('user-1', 'model-a');
+            repo.setDefaultModel('user-1', 'model-b');
+            expect(repo.getDefaultModel('user-1')).toBe('model-b');
+        });
+
+        it('clears default when null is passed', () => {
+            repo.setDefaultModel('user-1', 'model-a');
+            repo.setDefaultModel('user-1', null);
+            expect(repo.getDefaultModel('user-1')).toBeNull();
+        });
+
+        it('handles multiple users independently', () => {
+            repo.setDefaultModel('user-1', 'model-a');
+            repo.setDefaultModel('user-2', 'model-b');
+            expect(repo.getDefaultModel('user-1')).toBe('model-a');
+            expect(repo.getDefaultModel('user-2')).toBe('model-b');
+        });
+
+        it('does not affect output format when setting default model', () => {
+            repo.setOutputFormat('user-1', 'plain');
+            repo.setDefaultModel('user-1', 'some-model');
+            expect(repo.getOutputFormat('user-1')).toBe('plain');
+        });
+    });
+
+    describe('migration', () => {
+        it('adds default_model column to existing table', () => {
+            // The constructor already ran the migration.
+            // Verify by checking the column exists via pragma.
+            const columns = db.pragma('table_info(user_preferences)') as { name: string }[];
+            const hasColumn = columns.some(c => c.name === 'default_model');
+            expect(hasColumn).toBe(true);
+        });
+
+        it('re-creating repository on same db does not fail', () => {
+            // Second construction should detect column already exists and skip ALTER
+            const repo2 = new UserPreferenceRepository(db);
+            repo2.setDefaultModel('user-x', 'test');
+            expect(repo2.getDefaultModel('user-x')).toBe('test');
+        });
+    });
+
     describe('findByUserId', () => {
         it('returns undefined for non-existent user', () => {
             const record = repo.findByUserId('no-such-user');
@@ -77,6 +142,12 @@ describe('UserPreferenceRepository', () => {
             expect(record?.outputFormat).toBe('plain');
             expect(record?.createdAt).toBeDefined();
             expect(record?.updatedAt).toBeDefined();
+        });
+
+        it('includes defaultModel in the mapped record', () => {
+            repo.setDefaultModel('user-1', 'my-model');
+            const record = repo.findByUserId('user-1');
+            expect(record?.defaultModel).toBe('my-model');
         });
     });
 });

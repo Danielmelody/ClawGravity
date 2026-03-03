@@ -15,6 +15,8 @@ export interface UserPreferenceRecord {
     userId: string;
     /** Output format preference */
     outputFormat: OutputFormat;
+    /** Default model name (free-text, may become stale) */
+    defaultModel: string | null;
     /** Creation timestamp (ISO string) */
     createdAt?: string;
     /** Last update timestamp (ISO string) */
@@ -34,7 +36,7 @@ export class UserPreferenceRepository {
     }
 
     /**
-     * Initialize table (create if not exists)
+     * Initialize table (create if not exists) and run migrations
      */
     private initialize(): void {
         this.db.exec(`
@@ -46,6 +48,28 @@ export class UserPreferenceRepository {
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
         `);
+        this.migrateDefaultModel();
+    }
+
+    /**
+     * Safe migration: add default_model column if it does not exist.
+     * Uses pragma when available, falls back to try/catch ALTER TABLE.
+     */
+    private migrateDefaultModel(): void {
+        if (typeof this.db.pragma === 'function') {
+            const columns = this.db.pragma('table_info(user_preferences)') as { name: string }[];
+            const hasColumn = columns.some(c => c.name === 'default_model');
+            if (!hasColumn) {
+                this.db.exec('ALTER TABLE user_preferences ADD COLUMN default_model TEXT DEFAULT NULL');
+            }
+        } else {
+            // Fallback for mock/alternate DB implementations without pragma
+            try {
+                this.db.exec('ALTER TABLE user_preferences ADD COLUMN default_model TEXT DEFAULT NULL');
+            } catch {
+                // Column already exists — safe to ignore
+            }
+        }
     }
 
     /**
@@ -75,6 +99,32 @@ export class UserPreferenceRepository {
     }
 
     /**
+     * Get the default model for a user.
+     * Returns null if no default is stored.
+     */
+    public getDefaultModel(userId: string): string | null {
+        const row = this.db.prepare(
+            'SELECT default_model FROM user_preferences WHERE user_id = ?'
+        ).get(userId) as { default_model: string | null } | undefined;
+
+        return row?.default_model ?? null;
+    }
+
+    /**
+     * Set the default model for a user (upsert).
+     * Pass null to clear the default.
+     */
+    public setDefaultModel(userId: string, modelName: string | null): void {
+        this.db.prepare(`
+            INSERT INTO user_preferences (user_id, default_model)
+            VALUES (?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET default_model = excluded.default_model,
+                          updated_at = datetime('now')
+        `).run(userId, modelName);
+    }
+
+    /**
      * Get full preference record for a user
      */
     public findByUserId(userId: string): UserPreferenceRecord | undefined {
@@ -94,6 +144,7 @@ export class UserPreferenceRepository {
             id: row.id,
             userId: row.user_id,
             outputFormat: row.output_format as OutputFormat,
+            defaultModel: row.default_model ?? null,
             createdAt: row.created_at,
             updatedAt: row.updated_at,
         };

@@ -45,6 +45,49 @@ describe('ModeService', () => {
             expect(result.success).toBe(false);
             expect(result.error).toBeDefined();
         });
+
+        it('marks mode as pending when synced=false (default)', () => {
+            modeService.setMode('plan');
+            expect(modeService.isPendingSync()).toBe(true);
+        });
+
+        it('marks mode as not pending when synced=true', () => {
+            modeService.setMode('plan', true);
+            expect(modeService.isPendingSync()).toBe(false);
+        });
+    });
+
+    describe('pendingSync', () => {
+        it('isPendingSync returns false initially', () => {
+            expect(modeService.isPendingSync()).toBe(false);
+        });
+
+        it('isPendingSync returns true after setMode with synced=false', () => {
+            modeService.setMode('plan', false);
+            expect(modeService.isPendingSync()).toBe(true);
+        });
+
+        it('markSynced clears the pending flag', () => {
+            modeService.setMode('plan', false);
+            expect(modeService.isPendingSync()).toBe(true);
+            modeService.markSynced();
+            expect(modeService.isPendingSync()).toBe(false);
+        });
+
+        it('setMode with synced=true clears previous pending', () => {
+            modeService.setMode('plan', false);
+            expect(modeService.isPendingSync()).toBe(true);
+            modeService.setMode('fast', true);
+            expect(modeService.isPendingSync()).toBe(false);
+        });
+
+        it('failed setMode does not change pending state', () => {
+            modeService.setMode('plan', false);
+            expect(modeService.isPendingSync()).toBe(true);
+            modeService.setMode('invalid');
+            // pendingSync should remain true since setMode failed
+            expect(modeService.isPendingSync()).toBe(true);
+        });
     });
 
     describe('getAvailableModes - get available mode list', () => {

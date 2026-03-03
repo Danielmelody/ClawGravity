@@ -11,13 +11,17 @@ import {
 } from 'discord.js';
 import Database from 'better-sqlite3';
 
+import { wrapDiscordChannel } from '../platform/discord/wrappers';
+import type { PlatformType } from '../platform/types';
 import { loadConfig, resolveResponseDeliveryMode } from '../utils/config';
+import type { ExtractionMode } from '../utils/config';
 import { parseMessageContent } from '../commands/messageParser';
 import { SlashCommandHandler } from '../commands/slashCommandHandler';
 import { registerSlashCommands } from '../commands/registerSlashCommands';
 
 import { ModeService, AVAILABLE_MODES, MODE_DISPLAY_NAMES, MODE_DESCRIPTIONS, MODE_UI_NAMES } from '../services/modeService';
 import { ModelService } from '../services/modelService';
+import { applyDefaultModel } from '../services/defaultModelApplicator';
 import { TemplateRepository } from '../database/templateRepository';
 import { WorkspaceBindingRepository } from '../database/workspaceBindingRepository';
 import { ChatSessionRepository } from '../database/chatSessionRepository';
@@ -82,6 +86,23 @@ import { UserPreferenceRepository, OutputFormat } from '../database/userPreferen
 import { formatAsPlainText, splitPlainText } from '../utils/plainTextFormatter';
 import { createInteractionCreateHandler } from '../events/interactionCreateHandler';
 import { createMessageCreateHandler } from '../events/messageCreateHandler';
+
+// Telegram platform support
+import { Bot, InputFile } from 'grammy';
+import { TelegramAdapter } from '../platform/telegram/telegramAdapter';
+import { TelegramBindingRepository } from '../database/telegramBindingRepository';
+import { createTelegramMessageHandler } from './telegramMessageHandler';
+import { createTelegramSelectHandler } from './telegramProjectCommand';
+import { EventRouter } from './eventRouter';
+import { createPlatformButtonHandler } from '../handlers/buttonHandler';
+import { createPlatformSelectHandler } from '../handlers/selectHandler';
+import { createApprovalButtonAction } from '../handlers/approvalButtonAction';
+import { createPlanningButtonAction } from '../handlers/planningButtonAction';
+import { createErrorPopupButtonAction } from '../handlers/errorPopupButtonAction';
+import { createModelButtonAction } from '../handlers/modelButtonAction';
+import { createAutoAcceptButtonAction } from '../handlers/autoAcceptButtonAction';
+import { createTemplateButtonAction } from '../handlers/templateButtonAction';
+import { createModeSelectAction } from '../handlers/modeSelectAction';
 
 // =============================================================================
 // Embed color palette (color-coded by phase)
@@ -157,6 +178,7 @@ async function sendPromptToAntigravity(
         titleGenerator: TitleGeneratorService;
         userPrefRepo?: UserPreferenceRepository;
         onFullCompletion?: () => void;
+        extractionMode?: ExtractionMode;
     }
 ): Promise<void> {
     // Completion signal — called exactly once when the entire prompt lifecycle ends
@@ -326,6 +348,12 @@ async function sendPromptToAntigravity(
         await message.react('❌').catch(() => { });
         signalCompletion('cdp-disconnected');
         return;
+    }
+
+    // Apply default model preference on CDP connect
+    const defaultModelResult = await applyDefaultModel(cdp, modelService);
+    if (defaultModelResult.stale && defaultModelResult.staleMessage && channel) {
+        await channel.send(defaultModelResult.staleMessage).catch(() => {});
     }
 
     const localMode = modeService.getCurrentMode();
@@ -529,6 +557,8 @@ async function sendPromptToAntigravity(
 
     try {
 
+        logger.prompt(prompt);
+
         let injectResult;
         if (inboundImages.length > 0) {
             injectResult = await cdp.injectMessageWithImageFiles(
@@ -575,6 +605,7 @@ async function sendPromptToAntigravity(
             pollIntervalMs: 2000,
             maxDurationMs: 300000,
             stopGoneConfirmCount: 3,
+            extractionMode: options?.extractionMode,
 
             onPhaseChange: (_phase, _text) => {
                 // Phase transitions are already logged inside ResponseMonitor.setPhase()
@@ -748,7 +779,7 @@ async function sendPromptToAntigravity(
                                     ? bridge.pool.extractProjectName(session.workspacePath)
                                     : cdp.getCurrentWorkspaceName();
                                 if (projectName) {
-                                    registerApprovalSessionChannel(bridge, projectName, sessionInfo.title, message.channel);
+                                    registerApprovalSessionChannel(bridge, projectName, sessionInfo.title, wrapDiscordChannel(message.channel as any));
                                 }
 
                                 const newName = options.titleGenerator.sanitizeForChannelName(sessionInfo.title);
@@ -874,6 +905,17 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     const modelService = new ModelService();
     const templateRepo = new TemplateRepository(db);
     const userPrefRepo = new UserPreferenceRepository(db);
+
+    // Eagerly load default model from DB (single-user bot optimization)
+    try {
+        const firstUser = db.prepare('SELECT user_id FROM user_preferences LIMIT 1').get() as { user_id: string } | undefined;
+        if (firstUser) {
+            const savedDefault = userPrefRepo.getDefaultModel(firstUser.user_id);
+            modelService.loadDefaultModel(savedDefault);
+        }
+    } catch {
+        // DB may not have user_preferences yet — safe to ignore
+    }
     const workspaceBindingRepo = new WorkspaceBindingRepository(db);
     const chatSessionRepo = new ChatSessionRepository(db);
     const workspaceService = new WorkspaceService(config.workspaceBaseDir);
@@ -902,6 +944,16 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
     const slashCommandHandler = new SlashCommandHandler(templateRepo);
 
+    // Discord platform — only initialise the Discord client when the platform is enabled
+    if (config.platforms.includes('discord')) {
+
+    if (!config.discordToken || !config.clientId) {
+        logger.error('Discord platform enabled but discordToken or clientId is missing. Skipping Discord initialization.');
+    } else {
+
+    const discordToken = config.discordToken;
+    const discordClientId = config.clientId;
+
     const client = new Client({
         intents: [
             GatewayIntentBits.Guilds,
@@ -910,13 +962,13 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         ]
     });
 
-    const joinHandler = new JoinCommandHandler(chatSessionService, chatSessionRepo, workspaceBindingRepo, channelManager, bridge.pool, workspaceService, client);
+    const joinHandler = new JoinCommandHandler(chatSessionService, chatSessionRepo, workspaceBindingRepo, channelManager, bridge.pool, workspaceService, client, config.extractionMode);
 
     client.once(Events.ClientReady, async (readyClient) => {
         logger.info(`Ready! Logged in as ${readyClient.user.tag} | extractionMode=${config.extractionMode}`);
 
         try {
-            await registerSlashCommands(config.discordToken, config.clientId, config.guildId);
+            await registerSlashCommands(discordToken, discordClientId, config.guildId);
         } catch (error) {
             logger.warn('Failed to register slash commands, but text commands remain available.');
         }
@@ -1033,15 +1085,16 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     cdp = await bridge.pool.getOrConnect(workspacePath);
                     const projectName = bridge.pool.extractProjectName(workspacePath);
                     bridge.lastActiveWorkspace = projectName;
-                    bridge.lastActiveChannel = interaction.channel;
-                    registerApprovalWorkspaceChannel(bridge, projectName, interaction.channel as any);
+                    const platformCh = wrapDiscordChannel(interaction.channel as any);
+                    bridge.lastActiveChannel = platformCh;
+                    registerApprovalWorkspaceChannel(bridge, projectName, platformCh);
                     const session = chatSessionRepo.findByChannelId(channelId);
                     if (session?.displayName) {
-                        registerApprovalSessionChannel(bridge, projectName, session.displayName, interaction.channel as any);
+                        registerApprovalSessionChannel(bridge, projectName, session.displayName, platformCh);
                     }
-                    ensureApprovalDetector(bridge, cdp, projectName, client);
-                    ensureErrorPopupDetector(bridge, cdp, projectName, client);
-                    ensurePlanningDetector(bridge, cdp, projectName, client);
+                    ensureApprovalDetector(bridge, cdp, projectName);
+                    ensureErrorPopupDetector(bridge, cdp, projectName);
+                    ensurePlanningDetector(bridge, cdp, projectName);
                 } catch (e: any) {
                     await interaction.followUp({
                         content: `Failed to connect to workspace: ${e.message}`,
@@ -1077,6 +1130,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         channelManager,
                         titleGenerator,
                         userPrefRepo,
+                        extractionMode: config.extractionMode,
                     },
                 });
             }
@@ -1117,7 +1171,179 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         userPrefRepo,
     }));
 
-    await client.login(config.discordToken);
+    await client.login(discordToken);
+
+    } // end: else (credentials present)
+    } // end: Discord platform gate
+
+    // Telegram platform
+    if (config.platforms.includes('telegram') && config.telegramToken) {
+        try {
+            const telegramBot = new Bot(config.telegramToken);
+            // Attach toInputFile so wrappers can convert Buffer to grammY InputFile
+            (telegramBot as any).toInputFile = (data: Buffer, filename?: string) => new InputFile(data, filename);
+            // Retry getMe() up to 3 times to handle transient network failures
+            const botInfo = await (async () => {
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        return await telegramBot.api.getMe();
+                    } catch (err: any) {
+                        if (attempt === 3) throw err;
+                        logger.warn(`[Telegram] getMe() failed (attempt ${attempt}/3): ${err?.message ?? err}. Retrying in 3s...`);
+                        await new Promise(r => setTimeout(r, 3000));
+                    }
+                }
+                throw new Error('getMe() failed after 3 attempts');
+            })();
+
+            const telegramBindingRepo = new TelegramBindingRepository(db);
+            const telegramAdapter = new TelegramAdapter(telegramBot as any, String(botInfo.id));
+
+            const activeMonitors = new Map<string, ResponseMonitor>();
+            const telegramHandler = createTelegramMessageHandler({
+                bridge,
+                telegramBindingRepo,
+                workspaceService,
+                modeService,
+                modelService,
+                extractionMode: config.extractionMode,
+                templateRepo,
+                fetchQuota: () => bridge.quota.fetchQuota(),
+                activeMonitors,
+                botToken: config.telegramToken,
+                botApi: telegramBot.api as any,
+            });
+
+            // Compose select handlers: project select + mode select
+            const projectSelectHandler = createTelegramSelectHandler({
+                workspaceService,
+                telegramBindingRepo,
+            });
+            const modeSelectAction = createModeSelectAction({ bridge, modeService });
+            const telegramSelectHandler = createPlatformSelectHandler({
+                actions: [
+                    modeSelectAction,
+                ],
+            });
+            // Composite handler that routes to the right handler
+            const compositeSelectHandler = async (interaction: import('../platform/types').PlatformSelectInteraction) => {
+                if (interaction.customId === 'mode_select') {
+                    await telegramSelectHandler(interaction);
+                    return;
+                }
+                await projectSelectHandler(interaction);
+            };
+
+            const allowedUsers = new Map<PlatformType, ReadonlySet<string>>();
+            if (config.telegramAllowedUserIds && config.telegramAllowedUserIds.length > 0) {
+                allowedUsers.set('telegram', new Set(config.telegramAllowedUserIds));
+            } else {
+                logger.warn('Telegram platform enabled but TELEGRAM_ALLOWED_USER_IDS is empty — all users will be denied access.');
+            }
+
+            const telegramButtonHandler = createPlatformButtonHandler({
+                actions: [
+                    createApprovalButtonAction({ bridge }),
+                    createPlanningButtonAction({ bridge }),
+                    createErrorPopupButtonAction({ bridge }),
+                    createModelButtonAction({ bridge, fetchQuota: () => bridge.quota.fetchQuota(), modelService, userPrefRepo }),
+                    createAutoAcceptButtonAction({ autoAcceptService: bridge.autoAccept }),
+                    createTemplateButtonAction({ bridge, templateRepo }),
+                ],
+            });
+
+            const eventRouter = new EventRouter(
+                { allowedUsers },
+                {
+                    onMessage: telegramHandler,
+                    onButtonInteraction: telegramButtonHandler,
+                    onSelectInteraction: compositeSelectHandler,
+                },
+            );
+            // Register bot commands BEFORE starting polling so Telegram shows "/" suggestions
+            await telegramBot.api.setMyCommands([
+                { command: 'start', description: 'Welcome message' },
+                { command: 'project', description: 'Manage workspace bindings' },
+                { command: 'status', description: 'Show bot status and connections' },
+                { command: 'mode', description: 'Switch execution mode' },
+                { command: 'model', description: 'Switch LLM model' },
+                { command: 'screenshot', description: 'Capture Antigravity screenshot' },
+                { command: 'autoaccept', description: 'Toggle auto-accept mode' },
+                { command: 'template', description: 'List prompt templates' },
+                { command: 'template_add', description: 'Add a prompt template' },
+                { command: 'template_delete', description: 'Delete a prompt template' },
+                { command: 'project_create', description: 'Create a new workspace' },
+                { command: 'logs', description: 'Show recent log entries' },
+                { command: 'stop', description: 'Interrupt active LLM generation' },
+                { command: 'help', description: 'Show available commands' },
+                { command: 'ping', description: 'Check bot latency' },
+            ]).catch((e: unknown) => {
+                logger.warn('Failed to register Telegram commands:', e instanceof Error ? e.message : e);
+            });
+
+            eventRouter.registerAdapter(telegramAdapter);
+            await eventRouter.startAll();
+
+            logger.info(`Telegram bot started: @${botInfo.username} (${config.telegramAllowedUserIds?.length ?? 0} allowed users)`);
+
+            // Send startup message to all bound Telegram chats
+            const bindings = telegramBindingRepo.findAll();
+            if (bindings.length > 0) {
+                const os = await import('os');
+                const pkg = await import('../../package.json');
+                const version = pkg.default?.version ?? pkg.version ?? 'unknown';
+                const projects = workspaceService.scanWorkspaces();
+                const activeWorkspaces = bridge.pool.getActiveWorkspaceNames();
+                const cdpStatus = activeWorkspaces.length > 0
+                    ? `Connected (${activeWorkspaces.join(', ')})`
+                    : 'Not connected';
+
+                const startupText = [
+                    '<b>LazyGravity Online</b>',
+                    '',
+                    `Version: ${version}`,
+                    `Node.js: ${process.versions.node}`,
+                    `OS: ${os.platform()} ${os.release()}`,
+                    `CDP: ${cdpStatus}`,
+                    `Model: ${modelService.getCurrentModel()}`,
+                    `Mode: ${modeService.getCurrentMode()}`,
+                    `Projects: ${projects.length} registered`,
+                    `Extraction: ${config.extractionMode}`,
+                    '',
+                    `<i>Started at ${new Date().toLocaleString()}</i>`,
+                ].join('\n');
+
+                const sendWithRetry = async (chatId: number | string, text: string, retries = 3, delayMs = 2000): Promise<void> => {
+                    for (let attempt = 1; attempt <= retries; attempt++) {
+                        try {
+                            await telegramBot.api.sendMessage(chatId, text, { parse_mode: 'HTML' });
+                            return;
+                        } catch (err) {
+                            if (attempt < retries) {
+                                logger.debug(`[Telegram] Startup message attempt ${attempt}/${retries} failed, retrying in ${delayMs}ms...`);
+                                await new Promise((r) => setTimeout(r, delayMs));
+                            } else {
+                                throw err;
+                            }
+                        }
+                    }
+                };
+
+                const results = await Promise.allSettled(
+                    bindings.map((binding) => sendWithRetry(binding.chatId, startupText)),
+                );
+                const failed = results.filter((r) => r.status === 'rejected');
+                if (failed.length > 0) {
+                    logger.warn(`[Telegram] Startup message failed for ${failed.length}/${bindings.length} chat(s) after retries: ${(failed[0] as PromiseRejectedResult).reason?.message ?? 'unknown error'}`);
+                } else {
+                    logger.info(`Telegram startup message sent to ${bindings.length} bound chat(s).`);
+                }
+            }
+        } catch (e: unknown) {
+            const message = e instanceof Error ? e.message : String(e);
+            logger.error('Failed to start Telegram adapter:', message);
+        }
+    }
 };
 
 /**

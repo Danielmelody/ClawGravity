@@ -215,7 +215,13 @@ export function buildClickScript(buttonText: string): string {
                 ariaLabel.includes(wanted);
         });
         if (!target) return { ok: false, error: 'Button not found: ' + text };
-        target.click();
+        const rect = target.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const eventInit = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+            target.dispatchEvent(new PointerEvent(type, { ...eventInit, pointerId: 1 }));
+        }
         return { ok: true };
     })()`;
 }
@@ -394,7 +400,13 @@ export class ApprovalDetector {
      */
     private async clickButton(buttonText: string): Promise<boolean> {
         try {
-            const result = await this.runEvaluateScript(buildClickScript(buttonText));
+            const script = buildClickScript(buttonText);
+            const result = await this.runEvaluateScript(script);
+            if (result?.ok !== true) {
+                logger.warn(`[ApprovalDetector] Click failed for "${buttonText}":`, result?.error ?? 'unknown');
+            } else {
+                logger.debug(`[ApprovalDetector] Click OK for "${buttonText}"`);
+            }
             return result?.ok === true;
         } catch (error) {
             logger.error('[ApprovalDetector] Error while clicking button:', error);

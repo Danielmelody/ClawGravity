@@ -1,6 +1,15 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
 
 import { TemplateRecord } from '../database/templateRepository';
+import type { MessagePayload, ButtonDef, ComponentRow } from '../platform/types';
+import {
+    createRichContent,
+    withTitle,
+    withDescription,
+    withColor,
+    withFooter,
+    withTimestamp,
+} from '../platform/richContentBuilder';
 
 /** Button customId prefix. Format: template_btn_<id> */
 export const TEMPLATE_BTN_PREFIX = 'template_btn_';
@@ -15,6 +24,77 @@ const MAX_BUTTONS = 25;
 export function parseTemplateButtonId(customId: string): number {
     if (!customId.startsWith(TEMPLATE_BTN_PREFIX)) return NaN;
     return parseInt(customId.slice(TEMPLATE_BTN_PREFIX.length), 10);
+}
+
+/**
+ * Build a platform-agnostic MessagePayload for template list UI.
+ */
+export function buildTemplatePayload(
+    templates: TemplateRecord[],
+): MessagePayload {
+    if (templates.length === 0) {
+        const rc = withTimestamp(
+            withDescription(
+                withColor(
+                    withTitle(createRichContent(), 'Template Management'),
+                    0x57F287,
+                ),
+                'No templates registered.\n\n' +
+                'Use `/template add name:<name> prompt:<prompt>` to add one.',
+            ),
+        );
+        return { richContent: rc, components: [] };
+    }
+
+    const truncate = (text: string, max: number): string =>
+        text.length > max ? `${text.substring(0, max - 3)}...` : text;
+
+    const displayTemplates = templates.slice(0, MAX_BUTTONS);
+    const hasMore = templates.length > MAX_BUTTONS;
+
+    const description = displayTemplates
+        .map((tpl, i) => `**${i + 1}. ${tpl.name}**\n> ${truncate(tpl.prompt, MAX_PROMPT_PREVIEW_LEN)}`)
+        .join('\n\n');
+
+    const footerText = hasMore
+        ? `${templates.length - MAX_BUTTONS} templates are hidden. Use /template use <name> to execute directly.`
+        : 'Click a button to execute the template';
+
+    const rc = withTimestamp(
+        withFooter(
+            withDescription(
+                withColor(
+                    withTitle(createRichContent(), 'Template Management'),
+                    0x57F287,
+                ),
+                `**Registered Templates (${templates.length})**\n\n${description}`,
+            ),
+            footerText,
+        ),
+    );
+
+    const rows: ComponentRow[] = [];
+    let currentButtons: ButtonDef[] = [];
+
+    for (const tpl of displayTemplates) {
+        if (currentButtons.length === 5) {
+            rows.push({ components: currentButtons });
+            currentButtons = [];
+        }
+        const safeLabel = tpl.name.length > 80 ? `${tpl.name.substring(0, 77)}...` : tpl.name;
+        currentButtons.push({
+            type: 'button',
+            customId: `${TEMPLATE_BTN_PREFIX}${tpl.id}`,
+            label: safeLabel,
+            style: 'primary',
+        });
+    }
+
+    if (currentButtons.length > 0) {
+        rows.push({ components: currentButtons });
+    }
+
+    return { richContent: rc, components: rows };
 }
 
 /**

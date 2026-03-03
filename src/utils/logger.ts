@@ -6,6 +6,7 @@ export const COLORS = {
     cyan: '\x1b[36m',
     green: '\x1b[32m',
     magenta: '\x1b[35m',
+    boldYellow: '\x1b[1;33m',
     dim: '\x1b[2m',
     reset: '\x1b[0m',
 } as const;
@@ -27,6 +28,7 @@ export interface Logger {
     debug(...args: any[]): void;
     phase(...args: any[]): void;
     done(...args: any[]): void;
+    prompt(text: string): void;
     divider(label?: string): void;
     setLogLevel(level: LogLevel): void;
     getLogLevel(): LogLevel;
@@ -89,6 +91,12 @@ export function createLogger(initialLevel: LogLevel = 'info'): Logger {
                 console.info(formatted, ...args);
                 logBuffer.append('info', `[DONE] ${args.join(' ')}`);
             }
+        },
+        /** User prompt text - always visible regardless of log level */
+        prompt(text: string) {
+            const formatted = `${getTimestamp()} ${COLORS.boldYellow}[PROMPT]${COLORS.reset} ${COLORS.boldYellow}${text}${COLORS.reset}`;
+            console.info(formatted);
+            logBuffer.append('info', `[PROMPT] ${text}`);
         },
         /** Section divider with optional label for structured output */
         divider(label?: string) {

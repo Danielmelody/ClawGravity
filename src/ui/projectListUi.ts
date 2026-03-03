@@ -7,6 +7,15 @@ import {
 } from 'discord.js';
 
 import { t } from '../utils/i18n';
+import type { MessagePayload, ComponentRow } from '../platform/types';
+import {
+    createRichContent,
+    withTitle,
+    withDescription,
+    withColor,
+    withFooter,
+    withTimestamp,
+} from '../platform/richContentBuilder';
 
 /** Select menu custom ID (legacy, page 0) */
 export const PROJECT_SELECT_ID = 'project_select';
@@ -39,6 +48,81 @@ export function isProjectSelectId(customId: string): boolean {
         customId === WORKSPACE_SELECT_ID ||
         customId.startsWith(`${PROJECT_SELECT_ID}:`)
     );
+}
+
+/**
+ * Build a platform-agnostic MessagePayload for project list UI.
+ */
+export function buildProjectListPayload(
+    workspaces: string[],
+    page: number = 0,
+): MessagePayload {
+    const totalPages = Math.max(1, Math.ceil(workspaces.length / ITEMS_PER_PAGE));
+    const safePage = Math.max(0, Math.min(page, totalPages - 1));
+
+    let rc = withTimestamp(
+        withColor(
+            withTitle(
+                withDescription(
+                    createRichContent(),
+                    t('Select a project to auto-create a category and session channel'),
+                ),
+                'Projects',
+            ),
+            0x5865F2,
+        ),
+    );
+
+    if (workspaces.length === 0) {
+        return { richContent: rc, components: [] };
+    }
+
+    if (totalPages > 1) {
+        rc = withFooter(rc, `Page ${safePage + 1} / ${totalPages} (${workspaces.length} projects total)`);
+    }
+
+    const start = safePage * ITEMS_PER_PAGE;
+    const end = Math.min(start + ITEMS_PER_PAGE, workspaces.length);
+    const pageItems = workspaces.slice(start, end);
+
+    const components: ComponentRow[] = [
+        {
+            components: [
+                {
+                    type: 'selectMenu' as const,
+                    customId: `${PROJECT_SELECT_ID}:${safePage}`,
+                    placeholder: t('Select a project...'),
+                    options: pageItems.map((ws) => ({
+                        label: ws,
+                        value: ws,
+                    })),
+                },
+            ],
+        },
+    ];
+
+    if (totalPages > 1) {
+        components.push({
+            components: [
+                {
+                    type: 'button' as const,
+                    customId: `${PROJECT_PAGE_PREFIX}:${Math.max(0, safePage - 1)}`,
+                    label: '\u25C0 Prev',
+                    style: 'secondary' as const,
+                    disabled: safePage === 0,
+                },
+                {
+                    type: 'button' as const,
+                    customId: `${PROJECT_PAGE_PREFIX}:${safePage + 1}`,
+                    label: 'Next \u25B6',
+                    style: 'secondary' as const,
+                    disabled: safePage >= totalPages - 1,
+                },
+            ],
+        });
+    }
+
+    return { richContent: rc, components };
 }
 
 /**

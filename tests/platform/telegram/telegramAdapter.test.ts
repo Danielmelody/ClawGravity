@@ -1,0 +1,463 @@
+import { TelegramAdapter } from '../../../src/platform/telegram/telegramAdapter';
+import type { PlatformAdapterEvents } from '../../../src/platform/adapter';
+import { SELECT_CALLBACK_SEP } from '../../../src/platform/telegram/wrappers';
+import type { TelegramBotLike } from '../../../src/platform/telegram/wrappers';
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+interface RegisteredHandler {
+    event: string;
+    handler: (...args: any[]) => any;
+}
+
+function createMockBot(): TelegramBotLike & {
+    handlers: RegisteredHandler[];
+    emit(event: string, ctx: any): Promise<void>;
+} {
+    const handlers: RegisteredHandler[] = [];
+
+    const bot = {
+        handlers,
+        start: jest.fn(),
+        stop: jest.fn(),
+        on: jest.fn((event: string, handler: (...args: any[]) => any) => {
+            handlers.push({ event, handler });
+        }),
+        api: {
+            sendMessage: jest.fn().mockResolvedValue({ message_id: 1 }),
+            editMessageText: jest.fn().mockResolvedValue({ message_id: 1 }),
+            deleteMessage: jest.fn().mockResolvedValue(true),
+            getChat: jest.fn().mockResolvedValue({
+                id: 100,
+                title: 'Test Chat',
+                type: 'group',
+            }),
+            answerCallbackQuery: jest.fn().mockResolvedValue(true),
+        },
+        async emit(event: string, ctx: any): Promise<void> {
+            for (const h of handlers) {
+                if (h.event === event) {
+                    await h.handler(ctx);
+                }
+            }
+        },
+    };
+
+    return bot;
+}
+
+function createMockEvents(): PlatformAdapterEvents & {
+    onReady: jest.Mock;
+    onMessage: jest.Mock;
+    onButtonInteraction: jest.Mock;
+    onSelectInteraction: jest.Mock;
+    onError: jest.Mock;
+} {
+    return {
+        onReady: jest.fn(),
+        onMessage: jest.fn().mockResolvedValue(undefined),
+        onButtonInteraction: jest.fn().mockResolvedValue(undefined),
+        onSelectInteraction: jest.fn().mockResolvedValue(undefined),
+        onError: jest.fn(),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// TelegramAdapter
+// ---------------------------------------------------------------------------
+
+describe('TelegramAdapter', () => {
+    describe('constructor', () => {
+        it('sets platform to telegram', () => {
+            const bot = createMockBot();
+            const adapter = new TelegramAdapter(bot, 'bot_123');
+            expect(adapter.platform).toBe('telegram');
+        });
+    });
+
+    describe('getBotUserId', () => {
+        it('returns the bot user ID passed in constructor', () => {
+            const bot = createMockBot();
+            const adapter = new TelegramAdapter(bot, 'bot_456');
+            expect(adapter.getBotUserId()).toBe('bot_456');
+        });
+    });
+
+    describe('start', () => {
+        it('calls bot.start() and fires onReady', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+
+            expect(bot.start).toHaveBeenCalledTimes(1);
+            expect(events.onReady).toHaveBeenCalledTimes(1);
+        });
+
+        it('registers message:text and callback_query:data handlers', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+
+            const registeredEvents = bot.handlers.map((h) => h.event);
+            expect(registeredEvents).toContain('message:text');
+            expect(registeredEvents).toContain('callback_query:data');
+        });
+
+        it('throws if started twice', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+            await expect(adapter.start(events)).rejects.toThrow(
+                'TelegramAdapter is already started',
+            );
+        });
+    });
+
+    describe('stop', () => {
+        it('calls bot.stop()', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+            await adapter.stop();
+
+            expect(bot.stop).toHaveBeenCalledTimes(1);
+        });
+
+        it('is safe to call stop without start', async () => {
+            const bot = createMockBot();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await expect(adapter.stop()).resolves.toBeUndefined();
+            expect(bot.stop).not.toHaveBeenCalled();
+        });
+
+        it('allows restarting after stop', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+            await adapter.stop();
+            await adapter.start(events);
+
+            expect(bot.start).toHaveBeenCalledTimes(2);
+        });
+
+        it('does not register handlers twice on restart', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+            const firstCount = bot.handlers.length;
+
+            await adapter.stop();
+            await adapter.start(events);
+
+            expect(bot.handlers.length).toBe(firstCount);
+        });
+    });
+
+    describe('getChannel', () => {
+        it('returns a PlatformChannel with name from chat data', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+            const channel = await adapter.getChannel('100');
+
+            expect(channel).not.toBeNull();
+            expect(channel!.id).toBe('100');
+            expect(channel!.platform).toBe('telegram');
+            expect(channel!.name).toBe('Test Chat');
+        });
+
+        it('returns null when getChat fails', async () => {
+            const bot = createMockBot();
+            bot.api.getChat = jest.fn().mockRejectedValue(new Error('Not found'));
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+            const channel = await adapter.getChannel('999');
+
+            expect(channel).toBeNull();
+        });
+    });
+
+    describe('event handling - message:text', () => {
+        /** Return a Unix timestamp (seconds) representing "now" for test messages. */
+        const nowUnix = () => Math.floor(Date.now() / 1000);
+
+        it('calls onMessage with a PlatformMessage', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+
+            await bot.emit('message:text', {
+                message: {
+                    message_id: 10,
+                    from: {
+                        id: 42,
+                        first_name: 'Alice',
+                        is_bot: false,
+                    },
+                    chat: { id: 1, title: 'Group', type: 'group' },
+                    text: 'Hello bot',
+                    date: nowUnix(),
+                },
+            });
+
+            // Fire-and-forget: flush microtasks
+            await new Promise((r) => setTimeout(r, 10));
+
+            expect(events.onMessage).toHaveBeenCalledTimes(1);
+            const msg = events.onMessage.mock.calls[0][0];
+            expect(msg.id).toBe('10');
+            expect(msg.platform).toBe('telegram');
+            expect(msg.content).toBe('Hello bot');
+            expect(msg.author.id).toBe('42');
+        });
+
+        it('does not call onMessage when handler is not set', async () => {
+            const bot = createMockBot();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start({ onReady: jest.fn() });
+
+            // Should not throw
+            await bot.emit('message:text', {
+                message: {
+                    message_id: 10,
+                    from: { id: 1, first_name: 'X', is_bot: false },
+                    chat: { id: 1, type: 'private' },
+                    text: 'Hi',
+                    date: nowUnix(),
+                },
+            });
+        });
+
+        it('calls onError when message handler throws', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            events.onMessage.mockRejectedValue(new Error('Handler failure'));
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+
+            await bot.emit('message:text', {
+                message: {
+                    message_id: 10,
+                    from: { id: 1, first_name: 'X', is_bot: false },
+                    chat: { id: 1, type: 'private' },
+                    text: 'fail',
+                    date: nowUnix(),
+                },
+            });
+
+            // Fire-and-forget: flush microtasks so .catch() fires
+            await new Promise((r) => setTimeout(r, 10));
+
+            expect(events.onError).toHaveBeenCalledTimes(1);
+            expect(events.onError.mock.calls[0][0].message).toBe('Handler failure');
+        });
+
+        it('ignores messages sent before adapter started (stale backlog)', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+
+            // Send a message with a timestamp 60 seconds before startup
+            const staleDate = Math.floor(Date.now() / 1000) - 60;
+            await bot.emit('message:text', {
+                message: {
+                    message_id: 99,
+                    from: { id: 1, first_name: 'X', is_bot: false },
+                    chat: { id: 1, type: 'private' },
+                    text: 'Old message',
+                    date: staleDate,
+                },
+            });
+
+            await new Promise((r) => setTimeout(r, 10));
+
+            expect(events.onMessage).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('event handling - callback_query:data', () => {
+        it('calls onButtonInteraction for simple button data', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            // Remove select handler so button handler is used
+            const eventsWithoutSelect = { ...events, onSelectInteraction: undefined };
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(eventsWithoutSelect);
+
+            await bot.emit('callback_query:data', {
+                callbackQuery: {
+                    id: 'cb_1',
+                    from: { id: 42, first_name: 'Bob', is_bot: false },
+                    message: {
+                        message_id: 50,
+                        chat: { id: 1, type: 'group' },
+                        date: 1700000000,
+                    },
+                    data: 'btn_click',
+                },
+            });
+
+            expect(events.onButtonInteraction).toHaveBeenCalledTimes(1);
+            const interaction = events.onButtonInteraction.mock.calls[0][0];
+            expect(interaction.customId).toBe('btn_click');
+            expect(interaction.user.id).toBe('42');
+        });
+
+        it('routes select menu callback (customId\\x1Fvalue format) to onSelectInteraction', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+
+            await bot.emit('callback_query:data', {
+                callbackQuery: {
+                    id: 'cb_2',
+                    from: { id: 42, first_name: 'Bob', is_bot: false },
+                    message: {
+                        message_id: 50,
+                        chat: { id: 1, type: 'group' },
+                        date: 1700000000,
+                    },
+                    data: `menu_id${SELECT_CALLBACK_SEP}selected_value`,
+                },
+            });
+
+            expect(events.onSelectInteraction).toHaveBeenCalledTimes(1);
+            const interaction = events.onSelectInteraction!.mock.calls[0][0];
+            expect(interaction.customId).toBe('menu_id');
+            expect(interaction.values).toEqual(['selected_value']);
+        });
+
+        it('routes select callback even without onButtonInteraction', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const eventsSelectOnly = {
+                ...events,
+                onButtonInteraction: undefined,
+            };
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(eventsSelectOnly);
+
+            await bot.emit('callback_query:data', {
+                callbackQuery: {
+                    id: 'cb_sel',
+                    from: { id: 42, first_name: 'Alice', is_bot: false },
+                    message: {
+                        message_id: 50,
+                        chat: { id: 1, type: 'group' },
+                        date: 1700000000,
+                    },
+                    data: `menu${SELECT_CALLBACK_SEP}value1`,
+                },
+            });
+
+            expect(events.onSelectInteraction).toHaveBeenCalledTimes(1);
+            const interaction = events.onSelectInteraction.mock.calls[0][0];
+            expect(interaction.customId).toBe('menu');
+            expect(interaction.values).toEqual(['value1']);
+        });
+
+        it('ignores callback when neither button nor select handler is set', async () => {
+            const bot = createMockBot();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            // Start with only onReady - no button or select handlers
+            await adapter.start({ onReady: jest.fn() });
+
+            // Should not throw
+            await bot.emit('callback_query:data', {
+                callbackQuery: {
+                    id: 'cb_ignored',
+                    from: { id: 42, first_name: 'Bob', is_bot: false },
+                    message: {
+                        message_id: 50,
+                        chat: { id: 1, type: 'group' },
+                        date: 1700000000,
+                    },
+                    data: `menu${SELECT_CALLBACK_SEP}value`,
+                },
+            });
+        });
+
+        it('routes button customId with colons to onButtonInteraction (not select)', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(events);
+
+            // Button customIds like "approve_action:proj:ch" contain colons
+            // but should NOT be routed to select handler (no \x1F separator)
+            await bot.emit('callback_query:data', {
+                callbackQuery: {
+                    id: 'cb_btn_colon',
+                    from: { id: 42, first_name: 'Bob', is_bot: false },
+                    message: {
+                        message_id: 50,
+                        chat: { id: 1, type: 'group' },
+                        date: 1700000000,
+                    },
+                    data: 'approve_action:myProject:ch-123',
+                },
+            });
+
+            expect(events.onSelectInteraction).not.toHaveBeenCalled();
+            expect(events.onButtonInteraction).toHaveBeenCalledTimes(1);
+            const interaction = events.onButtonInteraction.mock.calls[0][0];
+            expect(interaction.customId).toBe('approve_action:myProject:ch-123');
+        });
+
+        it('calls onError when callback handler throws', async () => {
+            const bot = createMockBot();
+            const events = createMockEvents();
+            events.onButtonInteraction.mockRejectedValue(new Error('Button error'));
+            const eventsWithoutSelect = { ...events, onSelectInteraction: undefined };
+            const adapter = new TelegramAdapter(bot, 'bot_1');
+
+            await adapter.start(eventsWithoutSelect);
+
+            await bot.emit('callback_query:data', {
+                callbackQuery: {
+                    id: 'cb_3',
+                    from: { id: 1, first_name: 'X', is_bot: false },
+                    message: {
+                        message_id: 50,
+                        chat: { id: 1, type: 'private' },
+                        date: 1700000000,
+                    },
+                    data: 'fail_btn',
+                },
+            });
+
+            expect(events.onError).toHaveBeenCalledTimes(1);
+        });
+    });
+});

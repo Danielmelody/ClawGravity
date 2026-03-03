@@ -1,15 +1,13 @@
-import {
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle,
-    Client,
-    EmbedBuilder,
-    Message,
-} from 'discord.js';
-
 import { t } from '../utils/i18n';
 import { logger } from '../utils/logger';
-import { disableAllButtons } from '../utils/discordButtonUtils';
+import type { PlatformChannel, PlatformSentMessage, MessagePayload } from '../platform/types';
+import {
+    buildApprovalNotification,
+    buildAutoApprovedNotification,
+    buildPlanningNotification,
+    buildErrorPopupNotification,
+    buildResolvedOverlay,
+} from './notificationSender';
 import { ApprovalDetector, ApprovalInfo } from './approvalDetector';
 import { AutoAcceptService } from './autoAcceptService';
 import { CdpConnectionPool } from './cdpConnectionPool';
@@ -27,11 +25,11 @@ export interface CdpBridge {
     /** Directory name of the workspace that last sent a message */
     lastActiveWorkspace: string | null;
     /** Channel that last sent a message (destination for approval notifications) */
-    lastActiveChannel: Message['channel'] | null;
+    lastActiveChannel: PlatformChannel | null;
     /** Workspace-level approval notification destination (workspace -> channel) */
-    approvalChannelByWorkspace: Map<string, Message['channel']>;
+    approvalChannelByWorkspace: Map<string, PlatformChannel>;
     /** Session-level approval notification destination (workspace+sessionTitle -> channel) */
-    approvalChannelBySession: Map<string, Message['channel']>;
+    approvalChannelBySession: Map<string, PlatformChannel>;
 }
 
 const APPROVE_ACTION_PREFIX = 'approve_action';
@@ -85,7 +83,7 @@ export async function getCurrentChatTitle(cdp: CdpService): Promise<string | nul
 export function registerApprovalWorkspaceChannel(
     bridge: CdpBridge,
     projectName: string,
-    channel: Message['channel'],
+    channel: PlatformChannel,
 ): void {
     bridge.approvalChannelByWorkspace.set(projectName, channel);
 }
@@ -94,7 +92,7 @@ export function registerApprovalSessionChannel(
     bridge: CdpBridge,
     projectName: string,
     sessionTitle: string,
-    channel: Message['channel'],
+    channel: PlatformChannel,
 ): void {
     if (!sessionTitle || sessionTitle.trim().length === 0) return;
     bridge.approvalChannelBySession.set(buildSessionRouteKey(projectName, sessionTitle), channel);
@@ -105,7 +103,7 @@ export function resolveApprovalChannelForCurrentChat(
     bridge: CdpBridge,
     projectName: string,
     currentChatTitle: string | null,
-): Message['channel'] | null {
+): PlatformChannel | null {
     // Try session-level match first (most precise routing)
     if (currentChatTitle && currentChatTitle.trim().length > 0) {
         const key = buildSessionRouteKey(projectName, currentChatTitle);
@@ -280,46 +278,36 @@ export function ensureApprovalDetector(
     bridge: CdpBridge,
     cdp: CdpService,
     projectName: string,
-    client: Client,
 ): void {
     const existing = bridge.pool.getApprovalDetector(projectName);
     if (existing && existing.isActive()) return;
 
-    // Track the most recent button message for auto-disable on resolve.
-    // Only the latest message is tracked; if a new detection fires before the previous
-    // is resolved, the older message reference is overwritten. This is acceptable because
+    // Track the most recent notification for auto-disable on resolve.
+    // Only the latest is tracked; if a new detection fires before the previous
+    // is resolved, the older reference is overwritten. This is acceptable because
     // the detector's lastDetectedKey deduplication prevents rapid successive notifications.
-    let lastButtonMessage: Message | null = null;
+    let lastNotification: { sent: PlatformSentMessage; payload: MessagePayload } | null = null;
 
     const detector = new ApprovalDetector({
         cdpService: cdp,
         pollIntervalMs: 2000,
         onResolved: () => {
-            if (!lastButtonMessage) return;
-            const msg = lastButtonMessage;
-            lastButtonMessage = null;
-            const originalEmbed = msg.embeds[0];
-            const updatedEmbed = originalEmbed
-                ? EmbedBuilder.from(originalEmbed)
-                : new EmbedBuilder().setTitle(t('Approval Required'));
-            updatedEmbed
-                .setColor(0x95A5A6)
-                .addFields({ name: t('Status'), value: t('Resolved in Antigravity'), inline: false });
-            msg.edit({
-                embeds: [updatedEmbed],
-                components: disableAllButtons(msg.components),
-            }).catch(logger.error);
+            if (!lastNotification) return;
+            const { sent, payload } = lastNotification;
+            lastNotification = null;
+            const resolved = buildResolvedOverlay(payload, t('Resolved in Antigravity'));
+            sent.edit(resolved).catch(logger.error);
         },
         onApprovalRequired: async (info: ApprovalInfo) => {
             logger.debug(`[ApprovalDetector:${projectName}] Approval button detected (allow="${info.approveText}", deny="${info.denyText}")`);
 
             const currentChatTitle = await getCurrentChatTitle(cdp);
             const targetChannel = resolveApprovalChannelForCurrentChat(bridge, projectName, currentChatTitle);
-            const targetChannelId = targetChannel && 'id' in targetChannel ? String((targetChannel as any).id) : '';
+            const targetChannelId = targetChannel ? targetChannel.id : '';
 
-            if (!targetChannel || !targetChannelId || !('send' in targetChannel)) {
+            if (!targetChannel || !targetChannelId) {
                 logger.warn(
-                    `[ApprovalDetector:${projectName}] Skipped approval notification because chat is not linked to a Discord session` +
+                    `[ApprovalDetector:${projectName}] Skipped approval notification because chat is not linked to a session` +
                     `${currentChatTitle ? ` (title="${currentChatTitle}")` : ''}`,
                 );
                 return;
@@ -328,64 +316,37 @@ export function ensureApprovalDetector(
             if (bridge.autoAccept.isEnabled()) {
                 const accepted = await detector.alwaysAllowButton() || await detector.approveButton();
 
-                const autoEmbed = new EmbedBuilder()
-                    .setTitle(accepted ? t('Auto-approved') : t('Auto-approve failed'))
-                    .setDescription(accepted ? t('An action was automatically approved.') : t('Auto-approve attempted but failed. Manual approval required.'))
-                    .setColor(accepted ? 0x2ECC71 : 0xF39C12)
-                    .addFields(
-                        { name: t('Auto-approve mode'), value: t('ON'), inline: true },
-                        { name: t('Workspace'), value: projectName, inline: true },
-                        { name: t('Result'), value: accepted ? t('Executed Always Allow/Allow') : t('Manual approval required'), inline: true },
-                    );
-                if (info.description) {
-                    autoEmbed.addFields({ name: t('Action Detail'), value: info.description.substring(0, 1024), inline: false });
-                }
-                if (info.approveText) {
-                    autoEmbed.addFields({ name: t('Approved via'), value: info.approveText, inline: true });
-                }
-                autoEmbed.setTimestamp();
-                await (targetChannel as any).send({ embeds: [autoEmbed] }).catch(logger.error);
+                const autoPayload = buildAutoApprovedNotification({
+                    accepted,
+                    projectName,
+                    description: info.description ?? undefined,
+                    approveText: info.approveText ?? undefined,
+                });
+                await targetChannel.send(autoPayload).catch(logger.error);
 
                 if (accepted) {
                     return;
                 }
             }
 
-            const embed = new EmbedBuilder()
-                .setTitle(t('Approval Required'))
-                .setDescription(info.description || t('Antigravity is requesting approval for an action'))
-                .setColor(0xFFA500)
-                .addFields(
+            const payload = buildApprovalNotification({
+                title: t('Approval Required'),
+                description: info.description || t('Antigravity is requesting approval for an action'),
+                projectName,
+                channelId: targetChannelId,
+                extraFields: [
                     { name: t('Allow button'), value: info.approveText, inline: true },
                     { name: t('Allow Chat button'), value: info.alwaysAllowText || t('In Dropdown'), inline: true },
                     { name: t('Deny button'), value: info.denyText || t('(None)'), inline: true },
-                    { name: t('Workspace'), value: projectName, inline: true },
-                )
-                .setTimestamp();
+                ],
+            });
 
-            const approveBtn = new ButtonBuilder()
-                .setCustomId(buildApprovalCustomId('approve', projectName, targetChannelId))
-                .setLabel(t('Allow'))
-                .setStyle(ButtonStyle.Success);
-
-            const alwaysAllowBtn = new ButtonBuilder()
-                .setCustomId(buildApprovalCustomId('always_allow', projectName, targetChannelId))
-                .setLabel(t('Allow Chat'))
-                .setStyle(ButtonStyle.Primary);
-
-            const denyBtn = new ButtonBuilder()
-                .setCustomId(buildApprovalCustomId('deny', projectName, targetChannelId))
-                .setLabel(t('Deny'))
-                .setStyle(ButtonStyle.Danger);
-
-            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(approveBtn, alwaysAllowBtn, denyBtn);
-
-            const sent = await (targetChannel as any).send({
-                embeds: [embed],
-                components: [row],
-            }).catch((err: any) => { logger.error(err); return null; });
+            const sent = await targetChannel.send(payload).catch((err: any) => {
+                logger.error(err);
+                return null;
+            });
             if (sent) {
-                lastButtonMessage = sent;
+                lastNotification = { sent, payload };
             }
         },
     });
@@ -403,44 +364,34 @@ export function ensurePlanningDetector(
     bridge: CdpBridge,
     cdp: CdpService,
     projectName: string,
-    _client: Client, // Unused, kept for signature consistency with ensureApprovalDetector
 ): void {
     const existing = bridge.pool.getPlanningDetector(projectName);
     if (existing && existing.isActive()) return;
 
-    // Track the most recent planning message for auto-disable on resolve.
+    // Track the most recent planning notification for auto-disable on resolve.
     // See ensureApprovalDetector comment for tracking limitation rationale.
-    let lastPlanningMessage: Message | null = null;
+    let lastNotification: { sent: PlatformSentMessage; payload: MessagePayload } | null = null;
 
     const detector = new PlanningDetector({
         cdpService: cdp,
         pollIntervalMs: 2000,
         onResolved: () => {
-            if (!lastPlanningMessage) return;
-            const msg = lastPlanningMessage;
-            lastPlanningMessage = null;
-            const originalEmbed = msg.embeds[0];
-            const updatedEmbed = originalEmbed
-                ? EmbedBuilder.from(originalEmbed)
-                : new EmbedBuilder().setTitle(t('Planning Mode'));
-            updatedEmbed
-                .setColor(0x95A5A6)
-                .addFields({ name: t('Status'), value: t('Resolved in Antigravity'), inline: false });
-            msg.edit({
-                embeds: [updatedEmbed],
-                components: disableAllButtons(msg.components),
-            }).catch(logger.error);
+            if (!lastNotification) return;
+            const { sent, payload } = lastNotification;
+            lastNotification = null;
+            const resolved = buildResolvedOverlay(payload, t('Resolved in Antigravity'));
+            sent.edit(resolved).catch(logger.error);
         },
         onPlanningRequired: async (info: PlanningInfo) => {
             logger.debug(`[PlanningDetector:${projectName}] Planning buttons detected (title="${info.planTitle}")`);
 
             const currentChatTitle = await getCurrentChatTitle(cdp);
             const targetChannel = resolveApprovalChannelForCurrentChat(bridge, projectName, currentChatTitle);
-            const targetChannelId = targetChannel && 'id' in targetChannel ? String((targetChannel as any).id) : '';
+            const targetChannelId = targetChannel ? targetChannel.id : '';
 
-            if (!targetChannel || !targetChannelId || !('send' in targetChannel)) {
+            if (!targetChannel || !targetChannelId) {
                 logger.warn(
-                    `[PlanningDetector:${projectName}] Skipped planning notification because chat is not linked to a Discord session` +
+                    `[PlanningDetector:${projectName}] Skipped planning notification because chat is not linked to a session` +
                     `${currentChatTitle ? ` (title="${currentChatTitle}")` : ''}`,
                 );
                 return;
@@ -448,38 +399,28 @@ export function ensurePlanningDetector(
 
             const descriptionText = info.description || info.planSummary || t('A plan has been generated and is awaiting your review.');
 
-            const embed = new EmbedBuilder()
-                .setTitle(t('Planning Mode'))
-                .setDescription(descriptionText)
-                .setColor(0x3498DB)
-                .addFields(
-                    { name: t('Plan'), value: info.planTitle || t('Implementation Plan'), inline: true },
-                    { name: t('Workspace'), value: projectName, inline: true },
-                )
-                .setTimestamp();
-
+            const extraFields: { name: string; value: string; inline?: boolean }[] = [
+                { name: t('Plan'), value: info.planTitle || t('Implementation Plan'), inline: true },
+                { name: t('Workspace'), value: projectName, inline: true },
+            ];
             if (info.planSummary && info.description) {
-                embed.addFields({ name: t('Summary'), value: info.planSummary.substring(0, 1024), inline: false });
+                extraFields.push({ name: t('Summary'), value: info.planSummary.substring(0, 1024), inline: false });
             }
 
-            const openBtn = new ButtonBuilder()
-                .setCustomId(buildPlanningCustomId('open', projectName, targetChannelId))
-                .setLabel(t('Open'))
-                .setStyle(ButtonStyle.Secondary);
+            const payload = buildPlanningNotification({
+                title: t('Planning Mode'),
+                description: descriptionText,
+                projectName,
+                channelId: targetChannelId,
+                extraFields,
+            });
 
-            const proceedBtn = new ButtonBuilder()
-                .setCustomId(buildPlanningCustomId('proceed', projectName, targetChannelId))
-                .setLabel(t('Proceed'))
-                .setStyle(ButtonStyle.Primary);
-
-            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(openBtn, proceedBtn);
-
-            const sent = await (targetChannel as any).send({
-                embeds: [embed],
-                components: [row],
-            }).catch((err: any) => { logger.error(err); return null; });
+            const sent = await targetChannel.send(payload).catch((err: any) => {
+                logger.error(err);
+                return null;
+            });
             if (sent) {
-                lastPlanningMessage = sent;
+                lastNotification = { sent, payload };
             }
         },
     });
@@ -497,44 +438,34 @@ export function ensureErrorPopupDetector(
     bridge: CdpBridge,
     cdp: CdpService,
     projectName: string,
-    _client: Client,
 ): void {
     const existing = bridge.pool.getErrorPopupDetector(projectName);
     if (existing && existing.isActive()) return;
 
-    // Track the most recent error message for auto-disable on resolve.
+    // Track the most recent error notification for auto-disable on resolve.
     // See ensureApprovalDetector comment for tracking limitation rationale.
-    let lastErrorMessage: Message | null = null;
+    let lastNotification: { sent: PlatformSentMessage; payload: MessagePayload } | null = null;
 
     const detector = new ErrorPopupDetector({
         cdpService: cdp,
         pollIntervalMs: 3000,
         onResolved: () => {
-            if (!lastErrorMessage) return;
-            const msg = lastErrorMessage;
-            lastErrorMessage = null;
-            const originalEmbed = msg.embeds[0];
-            const updatedEmbed = originalEmbed
-                ? EmbedBuilder.from(originalEmbed)
-                : new EmbedBuilder().setTitle(t('Agent Error'));
-            updatedEmbed
-                .setColor(0x95A5A6)
-                .addFields({ name: t('Status'), value: t('Resolved in Antigravity'), inline: false });
-            msg.edit({
-                embeds: [updatedEmbed],
-                components: disableAllButtons(msg.components),
-            }).catch(logger.error);
+            if (!lastNotification) return;
+            const { sent, payload } = lastNotification;
+            lastNotification = null;
+            const resolved = buildResolvedOverlay(payload, t('Resolved in Antigravity'));
+            sent.edit(resolved).catch(logger.error);
         },
         onErrorPopup: async (info: ErrorPopupInfo) => {
             logger.debug(`[ErrorPopupDetector:${projectName}] Error popup detected (title="${info.title}")`);
 
             const currentChatTitle = await getCurrentChatTitle(cdp);
             const targetChannel = resolveApprovalChannelForCurrentChat(bridge, projectName, currentChatTitle);
-            const targetChannelId = targetChannel && 'id' in targetChannel ? String((targetChannel as any).id) : '';
+            const targetChannelId = targetChannel ? targetChannel.id : '';
 
-            if (!targetChannel || !targetChannelId || !('send' in targetChannel)) {
+            if (!targetChannel || !targetChannelId) {
                 logger.warn(
-                    `[ErrorPopupDetector:${projectName}] Skipped error popup notification because chat is not linked to a Discord session` +
+                    `[ErrorPopupDetector:${projectName}] Skipped error popup notification because chat is not linked to a session` +
                     `${currentChatTitle ? ` (title="${currentChatTitle}")` : ''}`,
                 );
                 return;
@@ -542,39 +473,23 @@ export function ensureErrorPopupDetector(
 
             const bodyText = info.body || t('An error occurred in the Antigravity agent.');
 
-            const embed = new EmbedBuilder()
-                .setTitle(info.title || t('Agent Error'))
-                .setDescription(bodyText.substring(0, 4096))
-                .setColor(0xE74C3C)
-                .addFields(
+            const payload = buildErrorPopupNotification({
+                title: info.title || t('Agent Error'),
+                errorMessage: bodyText.substring(0, 4096),
+                projectName,
+                channelId: targetChannelId,
+                extraFields: [
                     { name: t('Buttons'), value: info.buttons.join(', ') || t('(None)'), inline: true },
                     { name: t('Workspace'), value: projectName, inline: true },
-                )
-                .setTimestamp();
+                ],
+            });
 
-            const dismissBtn = new ButtonBuilder()
-                .setCustomId(buildErrorPopupCustomId('dismiss', projectName, targetChannelId))
-                .setLabel(t('Dismiss'))
-                .setStyle(ButtonStyle.Secondary);
-
-            const copyDebugBtn = new ButtonBuilder()
-                .setCustomId(buildErrorPopupCustomId('copy_debug', projectName, targetChannelId))
-                .setLabel(t('Copy debug info'))
-                .setStyle(ButtonStyle.Primary);
-
-            const retryBtn = new ButtonBuilder()
-                .setCustomId(buildErrorPopupCustomId('retry', projectName, targetChannelId))
-                .setLabel(t('Retry'))
-                .setStyle(ButtonStyle.Success);
-
-            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(dismissBtn, copyDebugBtn, retryBtn);
-
-            const sent = await (targetChannel as any).send({
-                embeds: [embed],
-                components: [row],
-            }).catch((err: any) => { logger.error(err); return null; });
+            const sent = await targetChannel.send(payload).catch((err: any) => {
+                logger.error(err);
+                return null;
+            });
             if (sent) {
-                lastErrorMessage = sent;
+                lastNotification = { sent, payload };
             }
         },
     });

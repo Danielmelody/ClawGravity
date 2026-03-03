@@ -5,6 +5,7 @@ import { CDP_PORTS } from '../../utils/cdpPorts';
 import { ConfigLoader } from '../../utils/configLoader';
 import { getAntigravityCdpHint } from '../../utils/pathUtils';
 import { COLORS } from '../../utils/logger';
+import type { PlatformType } from '../../platform/types';
 
 const ok = (msg: string) => console.log(`  ${COLORS.green}[OK]${COLORS.reset} ${msg}`);
 const warn = (msg: string) => console.log(`  ${COLORS.yellow}[--]${COLORS.reset} ${msg}`);
@@ -38,8 +39,27 @@ function checkEnvFile(): { exists: boolean; path: string } {
     return { exists: fs.existsSync(envPath), path: envPath };
 }
 
+const VALID_PLATFORMS: readonly PlatformType[] = ['discord', 'telegram'];
+
+function getActivePlatforms(): PlatformType[] {
+    const raw = process.env.PLATFORMS || 'discord';
+    return raw
+        .split(',')
+        .map((p) => p.trim().toLowerCase())
+        .filter((p): p is PlatformType => VALID_PLATFORMS.includes(p as PlatformType));
+}
+
 function checkRequiredEnvVars(): { name: string; set: boolean }[] {
-    const required = ['DISCORD_BOT_TOKEN', 'CLIENT_ID', 'ALLOWED_USER_IDS'];
+    const platforms = getActivePlatforms();
+    const required: string[] = [];
+
+    if (platforms.includes('discord')) {
+        required.push('DISCORD_BOT_TOKEN', 'CLIENT_ID', 'ALLOWED_USER_IDS');
+    }
+    if (platforms.includes('telegram')) {
+        required.push('TELEGRAM_BOT_TOKEN', 'TELEGRAM_ALLOWED_USER_IDS');
+    }
+
     return required.map((name) => ({
         name,
         set: Boolean(process.env[name]),
@@ -82,7 +102,9 @@ export async function doctorAction(): Promise<void> {
         }
     }
 
-    // 4. Required environment variables (check both env and config.json sources)
+    // 4. Required environment variables (platform-aware)
+    const platforms = getActivePlatforms();
+    ok(`Active platforms: ${platforms.join(', ')}`);
     const vars = checkRequiredEnvVars();
     for (const v of vars) {
         if (v.set) {

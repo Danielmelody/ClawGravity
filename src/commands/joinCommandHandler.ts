@@ -20,6 +20,7 @@ import { ResponseMonitor } from '../services/responseMonitor';
 import { WorkspaceService } from '../services/workspaceService';
 import { buildSessionPickerUI } from '../ui/sessionPickerUi';
 import { logger } from '../utils/logger';
+import type { ExtractionMode } from '../utils/config';
 
 /** Maximum embed description length (Discord limit is 4096) */
 const MAX_EMBED_DESC = 4000;
@@ -38,6 +39,7 @@ export class JoinCommandHandler {
     private readonly pool: CdpConnectionPool;
     private readonly workspaceService: WorkspaceService;
     private readonly client: Client;
+    private readonly extractionMode?: ExtractionMode;
 
     /** Active ResponseMonitors per workspace (for AI response mirroring) */
     private readonly activeResponseMonitors = new Map<string, ResponseMonitor>();
@@ -50,6 +52,7 @@ export class JoinCommandHandler {
         pool: CdpConnectionPool,
         workspaceService: WorkspaceService,
         client: Client,
+        extractionMode?: ExtractionMode,
     ) {
         this.chatSessionService = chatSessionService;
         this.chatSessionRepo = chatSessionRepo;
@@ -58,6 +61,7 @@ export class JoinCommandHandler {
         this.pool = pool;
         this.workspaceService = workspaceService;
         this.client = client;
+        this.extractionMode = extractionMode;
     }
 
     /**
@@ -358,6 +362,7 @@ export class JoinCommandHandler {
             cdpService: cdp,
             pollIntervalMs: 2000,
             maxDurationMs: 300000,
+            extractionMode: this.extractionMode,
             onComplete: (finalText: string) => {
                 this.activeResponseMonitors.delete(projectName);
                 if (!finalText || finalText.trim().length === 0) return;
