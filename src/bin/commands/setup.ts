@@ -3,6 +3,20 @@ import * as https from 'https';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+// @inquirer/select is ESM-only — use native import() that tsc won't rewrite to require()
+// eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+
+type SelectFn = typeof import('@inquirer/select')['default'];
+let _select: SelectFn | undefined;
+
+async function getSelect(): Promise<SelectFn> {
+    if (_select === undefined) {
+        const mod = await dynamicImport('@inquirer/select');
+        _select = mod.default as SelectFn;
+    }
+    return _select;
+}
 import { ConfigLoader } from '../../utils/configLoader';
 import type { PersistedConfig } from '../../utils/configLoader';
 import { CDP_PORTS } from '../../utils/cdpPorts';
@@ -249,15 +263,51 @@ function savePlatformsFromState(): void {
     const platforms: PlatformType[] = [];
     if (isDiscordConfigured(current)) platforms.push('discord');
     if (isTelegramConfigured(current)) platforms.push('telegram');
-    if (platforms.length > 0) {
-        ConfigLoader.save({ platforms });
+    ConfigLoader.save({ platforms });
+}
+
+/**
+ * Add a platform to the persisted platforms list (idempotent).
+ */
+function addPlatform(platform: PlatformType): void {
+    const current = ConfigLoader.readPersisted();
+    const platforms = current.platforms ?? [];
+    if (!platforms.includes(platform)) {
+        ConfigLoader.save({ platforms: [...platforms, platform] });
     }
 }
 
-function statusBadge(configured: boolean): string {
-    return configured
-        ? `${C.green}[configured]${C.reset}`
-        : `${C.dim}[not configured]${C.reset}`;
+/**
+ * Remove a platform from the persisted platforms list (idempotent).
+ * Credentials are preserved — only the enabled flag changes.
+ */
+function removePlatform(platform: PlatformType): void {
+    const current = ConfigLoader.readPersisted();
+    const platforms = (current.platforms ?? []).filter((p) => p !== platform);
+    ConfigLoader.save({ platforms });
+}
+
+type PlatformStatus = 'enabled' | 'disabled' | 'not_configured';
+
+function platformStatus(
+    hasCredentials: boolean,
+    platforms: PlatformType[] | undefined,
+    platform: PlatformType,
+): PlatformStatus {
+    if (!hasCredentials) return 'not_configured';
+    if (platforms?.includes(platform)) return 'enabled';
+    return 'disabled';
+}
+
+function statusBadge(status: PlatformStatus): string {
+    switch (status) {
+        case 'enabled':
+            return `${C.green}[enabled]${C.reset}`;
+        case 'disabled':
+            return `${C.yellow}[disabled]${C.reset}`;
+        case 'not_configured':
+            return `${C.dim}[not configured]${C.reset}`;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -335,20 +385,40 @@ async function promptWorkspaceDir(rl: readline.Interface): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Hub-and-spoke menu
+// Platform sub-menu (enable / reconfigure / disable / back)
 // ---------------------------------------------------------------------------
 
-function showMainMenu(config: PersistedConfig): void {
-    const discordStatus = statusBadge(isDiscordConfigured(config));
-    const telegramStatus = statusBadge(isTelegramConfigured(config));
-    const wsLabel = `${C.dim}${workspaceLabel(config)}${C.reset}`;
+type PlatformAction = 'enable' | 'reconfigure' | 'disable' | 'back';
 
-    console.log('');
-    console.log(`  ${C.cyan}1)${C.reset} Discord                ${discordStatus}`);
-    console.log(`  ${C.cyan}2)${C.reset} Telegram               ${telegramStatus}`);
-    console.log(`  ${C.cyan}3)${C.reset} Workspace Directory    ${wsLabel}`);
-    console.log(`  ${C.cyan}d)${C.reset} Done — save & exit`);
-    console.log('');
+async function platformSubMenu(
+    rl: readline.Interface,
+    platformName: string,
+    status: PlatformStatus,
+): Promise<PlatformAction> {
+    const select = await getSelect();
+
+    const choices: Array<{ name: string; value: PlatformAction }> =
+        status === 'disabled'
+            ? [
+                  { name: 'Enable', value: 'enable' as const },
+                  { name: 'Reconfigure', value: 'reconfigure' as const },
+                  { name: 'Back', value: 'back' as const },
+              ]
+            : [
+                  { name: 'Reconfigure', value: 'reconfigure' as const },
+                  { name: 'Disable', value: 'disable' as const },
+                  { name: 'Back', value: 'back' as const },
+              ];
+
+    rl.pause();
+    try {
+        return await select<PlatformAction>({
+            message: `${platformName}:`,
+            choices,
+        });
+    } finally {
+        rl.resume();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -457,34 +527,79 @@ export async function setupAction(): Promise<void> {
 
         while (true) {
             const config = ConfigLoader.readPersisted();
-            showMainMenu(config);
+            const discordSt = platformStatus(isDiscordConfigured(config), config.platforms, 'discord');
+            const telegramSt = platformStatus(isTelegramConfigured(config), config.platforms, 'telegram');
+            const wsLabel = `${C.dim}${workspaceLabel(config)}${C.reset}`;
 
-            const raw = await ask(rl, `  ${C.yellow}>${C.reset} `);
-            const choice = raw.trim().toLowerCase();
+            const select = await getSelect();
+            rl.pause();
+            const choice = await select({
+                message: 'Configure:',
+                choices: [
+                    { name: `Discord                ${statusBadge(discordSt)}`, value: 'discord' as const },
+                    { name: `Telegram               ${statusBadge(telegramSt)}`, value: 'telegram' as const },
+                    { name: `Workspace Directory    ${wsLabel}`, value: 'workspace' as const },
+                    { name: `Done — save & exit`, value: 'done' as const },
+                ],
+            });
+            rl.resume();
 
             switch (choice) {
-                case '1':
-                    await runDiscordSetup(rl);
+                case 'discord':
+                    if (discordSt === 'not_configured') {
+                        await runDiscordSetup(rl);
+                    } else {
+                        const action = await platformSubMenu(rl, 'Discord', discordSt);
+                        switch (action) {
+                            case 'enable':
+                                addPlatform('discord');
+                                console.log(`  ${C.green}Discord enabled.${C.reset}\n`);
+                                break;
+                            case 'reconfigure':
+                                await runDiscordSetup(rl);
+                                break;
+                            case 'disable':
+                                removePlatform('discord');
+                                console.log(`  ${C.yellow}Discord disabled.${C.reset} Credentials kept.\n`);
+                                break;
+                            case 'back':
+                                break;
+                        }
+                    }
                     break;
-                case '2':
-                    await runTelegramSetup(rl);
+                case 'telegram':
+                    if (telegramSt === 'not_configured') {
+                        await runTelegramSetup(rl);
+                    } else {
+                        const action = await platformSubMenu(rl, 'Telegram', telegramSt);
+                        switch (action) {
+                            case 'enable':
+                                addPlatform('telegram');
+                                console.log(`  ${C.green}Telegram enabled.${C.reset}\n`);
+                                break;
+                            case 'reconfigure':
+                                await runTelegramSetup(rl);
+                                break;
+                            case 'disable':
+                                removePlatform('telegram');
+                                console.log(`  ${C.yellow}Telegram disabled.${C.reset} Credentials kept.\n`);
+                                break;
+                            case 'back':
+                                break;
+                        }
+                    }
                     break;
-                case '3':
+                case 'workspace':
                     await runWorkspaceSetup(rl);
                     break;
-                case 'd':
                 case 'done': {
                     const finalConfig = ConfigLoader.readPersisted();
-                    const platforms: PlatformType[] = [];
-                    if (isDiscordConfigured(finalConfig)) platforms.push('discord');
-                    if (isTelegramConfigured(finalConfig)) platforms.push('telegram');
+                    const platforms = finalConfig.platforms ?? [];
 
                     if (platforms.length === 0) {
-                        errMsg('No platforms configured yet. Please set up at least one platform.');
+                        errMsg('No platforms enabled yet. Please enable at least one platform.');
                         break;
                     }
-
-                    ConfigLoader.save({ platforms });
 
                     const configPath = ConfigLoader.getConfigFilePath();
                     console.log(`\n  ${C.green}Setup complete!${C.reset} Platforms: ${platforms.join(', ')}\n`);
@@ -513,9 +628,6 @@ export async function setupAction(): Promise<void> {
 
                     return;
                 }
-                default:
-                    errMsg('Please enter 1, 2, 3, or d.');
-                    break;
             }
         }
     } finally {
