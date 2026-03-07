@@ -192,6 +192,22 @@ describe('CdpService - UI sync (Step 9)', () => {
             expect(result.ok).toBe(true);
         });
 
+        it('uses dialog-based model trigger selectors in the expression', async () => {
+            (cdpService as any).isConnectedFlag = true;
+            (cdpService as any).ws = mockWsInstance;
+
+            callSpy.mockResolvedValue({
+                result: { value: { ok: true, model: 'gpt-4o' } }
+            });
+
+            await cdpService.setUiModel('gpt-4o');
+
+            const callArgs = callSpy.mock.calls[0][1];
+            expect(callArgs.expression).toContain('aria-haspopup="dialog"');
+            expect(callArgs.expression).toContain('findModelDialog');
+            expect(callArgs.expression).toContain('Model list not found after opening the dropdown.');
+        });
+
         it('returns the model name on successful UI operation', async () => {
             (cdpService as any).isConnectedFlag = true;
             (cdpService as any).ws = mockWsInstance;
@@ -251,6 +267,32 @@ describe('CdpService - UI sync (Step 9)', () => {
                     contextId: 42,
                 })
             );
+        });
+
+        it('prefers the default context for the current target frame when no cascade panel exists', () => {
+            (cdpService as any).targetFrameId = 'frame-123';
+            (cdpService as any).contexts = [
+                {
+                    id: 3,
+                    name: '',
+                    url: 'about:blank',
+                    auxData: { frameId: 'frame-999', type: 'default', isDefault: true },
+                },
+                {
+                    id: 2,
+                    name: 'Electron Isolated Context',
+                    url: 'file:///workbench.html',
+                    auxData: { frameId: 'frame-123', type: 'isolated' },
+                },
+                {
+                    id: 1,
+                    name: '',
+                    url: 'file:///workbench.html',
+                    auxData: { frameId: 'frame-123', type: 'default', isDefault: true },
+                },
+            ];
+
+            expect(cdpService.getPrimaryContextId()).toBe(1);
         });
     });
 });

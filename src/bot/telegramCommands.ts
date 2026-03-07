@@ -305,10 +305,27 @@ async function handleMode(deps: TelegramCommandDeps, message: PlatformMessage): 
 }
 
 async function handleModel(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
-    const cdp = getCurrentCdp(deps.bridge);
+    let cdp = getCurrentCdp(deps.bridge);
     if (!cdp) {
-        await message.reply({ text: 'Not connected to Antigravity.' }).catch(logger.error);
-        return;
+        const chatId = message.channel.id;
+        const binding = deps.telegramBindingRepo?.findByChatId(chatId);
+        if (!binding) {
+            await message.reply({ text: 'Not connected to Antigravity.' }).catch(logger.error);
+            return;
+        }
+
+        try {
+            const workspacePath = deps.workspaceService
+                ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
+                : binding.workspacePath;
+            cdp = await deps.bridge.pool.getOrConnect(workspacePath);
+            deps.bridge.lastActiveWorkspace = deps.bridge.pool.extractProjectName(workspacePath);
+            deps.bridge.lastActiveChannel = message.channel;
+        } catch (err: any) {
+            logger.error('[TelegramCommand:model] CDP connection failed:', err?.message || err);
+            await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
+            return;
+        }
     }
 
     const models = await cdp.getUiModels();

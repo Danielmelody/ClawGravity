@@ -502,6 +502,35 @@ describe('handleTelegramCommand — /model', () => {
         expect(message.reply).toHaveBeenCalledWith({ text: 'Not connected to Antigravity.' });
     });
 
+    it('connects to the bound workspace when no CDP is active yet', async () => {
+        const mockCdp = {
+            getUiModels: jest.fn().mockResolvedValue(['model-a', 'model-b']),
+            getCurrentModel: jest.fn().mockResolvedValue('model-a'),
+        };
+        (getCurrentCdp as jest.Mock).mockReturnValue(null);
+        const message = createMockMessage();
+        const bridge = createMockBridge();
+        bridge.pool.getOrConnect = jest.fn().mockResolvedValue(mockCdp);
+        bridge.pool.extractProjectName = jest.fn().mockReturnValue('TestProject');
+        const telegramBindingRepo = {
+            findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-123', workspacePath: 'TestProject' }),
+        } as any;
+        const workspaceService = {
+            getWorkspacePath: jest.fn().mockReturnValue('/full/path/TestProject'),
+        } as any;
+
+        await handleTelegramCommand(
+            { bridge, telegramBindingRepo, workspaceService },
+            message as any,
+            { command: 'model', args: '' },
+        );
+
+        expect(workspaceService.getWorkspacePath).toHaveBeenCalledWith('TestProject');
+        expect(bridge.pool.getOrConnect).toHaveBeenCalledWith('/full/path/TestProject');
+        expect(bridge.lastActiveWorkspace).toBe('TestProject');
+        expect(buildModelsPayload).toHaveBeenCalledWith(['model-a', 'model-b'], 'model-a', [], null);
+    });
+
     it('sends model payload when CDP is available', async () => {
         const mockCdp = {
             getUiModels: jest.fn().mockResolvedValue(['model-a', 'model-b']),

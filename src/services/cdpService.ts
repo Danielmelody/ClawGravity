@@ -19,6 +19,11 @@ export interface CdpContext {
     id: number;
     name: string;
     url: string;
+    auxData?: {
+        frameId?: string;
+        type?: string;
+        isDefault?: boolean;
+    };
 }
 
 export interface InjectResult {
@@ -66,6 +71,7 @@ export class CdpService extends EventEmitter {
     private idCounter = 1;
     private cdpCallTimeout = 30000;
     private targetUrl: string | null = null;
+    private targetFrameId: string | null = null;
     /** Number of auto-reconnect attempts on disconnect */
     private maxReconnectAttempts: number;
     /** Delay between reconnect attempts (ms) */
@@ -137,6 +143,7 @@ export class CdpService extends EventEmitter {
 
         if (target && target.webSocketDebuggerUrl) {
             this.targetUrl = target.webSocketDebuggerUrl;
+            this.targetFrameId = typeof target.id === 'string' ? target.id : null;
             // Extract workspace name from title (e.g., "ProjectName — Antigravity")
             if (target.title && !this.currentWorkspaceName) {
                 const titleParts = target.title.split(/\\s[—–-]\\s/);
@@ -199,6 +206,7 @@ export class CdpService extends EventEmitter {
             this.clearPendingCalls(new Error('WebSocket disconnected'));
             this.ws = null;
             this.targetUrl = null;
+            this.targetFrameId = null;
             // Suppress disconnected event and auto-reconnect during workspace switching
             if (this.isSwitchingWorkspace) return;
             this.emit('disconnected');
@@ -271,6 +279,7 @@ export class CdpService extends EventEmitter {
         this.contexts = [];
         this.currentWorkspacePath = null;
         this.currentWorkspaceName = null;
+        this.targetFrameId = null;
         this.clearPendingCalls(new Error('disconnect() was called'));
     }
 
@@ -412,6 +421,7 @@ export class CdpService extends EventEmitter {
 
         this.disconnectQuietly();
         this.targetUrl = page.webSocketDebuggerUrl;
+        this.targetFrameId = typeof page?.id === 'string' ? page.id : null;
         await this.connect();
         this.currentWorkspaceName = projectName;
         logger.debug(`[CdpService] Connected to workspace "${projectName}"`);
@@ -690,6 +700,7 @@ export class CdpService extends EventEmitter {
             this.contexts = [];
             this.clearPendingCalls(new Error('Disconnected for workspace switch'));
             this.targetUrl = null;
+            this.targetFrameId = null;
         }
     }
 
@@ -859,6 +870,20 @@ export class CdpService extends EventEmitter {
         // Find cascade-panel context
         const context = this.contexts.find(c => c.url && c.url.includes('cascade-panel'));
         if (context) return context.id;
+
+        if (this.targetFrameId) {
+            const matchingDefaultContext = this.contexts.find(
+                c =>
+                    c.auxData?.frameId === this.targetFrameId &&
+                    (c.auxData?.isDefault === true || c.auxData?.type === 'default'),
+            );
+            if (matchingDefaultContext) return matchingDefaultContext.id;
+
+            const matchingFrameContext = this.contexts.find(
+                c => c.auxData?.frameId === this.targetFrameId,
+            );
+            if (matchingFrameContext) return matchingFrameContext.id;
+        }
 
         // Fallback to Extension context or first one
         const extContext = this.contexts.find(c => c.name && c.name.includes('Extension'));
@@ -1491,10 +1516,52 @@ export class CdpService extends EventEmitter {
         }
 
         const expression = `(async () => {
-            return Array.from(document.querySelectorAll('div.cursor-pointer'))
-                .map(e => ({text: (e.textContent || '').trim().replace(/New$/, ''), class: e.className}))
-                .filter(e => e.class.includes('px-2 py-1 flex items-center justify-between') || e.text.includes('Gemini') || e.text.includes('GPT') || e.text.includes('Claude'))
-                .map(e => e.text);
+            const MODEL_RE = /(gemini|claude|gpt|opus|sonnet|flash|thinking)/i;
+            const normalize = (value) => (value || '').replace(/\\s+/g, ' ').replace(/\\bNew\\b/g, '').trim();
+
+            const extractItemLabel = (el) => {
+                const labeled = el.querySelector('.font-medium');
+                return normalize((labeled && labeled.textContent) || el.textContent || '');
+            };
+
+            const findModelTrigger = () => {
+                const triggers = Array.from(document.querySelectorAll('[role="button"][aria-haspopup="dialog"]'));
+                return triggers.find((el) => MODEL_RE.test(normalize(el.textContent || '')));
+            };
+
+            const findModelDialog = (trigger) => {
+                const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+                const dialogCandidates = dialogs.filter((dialog) => {
+                    const text = normalize(dialog.textContent || '');
+                    return text.includes('Model') && MODEL_RE.test(text);
+                });
+
+                const visible = dialogCandidates.find((dialog) => {
+                    const style = window.getComputedStyle(dialog);
+                    return style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none';
+                });
+                if (visible) return visible;
+
+                if (trigger && trigger.parentElement) {
+                    const sibling = Array.from(trigger.parentElement.querySelectorAll('[role="dialog"]')).find((dialog) => {
+                        const text = normalize(dialog.textContent || '');
+                        return text.includes('Model') && MODEL_RE.test(text);
+                    });
+                    if (sibling) return sibling;
+                }
+
+                return dialogCandidates[0] || null;
+            };
+
+            const trigger = findModelTrigger();
+            const dialog = findModelDialog(trigger);
+            if (!dialog) return [];
+
+            const items = Array.from(dialog.querySelectorAll('div.cursor-pointer'))
+                .map(extractItemLabel)
+                .filter((label) => label.length > 0 && MODEL_RE.test(label));
+
+            return Array.from(new Set(items));
         })()`;
 
         try {
@@ -1527,9 +1594,19 @@ export class CdpService extends EventEmitter {
             return null;
         }
         const expression = `(() => {
-            return Array.from(document.querySelectorAll('div.cursor-pointer'))
-                .find(e => e.className.includes('px-2 py-1 flex items-center justify-between') && e.className.includes('bg-gray-500/20'))
-                ?.textContent?.trim().replace(/New$/, '') || null;
+            const MODEL_RE = /(gemini|claude|gpt|opus|sonnet|flash|thinking)/i;
+            const normalize = (value) => (value || '').replace(/\\s+/g, ' ').replace(/\\bNew\\b/g, '').trim();
+
+            const trigger = Array.from(document.querySelectorAll('[role="button"][aria-haspopup="dialog"]'))
+                .find((el) => MODEL_RE.test(normalize(el.textContent || '')));
+            if (trigger) {
+                const triggerText = normalize(trigger.textContent || '');
+                if (triggerText) return triggerText;
+            }
+
+            const selectedItem = Array.from(document.querySelectorAll('div.cursor-pointer'))
+                .find((e) => e.className.includes('px-2 py-1 flex items-center justify-between') && e.className.includes('bg-gray-500/20'));
+            return normalize(selectedItem?.textContent || '') || null;
         })()`;
         try {
             const contextId = this.getPrimaryContextId();
@@ -1554,56 +1631,93 @@ export class CdpService extends EventEmitter {
             await this.reconnectOnDemand();
         }
 
-        // DOM manipulation script: based on actual Antigravity UI DOM structure
-        // Model list uses div.cursor-pointer elements with class 'px-2 py-1 flex items-center justify-between'
-        // Currently selected has 'bg-gray-500/20', others have 'hover:bg-gray-500/10'
-        // textContent may have "New" suffix
         const safeModel = JSON.stringify(modelName);
         const expression = `(async () => {
             const targetModel = ${safeModel};
-            
-            // Get all items in the model list
-            const modelItems = Array.from(document.querySelectorAll('div.cursor-pointer'))
-                .filter(e => e.className.includes('px-2 py-1 flex items-center justify-between'));
-            
-            if (modelItems.length === 0) {
-                return { ok: false, error: 'Model list not found. The dropdown may not be open.' };
+            const MODEL_RE = /(gemini|claude|gpt|opus|sonnet|flash|thinking)/i;
+            const normalize = (value) => (value || '').replace(/\\s+/g, ' ').replace(/\\bNew\\b/g, '').trim();
+            const equalsModel = (value) => normalize(value).toLowerCase() === normalize(targetModel).toLowerCase();
+
+            const findModelTrigger = () => {
+                const triggers = Array.from(document.querySelectorAll('[role="button"][aria-haspopup="dialog"]'));
+                return triggers.find((el) => MODEL_RE.test(normalize(el.textContent || ''))) || null;
+            };
+
+            const findModelDialog = (trigger) => {
+                const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+                const candidates = dialogs.filter((dialog) => {
+                    const text = normalize(dialog.textContent || '');
+                    return text.includes('Model') && MODEL_RE.test(text);
+                });
+
+                const visible = candidates.find((dialog) => {
+                    const style = window.getComputedStyle(dialog);
+                    return style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none';
+                });
+                if (visible) return visible;
+
+                if (trigger && trigger.parentElement) {
+                    const sibling = Array.from(trigger.parentElement.querySelectorAll('[role="dialog"]')).find((dialog) => {
+                        const text = normalize(dialog.textContent || '');
+                        return text.includes('Model') && MODEL_RE.test(text);
+                    });
+                    if (sibling) return sibling;
+                }
+
+                return candidates[0] || null;
+            };
+
+            const getDialogItems = (dialog) => Array.from(dialog.querySelectorAll('div.cursor-pointer'))
+                .map((el) => ({
+                    el,
+                    label: normalize((el.querySelector('.font-medium') && el.querySelector('.font-medium').textContent) || el.textContent || ''),
+                }))
+                .filter((item) => item.label.length > 0 && MODEL_RE.test(item.label));
+
+            const trigger = findModelTrigger();
+            if (!trigger) {
+                return { ok: false, error: 'Model selector button not found.' };
             }
-            
-            // Match target model by name (compare after removing New suffix)
-            const targetItem = modelItems.find(el => {
-                const text = (el.textContent || '').trim().replace(/New$/, '').trim();
-                return text === targetModel || text.toLowerCase() === targetModel.toLowerCase();
-            });
-            
+
+            const currentLabel = normalize(trigger.textContent || '');
+            if (equalsModel(currentLabel)) {
+                return { ok: true, model: currentLabel, alreadySelected: true };
+            }
+
+            trigger.click();
+            await new Promise(r => setTimeout(r, 500));
+
+            const dialog = findModelDialog(trigger);
+            if (!dialog) {
+                return { ok: false, error: 'Model list not found after opening the dropdown.' };
+            }
+
+            const modelItems = getDialogItems(dialog);
+            if (modelItems.length === 0) {
+                return { ok: false, error: 'Model list not found after opening the dropdown.' };
+            }
+
+            const targetItem = modelItems.find((item) => equalsModel(item.label));
             if (!targetItem) {
-                const available = modelItems.map(el => (el.textContent || '').trim().replace(/New$/, '').trim()).join(', ');
+                const available = modelItems.map(item => item.label).join(', ');
                 return { ok: false, error: 'Model "' + targetModel + '" not found. Available: ' + available };
             }
-            
-            // Check if already selected
-            if (targetItem.className.includes('bg-gray-500/20') && !targetItem.className.includes('hover:bg-gray-500/20')) {
-                return { ok: true, model: targetModel, alreadySelected: true };
+
+            const isSelected = targetItem.el.className.includes('bg-gray-500/20') && !targetItem.el.className.includes('hover:bg-gray-500/20');
+            if (isSelected) {
+                return { ok: true, model: targetItem.label, alreadySelected: true };
             }
-            
-            // Click to select model
-            targetItem.click();
+
+            targetItem.el.click();
             await new Promise(r => setTimeout(r, 500));
-            
-            // Verify selection was applied
-            const updatedItems = Array.from(document.querySelectorAll('div.cursor-pointer'))
-                .filter(e => e.className.includes('px-2 py-1 flex items-center justify-between'));
-            const selectedItem = updatedItems.find(el => {
-                const text = (el.textContent || '').trim().replace(/New$/, '').trim();
-                return text === targetModel || text.toLowerCase() === targetModel.toLowerCase();
-            });
-            
-            if (selectedItem && selectedItem.className.includes('bg-gray-500/20') && !selectedItem.className.includes('hover:bg-gray-500/20')) {
-                return { ok: true, model: targetModel, verified: true };
+
+            const updatedTrigger = findModelTrigger();
+            const updatedLabel = normalize(updatedTrigger ? updatedTrigger.textContent || '' : '');
+            if (equalsModel(updatedLabel)) {
+                return { ok: true, model: updatedLabel, verified: true };
             }
-            
-            // Click succeeded but verification failed
-            return { ok: true, model: targetModel, verified: false };
+
+            return { ok: true, model: targetItem.label, verified: false };
         })()`;
 
         try {
