@@ -1679,7 +1679,9 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
             // Wire up the telegramNotify function so scheduled tasks can broadcast to Telegram
             telegramNotify = async (text: string) => {
-                const bindings = telegramBindingRepo.findAll();
+                // Only send to direct/private chats (positive chatId), not group chats
+                const bindings = telegramBindingRepo.findAll()
+                    .filter((b: { chatId: string }) => !b.chatId.startsWith('-'));
                 if (bindings.length === 0) return;
                 const results = await Promise.allSettled(
                     bindings.map((b: { chatId: string }) =>
