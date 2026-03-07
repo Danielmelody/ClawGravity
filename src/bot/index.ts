@@ -1054,8 +1054,13 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         return false;
     }
 
-    // TODO: Future enhancement — notify bound channels when scheduled tasks execute.
-    // Requires mapping workspace paths back to Discord channels or Telegram chats.
+    // Shared notification function — gets wired up once Telegram platform initializes.
+    // scheduleJobCallback can call this to broadcast cron results to all bound chats.
+    let telegramNotify: ((text: string) => Promise<void>) | null = null;
+
+    // ClawCommandInterceptor — scans AI output for @claw directives and auto-executes them.
+    // Declared here (before scheduleJobCallback) so the callback can reference it.
+    let clawInterceptor: ClawCommandInterceptor | null = null;
 
     // Resolve Claw workspace — dedicated directory for the agent's tasks and memory.
     // This keeps scheduled work isolated from the user's active conversations.
@@ -1303,11 +1308,57 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             }
 
             const injectResult = await cdp.injectMessage(schedule.prompt);
-            if (injectResult.ok) {
-                logger.done(`[ScheduleJob] Schedule #${schedule.id} executed successfully`);
-            } else {
+            if (!injectResult.ok) {
                 logger.error(`[ScheduleJob] Schedule #${schedule.id} inject failed: ${injectResult.error}`);
+                return;
             }
+
+            logger.done(`[ScheduleJob] Schedule #${schedule.id} prompt injected — monitoring response...`);
+
+            // Monitor the AI response and relay to Telegram
+            const monitor = new ResponseMonitor({
+                cdpService: cdp,
+                pollIntervalMs: 2000,
+                maxDurationMs: 300_000,
+                stopGoneConfirmCount: 3,
+                extractionMode: config.extractionMode,
+                onComplete: async (finalText) => {
+                    const outputText = finalText?.trim() || '';
+                    if (outputText.length > 0) {
+                        logger.divider(`Schedule #${schedule.id} Response`);
+                        console.info(outputText.slice(0, 500));
+                        logger.divider();
+
+                        // Intercept @claw commands
+                        const interceptor = clawInterceptor;
+                        if (interceptor) {
+                            const results = await interceptor.execute(outputText);
+                            for (const r of results) {
+                                logger.info(`[ScheduleJob] @claw:${r.command.action} → ${r.success ? 'OK' : 'FAIL'}: ${r.message}`);
+                            }
+                        }
+
+                        // Broadcast to Telegram
+                        if (telegramNotify) {
+                            const header = `🦞 <b>Schedule #${schedule.id}</b>\n\n`;
+                            const truncated = outputText.length > 3500 ? outputText.slice(0, 3500) + '...' : outputText;
+                            await (telegramNotify as (text: string) => Promise<void>)(header + truncated).catch((e: any) =>
+                                logger.error(`[ScheduleJob] Telegram notify failed:`, e?.message || e)
+                            );
+                        }
+                    } else {
+                        logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Empty response from Antigravity`);
+                    }
+                },
+                onTimeout: async (lastText) => {
+                    logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Response timed out`);
+                    if (telegramNotify && lastText) {
+                        await (telegramNotify as (text: string) => Promise<void>)(`🦞 Schedule #${schedule.id} timed out:\n\n${lastText.slice(0, 2000)}`).catch(() => { });
+                    }
+                },
+            });
+            monitor.start();
+
         } catch (err: any) {
             const msg = err?.message || String(err);
             if (msg.includes('No matching') || msg.includes('ECONNREFUSED') || msg.includes('not found')) {
@@ -1324,9 +1375,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s)`);
     }
 
-    // ClawCommandInterceptor — scans AI output for @claw directives and auto-executes them.
-    // This allows Antigravity to self-invoke ClawGravity features (e.g. schedule tasks).
-    const clawInterceptor = new ClawCommandInterceptor({
+    // Now instantiate the interceptor (after scheduleJobCallback is defined)
+    clawInterceptor = new ClawCommandInterceptor({
         scheduleService,
         jobCallback: scheduleJobCallback,
         clawWorkspacePath,
@@ -1626,6 +1676,22 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 scheduleJobCallback,
                 clawInterceptor,
             });
+
+            // Wire up the telegramNotify function so scheduled tasks can broadcast to Telegram
+            telegramNotify = async (text: string) => {
+                const bindings = telegramBindingRepo.findAll();
+                if (bindings.length === 0) return;
+                const results = await Promise.allSettled(
+                    bindings.map((b: { chatId: string }) =>
+                        telegramBot.api.sendMessage(b.chatId, text, { parse_mode: 'HTML' })
+                    ),
+                );
+                const failed = results.filter((r: PromiseSettledResult<unknown>) => r.status === 'rejected');
+                if (failed.length > 0) {
+                    logger.warn(`[Claw] Telegram notify failed for ${failed.length}/${bindings.length} chat(s)`);
+                }
+            };
+            logger.debug(`[Claw] Telegram notify wired up for schedule results`);
 
             // Compose select handlers: project select + mode select
             const projectSelectHandler = createTelegramSelectHandler({
