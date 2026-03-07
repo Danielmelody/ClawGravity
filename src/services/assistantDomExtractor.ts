@@ -180,6 +180,7 @@ export function extractAssistantSegmentsPayloadScript(): string {
         if (/^show details$/i.test(normalized)) return false;
         if (normalized.length > 180) return false;
         if (normalized.split('\\n').length > 3) return false;
+        if (!looksLikeActivityLog(normalized)) return false;
         return true;
     };
 
@@ -324,17 +325,16 @@ export function extractAssistantSegmentsPayloadScript(): string {
     for (var di = 0; di < details.length; di++) {
         var detail = details[di];
         var summary = detail.querySelector('summary');
-        if (summary) {
-            var summaryText = (summary.textContent || '').trim();
-            if (summaryText) {
-                segments.push({
-                    kind: 'thinking',
-                    text: summaryText,
-                    role: 'assistant',
-                    messageIndex: 0,
-                    domPath: 'details:nth(' + di + ') summary'
-                });
-            }
+        var summaryText = summary ? (summary.textContent || '').trim() : '';
+        var isThinking = /^(?:thought|thinking)/i.test(summaryText);
+        if (summaryText) {
+            segments.push({
+                kind: 'thinking',
+                text: summaryText,
+                role: 'assistant',
+                messageIndex: 0,
+                domPath: 'details:nth(' + di + ') summary'
+            });
         }
         // Extract child content (tool-call / tool-result) inside <details>
         var children = detail.children;
@@ -344,14 +344,25 @@ export function extractAssistantSegmentsPayloadScript(): string {
             var childText = (child.innerText || child.textContent || '').trim();
             childText = childText.replace(/\\s*show details\\s*$/i, '').trim();
             if (!childText || childText.length < 2) continue;
-            var childKind = looksLikeToolOutput(childText) ? 'tool-result' : 'tool-call';
-            segments.push({
-                kind: childKind,
-                text: childText.slice(0, 300),
-                role: 'assistant',
-                messageIndex: 0,
-                domPath: 'details:nth(' + di + ') child:nth(' + ci + ')'
-            });
+            
+            if (isThinking) {
+                segments.push({
+                    kind: 'assistant-body',
+                    text: '<blockquote>' + (child.innerHTML || childText) + '</blockquote>',
+                    role: 'assistant',
+                    messageIndex: 0,
+                    domPath: 'details:nth(' + di + ') child:nth(' + ci + ')'
+                });
+            } else {
+                var childKind = looksLikeToolOutput(childText) ? 'tool-result' : 'tool-call';
+                segments.push({
+                    kind: childKind,
+                    text: childText.slice(0, 300),
+                    role: 'assistant',
+                    messageIndex: 0,
+                    domPath: 'details:nth(' + di + ') child:nth(' + ci + ')'
+                });
+            }
         }
     }
 
