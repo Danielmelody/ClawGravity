@@ -556,21 +556,75 @@ function startPassiveResponseMonitor(
         prev.stop().catch(() => { });
     }
 
+    const startTime = Date.now();
+    const processLogBuffer = new ProcessLogBuffer({ maxChars: 3500, maxEntries: 120, maxEntryLength: 220 });
+    let lastActivityLogText = '';
+    let latestPreviewText = '';
+    let statusMsg: PlatformSentMessage | null = null;
+    let lastStatusRender = '';
+    let statusMsgSent = false;
+
+    const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout') => {
+        if (!statusMsg) return;
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        const nextText = buildTelegramStatusText({
+            activityLogText: lastActivityLogText,
+            previewText: mode === 'streaming' ? latestPreviewText : '',
+            elapsedSeconds: elapsed,
+            mode,
+        });
+        if (!nextText || nextText === lastStatusRender) return;
+        lastStatusRender = nextText;
+        statusMsg.edit({ text: nextText }).catch(() => { });
+    };
+
+    const ensureStatusMsg = async () => {
+        if (!statusMsgSent) {
+            statusMsgSent = true;
+            statusMsg = await channel.send({ text: '🖥️ Processing...' }).catch(() => null);
+        }
+    };
+
     const monitor = new ResponseMonitor({
         cdpService: cdp,
         pollIntervalMs: 2000,
         maxDurationMs: 300_000,
         extractionMode,
+
+        onProcessLog: (logText) => {
+            if (logText && logText.trim().length > 0) {
+                lastActivityLogText = processLogBuffer.append(logText);
+            }
+            ensureStatusMsg().then(() => refreshStatusMessage('streaming'));
+        },
+
+        onProgress: (progressText) => {
+            latestPreviewText = progressText || '';
+            ensureStatusMsg().then(() => refreshStatusMessage('streaming'));
+        },
+
         onComplete: async (finalText: string) => {
             passiveResponseMonitors.delete(projectName);
             activeMonitors?.delete(`passive:${projectName}`);
-            if (!finalText || finalText.trim().length === 0) return;
+            if (!finalText || finalText.trim().length === 0) {
+                // Clean up status message if no output
+                if (statusMsg) statusMsg.delete().catch(() => { });
+                return;
+            }
 
-            await sendTextChunked(channel, finalText);
+            // Deliver final text — merge into status message or send new
+            if (statusMsg) {
+                await deliverFinalTelegramText(statusMsg, channel, finalText);
+            } else {
+                await sendTextChunked(channel, finalText);
+            }
         },
         onTimeout: () => {
             passiveResponseMonitors.delete(projectName);
             activeMonitors?.delete(`passive:${projectName}`);
+            if (statusMsg) {
+                refreshStatusMessage('timeout');
+            }
         },
     });
 

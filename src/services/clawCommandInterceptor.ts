@@ -1,13 +1,15 @@
 import { logger } from '../utils/logger';
+import * as fs from 'fs';
 import { ScheduleService } from './scheduleService';
 import type { ScheduleRecord } from '../database/scheduleRepository';
 import type { JobCallback } from './scheduleService';
+import type { AgentRouter } from './agentRouter';
 
 /**
  * Parsed @claw command from Antigravity's response text.
  */
 export interface ClawCommand {
-    action: string;           // e.g. 'schedule_add', 'schedule_list', 'schedule_remove', 'memory_write'
+    action: string;           // e.g. 'schedule_add', 'schedule_list', 'schedule_remove', 'agent_send', 'agent_list'
     params: Record<string, string>;
     raw: string;              // The original matched block
 }
@@ -110,15 +112,23 @@ export class ClawCommandInterceptor {
     private scheduleService: ScheduleService;
     private jobCallback: JobCallback;
     private clawWorkspacePath: string;
+    private agentRouter?: AgentRouter;
+    /** Callback invoked when an agent_send response is saved — injects notification back to sender. */
+    private onAgentResponse?: (fromAgent: string, filePath: string, preview: string) => void;
 
     constructor(opts: {
         scheduleService: ScheduleService;
         jobCallback: JobCallback;
         clawWorkspacePath: string;
+        agentRouter?: AgentRouter;
+        /** Called when agent_send response is saved — inject short notification to sender. */
+        onAgentResponse?: (fromAgent: string, filePath: string, preview: string) => void;
     }) {
         this.scheduleService = opts.scheduleService;
         this.jobCallback = opts.jobCallback;
         this.clawWorkspacePath = opts.clawWorkspacePath;
+        this.agentRouter = opts.agentRouter;
+        this.onAgentResponse = opts.onAgentResponse;
     }
 
     /**
@@ -150,6 +160,12 @@ export class ClawCommandInterceptor {
                     return this.handleScheduleList(cmd);
                 case 'schedule_remove':
                     return this.handleScheduleRemove(cmd);
+                case 'agent_list':
+                    return this.handleAgentList(cmd);
+                case 'agent_send':
+                    return await this.handleAgentSend(cmd);
+                case 'agent_read':
+                    return this.handleAgentRead(cmd);
                 default:
                     return {
                         command: cmd,
@@ -223,5 +239,120 @@ export class ClawCommandInterceptor {
             success: removed,
             message: removed ? `Schedule #${id} removed` : `Schedule #${id} not found`,
         };
+    }
+
+    private handleAgentList(cmd: ClawCommand): ClawCommandResult {
+        if (!this.agentRouter) {
+            return {
+                command: cmd,
+                success: false,
+                message: 'Agent router is not available. Multi-agent communication is not configured.',
+            };
+        }
+
+        const agents = this.agentRouter.listAgents();
+        const list = agents.length > 0
+            ? agents.map(name => `• ${name}`).join('\n')
+            : '(none)';
+
+        logger.info(`[ClawInterceptor] agent_list: ${agents.length} agent(s) available`);
+        return {
+            command: cmd,
+            success: true,
+            message: `Available agents (${agents.length}):\n${list}`,
+        };
+    }
+
+    private async handleAgentSend(cmd: ClawCommand): Promise<ClawCommandResult> {
+        if (!this.agentRouter) {
+            return {
+                command: cmd,
+                success: false,
+                message: 'Agent router is not available. Multi-agent communication is not configured.',
+            };
+        }
+
+        const to = cmd.params.to;
+        const message = cmd.params.message || cmd.params.task;
+
+        if (!to || !message) {
+            return {
+                command: cmd,
+                success: false,
+                message: 'Missing required params: to and message',
+            };
+        }
+
+        const parentAgent = require('path').basename(this.clawWorkspacePath);
+
+        logger.info(`[ClawInterceptor] agent_send: "${parentAgent}" → "${to}" (${message.length} chars)`);
+
+        const result = await this.agentRouter.delegateTask({
+            parentAgent,
+            targetAgent: to,
+            task: message,
+        });
+
+        if (result.ok && result.summary) {
+            // Relay the summary back to the parent agent
+            if (this.onAgentResponse) {
+                this.onAgentResponse(to, result.summary, result.outputPath ?? '');
+            }
+
+            logger.done(`[ClawInterceptor] Sub-agent "${to}" completed — summary: ${result.summary.length} chars`);
+            return {
+                command: cmd,
+                success: true,
+                message: [
+                    `[Task completed by ${to}]`,
+                    '',
+                    result.summary,
+                    '',
+                    `Full output (${result.outputLength} chars): ${result.outputPath}`,
+                ].join('\n'),
+            };
+        } else {
+            return {
+                command: cmd,
+                success: false,
+                message: result.error || `Sub-agent "${to}" failed to complete the task`,
+            };
+        }
+    }
+
+    private handleAgentRead(cmd: ClawCommand): ClawCommandResult {
+        const filePath = cmd.params.file || cmd.params.path;
+
+        if (!filePath) {
+            return {
+                command: cmd,
+                success: false,
+                message: 'Missing required param: file (path to response file)',
+            };
+        }
+
+        try {
+            if (!fs.existsSync(filePath)) {
+                return {
+                    command: cmd,
+                    success: false,
+                    message: `Response file not found: ${filePath}`,
+                };
+            }
+
+            const content = fs.readFileSync(filePath, 'utf-8');
+            logger.info(`[ClawInterceptor] agent_read: ${filePath} (${content.length} chars)`);
+            return {
+                command: cmd,
+                success: true,
+                message: content,
+            };
+        } catch (err: any) {
+            return {
+                command: cmd,
+                success: false,
+                message: `Failed to read response file: ${err?.message}`,
+            };
+        }
     }
 }

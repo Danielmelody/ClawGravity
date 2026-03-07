@@ -52,6 +52,7 @@ import { CdpService } from '../services/cdpService';
 import { ChatSessionService } from '../services/chatSessionService';
 import { ResponseMonitor, RESPONSE_SELECTORS } from '../services/responseMonitor';
 import { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
+import { AgentRouter } from '../services/agentRouter';
 import { ensureAntigravityRunning } from '../services/antigravityLauncher';
 import { getAntigravityCdpHint } from '../utils/pathUtils';
 import { AutoAcceptService } from '../services/autoAcceptService';
@@ -1220,6 +1221,47 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         'Each scheduled task runs in a new chat session with NO previous context.',
         'CLAW.md is your ONLY way to persist state across sessions.',
         '',
+        '## Multi-Agent Communication',
+        '',
+        'You can communicate with other Antigravity instances running on this machine.',
+        'Each instance is identified by its workspace/project name.',
+        '',
+        '### List available agents',
+        '',
+        '````',
+        '```@claw',
+        'action: agent_list',
+        '```',
+        '````',
+        '',
+        '### Delegate a task to another agent',
+        '',
+        '````',
+        '```@claw',
+        'action: agent_send',
+        'to: ProjectName',
+        'message: Describe the task you want the sub-agent to perform.',
+        '```',
+        '````',
+        '',
+        '- The sub-agent runs the task in a new isolated session.',
+        '- A concise **summary** is automatically extracted and injected back into your conversation.',
+        '- The full output is saved to a file (path shown in result). Use `agent_read` if you need the full details.',
+        '- Use `agent_list` first to discover available agents.',
+        '- The sub-agent sees your task with a `[Sub-Agent Task]` prefix.',
+        '',
+        '### Read an agent response',
+        '',
+        '````',
+        '```@claw',
+        'action: agent_read',
+        'file: /path/to/response/file.md',
+        '```',
+        '````',
+        '',
+        '- Use this to read the full response after receiving a notification.',
+        '- Only read when you need the full content — the preview may be sufficient.',
+        '',
         '## Important Rules',
         '',
         '- Each scheduled task opens a **new session** — no conversation history carries over',
@@ -1325,31 +1367,76 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 stopGoneConfirmCount: 3,
                 extractionMode: config.extractionMode,
                 onComplete: async (finalText) => {
-                    const outputText = finalText?.trim() || '';
-                    if (outputText.length > 0) {
-                        logger.divider(`Schedule #${schedule.id} Response`);
+                    let outputText = finalText?.trim() || '';
+                    if (outputText.length === 0) {
+                        logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Empty response from Antigravity`);
+                        return;
+                    }
+
+                    const MAX_CLAW_DEPTH = 3;
+                    let clawDepth = 0;
+
+                    // Process response — handle @claw command chains with follow-up injection
+                    while (true) {
+                        const label = clawDepth > 0 ? ` (follow-up #${clawDepth})` : '';
+                        logger.divider(`Schedule #${schedule.id} Response${label}`);
                         console.info(outputText.slice(0, 500));
                         logger.divider();
 
-                        // Intercept @claw commands
-                        const interceptor = clawInterceptor;
-                        if (interceptor) {
-                            const results = await interceptor.execute(outputText);
-                            for (const r of results) {
-                                logger.info(`[ScheduleJob] @claw:${r.command.action} → ${r.success ? 'OK' : 'FAIL'}: ${r.message}`);
-                            }
-                        }
-
                         // Broadcast to Telegram
                         if (telegramNotify) {
-                            const header = `🦞 <b>Schedule #${schedule.id}</b>\n\n`;
+                            const header = `🦞 <b>Schedule #${schedule.id}${label}</b>\n\n`;
                             const truncated = outputText.length > 3500 ? outputText.slice(0, 3500) + '...' : outputText;
                             await (telegramNotify as (text: string) => Promise<void>)(header + truncated).catch((e: any) =>
                                 logger.error(`[ScheduleJob] Telegram notify failed:`, e?.message || e)
                             );
                         }
-                    } else {
-                        logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Empty response from Antigravity`);
+
+                        // Intercept @claw commands
+                        const interceptor = clawInterceptor;
+                        if (!interceptor || clawDepth >= MAX_CLAW_DEPTH) break;
+
+                        const results = await interceptor.execute(outputText);
+                        if (results.length === 0) break;
+
+                        for (const r of results) {
+                            logger.info(`[ScheduleJob] @claw:${r.command.action} → ${r.success ? 'OK' : 'FAIL'}: ${r.message}`);
+                        }
+
+                        // Format results and inject back into Antigravity for AI continuation
+                        const resultLines = results.map(r =>
+                            `@claw:${r.command.action} — ${r.success ? 'OK' : 'FAIL'}\n${r.message}`
+                        );
+                        const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
+
+                        await new Promise(r => setTimeout(r, 2000));
+                        const injectResult = await cdp.injectMessage(feedback);
+                        if (!injectResult.ok) {
+                            logger.error(`[ScheduleJob] Failed to inject @claw results: ${injectResult.error}`);
+                            break;
+                        }
+
+                        logger.done(`[ScheduleJob] @claw results injected — awaiting follow-up (depth=${clawDepth + 1})...`);
+
+                        // Wait for the follow-up AI response
+                        outputText = await new Promise<string>((resolve) => {
+                            const followUp = new ResponseMonitor({
+                                cdpService: cdp,
+                                pollIntervalMs: 2000,
+                                maxDurationMs: 300_000,
+                                stopGoneConfirmCount: 3,
+                                extractionMode: config.extractionMode,
+                                onComplete: async (text) => resolve(text?.trim() || ''),
+                                onTimeout: async () => {
+                                    logger.warn(`[ScheduleJob] @claw follow-up timed out (depth=${clawDepth + 1})`);
+                                    resolve('');
+                                },
+                            });
+                            followUp.start();
+                        });
+
+                        clawDepth++;
+                        if (outputText.length === 0) break;
                     }
                 },
                 onTimeout: async (lastText) => {
@@ -1377,11 +1464,43 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s)`);
     }
 
+    // Create AgentRouter for multi-agent communication
+    const agentRouter = new AgentRouter({
+        pool: bridge.pool,
+        chatSessionService,
+        workspaceService,
+        extractionMode: config.extractionMode,
+    });
+    logger.info(`[Claw] Agent router ready — multi-agent communication enabled`);
+
     // Now instantiate the interceptor (after scheduleJobCallback is defined)
     clawInterceptor = new ClawCommandInterceptor({
         scheduleService,
         jobCallback: scheduleJobCallback,
         clawWorkspacePath,
+        agentRouter,
+        onAgentResponse: async (fromAgent: string, summary: string, outputPath: string) => {
+            // Inject the concise summary back to the parent agent (context-safe)
+            try {
+                const senderCdp = getCurrentCdp(bridge);
+                if (senderCdp) {
+                    const notification = [
+                        `[Sub-Agent Result from: ${fromAgent}]`,
+                        '',
+                        summary,
+                        '',
+                        outputPath ? `Full output saved to: ${outputPath}` : '',
+                    ].filter(Boolean).join('\n');
+
+                    await senderCdp.injectMessage(notification);
+                    logger.done(`[Claw] Injected sub-agent summary from "${fromAgent}" (${summary.length} chars)`);
+                } else {
+                    logger.warn(`[Claw] Cannot inject sub-agent result from "${fromAgent}": no active CDP connection`);
+                }
+            } catch (err: any) {
+                logger.error(`[Claw] Failed to inject sub-agent result: ${err?.message || err}`);
+            }
+        },
     });
     logger.info(`[Claw] Command interceptor ready — @claw directives in AI responses will auto-execute`);
 
