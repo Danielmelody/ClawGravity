@@ -81,9 +81,9 @@ describe('registerSlashCommands', () => {
         expect(names).toContain('autoaccept');
     });
 
-    it('includes join and mirror commands in registration targets', () => {
+    it('includes history and mirror commands in registration targets', () => {
         const names = slashCommands.map((cmd) => cmd.toJSON().name);
-        expect(names).toContain('join');
+        expect(names).toContain('history');
         expect(names).toContain('mirror');
     });
 

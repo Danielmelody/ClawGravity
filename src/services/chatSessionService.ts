@@ -16,6 +16,13 @@ export interface ChatSessionInfo {
     hasActiveChat: boolean;
 }
 
+export interface ConversationHistoryEntry {
+    /** Speaker role in the conversation */
+    role: 'user' | 'assistant';
+    /** Plain-text message body */
+    text: string;
+}
+
 /** Script to get the state of the new chat button */
 const GET_NEW_CHAT_BUTTON_SCRIPT = `(() => {
     const btn = document.querySelector('[data-tooltip-id="new-conversation-tooltip"]');
@@ -106,15 +113,10 @@ const SCRAPE_PAST_CONVERSATIONS_SCRIPT = `(() => {
     const items = [];
     const seen = new Set();
 
-    // Find the scrollable conversation list container within the side panel
-    const containers = Array.from(panel.querySelectorAll('div[class*="overflow-auto"], div[class*="overflow-y-scroll"]'));
-    const container = containers.find((c) => isVisible(c) && c.querySelectorAll('div[class*="cursor-pointer"]').length > 0);
-    if (!container) return null;
-
     // Detect the "Other Conversations" section boundary.
     // Sessions below this header belong to other projects and must be excluded.
     let boundaryTop = Infinity;
-    const headerCandidates = container.querySelectorAll('div[class*="text-xs"][class*="opacity"]');
+    const headerCandidates = panel.querySelectorAll('div[class*="text-xs"]');
     for (const el of headerCandidates) {
         if (!isVisible(el)) continue;
         const t = normalize(el.textContent || '');
@@ -125,9 +127,10 @@ const SCRAPE_PAST_CONVERSATIONS_SCRIPT = `(() => {
     }
 
     // Each session row is a div with cursor-pointer
-    const rows = Array.from(container.querySelectorAll('div[class*="cursor-pointer"]'));
+    const rows = Array.from(panel.querySelectorAll('div[class*="cursor-pointer"]'));
     for (const row of rows) {
         if (!isVisible(row)) continue;
+        if (!row.querySelector('span.text-sm')) continue;
         // Skip rows that are below the "Other Conversations" boundary
         if (row.getBoundingClientRect().top >= boundaryTop) continue;
         // Find the session title — nested span within the row
@@ -139,7 +142,7 @@ const SCRAPE_PAST_CONVERSATIONS_SCRIPT = `(() => {
             if (/^\\d+\\s+(min|hr|hour|day|sec|week|month|year)s?\\s+ago$/i.test(t)) continue;
             // Skip very short or action-like labels
             if (t.length < 2 || t.length > 200) continue;
-            if (/^(show\\s+\\d+\\s+more|new|past|history|settings|close|menu)\\b/i.test(t)) continue;
+            if (/^(show\\s+\\d+\\s+more|new|past|history|settings|close|menu|running\\s+in|recent\\s+in|other\\s+conversations?)\\b/i.test(t)) continue;
             title = t;
             break;
         }
@@ -172,6 +175,156 @@ const FIND_SHOW_MORE_BUTTON_SCRIPT = `(() => {
         }
     }
     return { found: false, x: 0, y: 0 };
+})()`;
+
+/**
+ * Scrape all currently loaded conversation messages from the active chat.
+ * Returns chronological user/assistant messages from the Cascade panel.
+ */
+const SCRAPE_CONVERSATION_HISTORY_SCRIPT = `(() => {
+    const panel = document.querySelector('.antigravity-agent-side-panel');
+    const scope = panel || document;
+    const isVisible = (el) => !!el && el instanceof HTMLElement && el.offsetParent !== null;
+    const normalize = (text) => (text || '').replace(/\\r/g, '').replace(/\\n{3,}/g, '\\n\\n').trim();
+    const extractVisibleText = (el) => {
+        if (!el || !(el instanceof HTMLElement)) return '';
+        const clone = el.cloneNode(true);
+        for (const style of Array.from(clone.querySelectorAll('style'))) {
+            style.remove();
+        }
+        return normalize(clone.innerText || clone.textContent || '');
+    };
+    const shouldSkipAssistant = (el, text, selector) => {
+        if (!text) return true;
+        if (el.closest('details')) return true;
+        if (el.closest('[class*="feedback"], footer')) return true;
+        if (el.closest('.notify-user-container')) return true;
+        if (el.closest('[role="dialog"]')) return true;
+        if (el.querySelector(selector + ' ' + selector)) return true;
+        if (el.querySelector(selector) && el.querySelector(selector) !== el) return true;
+        const flat = text.toLowerCase().replace(/\\s+/g, ' ');
+        if (flat.startsWith('/* copied from remark-github-blockquote-alert/alert.css */')) return true;
+        if (flat === 'good bad' || flat === 'good' || flat === 'bad') return true;
+        return false;
+    };
+
+    const entries = [];
+
+    const userBubbles = Array.from(scope.querySelectorAll(
+        '[class*="bg-gray-500/15"][class*="rounded-lg"][class*="select-text"]'
+    )).filter((el) => isVisible(el) && !el.querySelector('[class*="bg-gray-500/15"][class*="select-text"]'));
+
+    for (const bubble of userBubbles) {
+        const textEl = bubble.querySelector('.whitespace-pre-wrap')
+            || bubble.querySelector('[style*="word-break"]');
+        const text = extractVisibleText(textEl instanceof HTMLElement ? textEl : bubble);
+        if (!text) continue;
+        entries.push({ node: bubble, role: 'user', text });
+    }
+
+    const assistantSelector = [
+        '.rendered-markdown',
+        '.leading-relaxed.select-text',
+        '[data-message-author-role="assistant"]',
+        '[data-message-role="assistant"]',
+        '[class*="assistant-message"]',
+        '[class*="message-content"]',
+        '[class*="markdown-body"]',
+        '.prose'
+    ].join(', ');
+    const assistantNodes = Array.from(scope.querySelectorAll(assistantSelector));
+
+    for (const node of assistantNodes) {
+        if (!isVisible(node)) continue;
+        const text = extractVisibleText(node);
+        if (shouldSkipAssistant(node, text, assistantSelector)) continue;
+        entries.push({ node, role: 'assistant', text });
+    }
+
+    entries.sort((a, b) => {
+        if (a.node === b.node) return 0;
+        const pos = a.node.compareDocumentPosition(b.node);
+        return (pos & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
+    });
+
+    return {
+        messages: entries.map((entry) => ({
+            role: entry.role,
+            text: entry.text,
+        })),
+    };
+})()`;
+
+/**
+ * Check whether the active chat has conversation content loaded yet.
+ * Used after switching to a history session so scraping does not run too early.
+ */
+const CONVERSATION_HISTORY_READY_SCRIPT = `(() => {
+    const panel = document.querySelector('.antigravity-agent-side-panel');
+    const scope = panel || document;
+    const isVisible = (el) => !!el && el instanceof HTMLElement && el.offsetParent !== null;
+    const userCount = Array.from(scope.querySelectorAll('[class*="bg-gray-500/15"][class*="select-text"]'))
+        .filter((el) => isVisible(el)).length;
+    const assistantCount = Array.from(scope.querySelectorAll('.leading-relaxed.select-text, .rendered-markdown, [data-message-role="assistant"], [data-message-author-role="assistant"]'))
+        .filter((el) => isVisible(el)).length;
+    return {
+        ready: userCount > 0 || assistantCount > 0,
+        userCount,
+        assistantCount,
+    };
+})()`;
+
+/**
+ * Scroll the active conversation upward to load older messages.
+ * Returns whether a scroll container was found and whether it can still scroll.
+ */
+const LOAD_OLDER_CONVERSATION_HISTORY_SCRIPT = `(() => {
+    const panel = document.querySelector('.antigravity-agent-side-panel');
+    const scope = panel || document;
+    const candidates = [];
+    const seen = new Set();
+    const consider = (el) => {
+        if (!el || !(el instanceof HTMLElement) || seen.has(el)) return;
+        seen.add(el);
+        if (el.scrollHeight > el.clientHeight + 20) {
+            candidates.push(el);
+        }
+    };
+
+    const anchors = Array.from(scope.querySelectorAll(
+        '[class*="bg-gray-500/15"][class*="select-text"], .rendered-markdown, [data-message-role="assistant"], [data-message-author-role="assistant"]'
+    ));
+
+    for (const anchor of anchors) {
+        let current = anchor instanceof HTMLElement ? anchor : null;
+        let depth = 0;
+        while (current && depth < 8) {
+            consider(current);
+            current = current.parentElement;
+            depth += 1;
+        }
+    }
+    consider(panel);
+    consider(document.scrollingElement);
+    consider(document.documentElement);
+    consider(document.body);
+
+    if (candidates.length === 0) {
+        return { ok: false, error: 'scroll container not found', atTop: true, scrolled: false };
+    }
+
+    candidates.sort((a, b) => b.scrollHeight - a.scrollHeight);
+    const container = candidates[0];
+    const before = container.scrollTop;
+    const delta = Math.max(Math.round(container.clientHeight * 0.9), 400);
+    container.scrollTop = Math.max(0, before - delta);
+    container.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+    return {
+        ok: true,
+        atTop: container.scrollTop <= 0,
+        scrolled: container.scrollTop !== before,
+    };
 })()`;
 
 /**
@@ -454,6 +607,8 @@ export class ChatSessionService {
     private static readonly ACTIVATE_SESSION_MAX_WAIT_MS = 30000;
     private static readonly ACTIVATE_SESSION_RETRY_INTERVAL_MS = 800;
     private static readonly LIST_SESSIONS_TARGET = 20;
+    private static readonly DEFAULT_HISTORY_MAX_MESSAGES = 500;
+    private static readonly DEFAULT_HISTORY_MAX_SCROLL_STEPS = 40;
 
     /**
      * List recent sessions by opening the Past Conversations panel.
@@ -492,11 +647,9 @@ export class ChatSessionService {
                 const panel = quickInputPanels.find((el) => isVisible(el))
                     || document.querySelector('.antigravity-agent-side-panel');
                 if (!panel) return false;
-                const containers = Array.from(
-                    panel.querySelectorAll('div[class*="overflow-auto"], div[class*="overflow-y-scroll"]')
-                );
-                return containers.some((c) =>
-                    isVisible(c) && c.querySelector('div[class*="cursor-pointer"]')
+                const rows = Array.from(panel.querySelectorAll('div[class*="cursor-pointer"]'));
+                return rows.some((row) =>
+                    isVisible(row) && row.querySelector('span.text-sm')
                 );
             })()`;
             let panelReady = false;
@@ -528,10 +681,12 @@ export class ChatSessionService {
                     await new Promise((r) => setTimeout(r, 500));
 
                     // Step 6: Re-scrape
-                    scrapeResult = await this.evaluateOnAnyContext(
+                    const expandedScrapeResult = await this.evaluateOnAnyContext(
                         cdpService, SCRAPE_PAST_CONVERSATIONS_SCRIPT, false,
                     );
-                    sessions = scrapeResult?.sessions ?? [];
+                    if (Array.isArray(expandedScrapeResult?.sessions) && expandedScrapeResult.sessions.length > 0) {
+                        sessions = expandedScrapeResult.sessions;
+                    }
                 }
             }
 
@@ -543,6 +698,61 @@ export class ChatSessionService {
                 await this.closePanelWithEscape(cdpService);
             }
         }
+    }
+
+    /**
+     * Load the active conversation history by repeatedly scrolling upward until
+     * no older messages can be discovered or the configured limits are reached.
+     */
+    async getConversationHistory(
+        cdpService: CdpService,
+        options?: {
+            maxMessages?: number;
+            maxScrollSteps?: number;
+        },
+    ): Promise<{ messages: ConversationHistoryEntry[]; truncated: boolean }> {
+        const maxMessages = Math.max(1, options?.maxMessages ?? ChatSessionService.DEFAULT_HISTORY_MAX_MESSAGES);
+        const maxScrollSteps = Math.max(0, options?.maxScrollSteps ?? ChatSessionService.DEFAULT_HISTORY_MAX_SCROLL_STEPS);
+
+        await this.waitForConversationHistoryReady(cdpService);
+        let messages = await this.scrapeConversationHistory(cdpService);
+        let previousCount = messages.length;
+        let stagnantSteps = 0;
+        let truncated = messages.length >= maxMessages;
+
+        for (let step = 0; step < maxScrollSteps && !truncated; step += 1) {
+            const scrollState = await this.evaluateOnAnyContext(
+                cdpService,
+                LOAD_OLDER_CONVERSATION_HISTORY_SCRIPT,
+                false,
+            );
+            if (!scrollState?.ok) {
+                break;
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            await this.waitForConversationHistoryReady(cdpService, 1500, 150);
+            const refreshed = await this.scrapeConversationHistory(cdpService);
+            if (refreshed.length > previousCount) {
+                messages = refreshed;
+                previousCount = refreshed.length;
+                stagnantSteps = 0;
+                truncated = messages.length >= maxMessages;
+                continue;
+            }
+
+            stagnantSteps += 1;
+            if (scrollState.atTop || stagnantSteps >= 2 || !scrollState.scrolled) {
+                break;
+            }
+        }
+
+        if (messages.length > maxMessages) {
+            messages = messages.slice(messages.length - maxMessages);
+            truncated = true;
+        }
+
+        return { messages, truncated };
     }
 
     /**
@@ -561,6 +771,47 @@ export class ChatSessionService {
         } catch (_) { /* best-effort cleanup */ }
     }
 
+    private async scrapeConversationHistory(
+        cdpService: CdpService,
+    ): Promise<ConversationHistoryEntry[]> {
+        try {
+            const result = await this.evaluateOnAnyContext(
+                cdpService,
+                SCRAPE_CONVERSATION_HISTORY_SCRIPT,
+                false,
+            );
+            if (!Array.isArray(result?.messages)) {
+                return [];
+            }
+            return result.messages.filter((message: any) =>
+                (message?.role === 'user' || message?.role === 'assistant')
+                && typeof message?.text === 'string'
+                && message.text.trim().length > 0,
+            );
+        } catch (_) {
+            return [];
+        }
+    }
+
+    private async waitForConversationHistoryReady(
+        cdpService: CdpService,
+        maxWaitMs = 4000,
+        pollIntervalMs = 200,
+    ): Promise<void> {
+        const deadline = Date.now() + maxWaitMs;
+        while (Date.now() < deadline) {
+            const state = await this.evaluateOnAnyContext(
+                cdpService,
+                CONVERSATION_HISTORY_READY_SCRIPT,
+                false,
+            );
+            if (state?.ready) {
+                return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        }
+    }
+
     /**
      * Evaluate a script on the first context that returns a truthy value.
      */
@@ -576,7 +827,15 @@ export class ChatSessionService {
                     expression, returnByValue: true, awaitPromise, contextId: ctx.id,
                 });
                 const value = result?.result?.value;
-                if (value) return value;
+                if (value === undefined || value === null || value === false) continue;
+                if (typeof value === 'object' && value !== null) {
+                    if ('found' in value && !value.found) continue;
+                    if ('ok' in value && !value.ok) continue;
+                    if ('ready' in value && !value.ready) continue;
+                    if ('messages' in value && Array.isArray(value.messages) && value.messages.length === 0) continue;
+                    if ('sessions' in value && Array.isArray(value.sessions) && value.sessions.length === 0) continue;
+                }
+                return value;
             } catch (_) { /* try next context */ }
         }
         return null;

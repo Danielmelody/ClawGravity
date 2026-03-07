@@ -93,8 +93,10 @@ import { createMessageCreateHandler } from '../events/messageCreateHandler';
 import { Bot, InputFile } from 'grammy';
 import { TelegramAdapter } from '../platform/telegram/telegramAdapter';
 import { TelegramBindingRepository } from '../database/telegramBindingRepository';
+import { TelegramRecentMessageRepository } from '../database/telegramRecentMessageRepository';
 import { createTelegramMessageHandler } from './telegramMessageHandler';
 import { createTelegramSelectHandler } from './telegramProjectCommand';
+import { createTelegramJoinSelectHandler, TelegramSessionStateStore } from './telegramJoinCommand';
 import { EventRouter } from './eventRouter';
 import { createPlatformButtonHandler } from '../handlers/buttonHandler';
 import { createPlatformSelectHandler } from '../handlers/selectHandler';
@@ -1202,7 +1204,9 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             })();
 
             const telegramBindingRepo = new TelegramBindingRepository(db);
+            const telegramRecentMessageRepo = new TelegramRecentMessageRepository(db);
             const telegramAdapter = new TelegramAdapter(telegramBot as any, String(botInfo.id));
+            const telegramSessionStateStore = new TelegramSessionStateStore(telegramRecentMessageRepo);
 
             const activeMonitors = new Map<string, ResponseMonitor>();
             const telegramHandler = createTelegramMessageHandler({
@@ -1218,12 +1222,20 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 botToken: config.telegramToken,
                 botApi: telegramBot.api as any,
                 chatSessionService,
+                sessionStateStore: telegramSessionStateStore,
             });
 
             // Compose select handlers: project select + mode select
             const projectSelectHandler = createTelegramSelectHandler({
                 workspaceService,
                 telegramBindingRepo,
+            });
+            const joinSelectHandler = createTelegramJoinSelectHandler({
+                bridge,
+                telegramBindingRepo,
+                workspaceService,
+                chatSessionService,
+                sessionStateStore: telegramSessionStateStore,
             });
             const modeSelectAction = createModeSelectAction({ bridge, modeService });
             const telegramSelectHandler = createPlatformSelectHandler({
@@ -1235,6 +1247,10 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             const compositeSelectHandler = async (interaction: import('../platform/types').PlatformSelectInteraction) => {
                 if (interaction.customId === 'mode_select') {
                     await telegramSelectHandler(interaction);
+                    return;
+                }
+                if (interaction.customId === 'tg_join_select') {
+                    await joinSelectHandler(interaction);
                     return;
                 }
                 await projectSelectHandler(interaction);
@@ -1281,6 +1297,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 { command: 'template_delete', description: 'Delete a prompt template' },
                 { command: 'project_create', description: 'Create a new workspace' },
                 { command: 'new', description: 'Start a new chat session' },
+                { command: 'history', description: 'View a history session' },
                 { command: 'logs', description: 'Show recent log entries' },
                 { command: 'stop', description: 'Interrupt active LLM generation' },
                 { command: 'help', description: 'Show available commands' },
@@ -1412,7 +1429,7 @@ async function handleSlashInteraction(
                 },
                 {
                     name: '🔗 Session', value: [
-                        '`/join` — Join an existing Antigravity session',
+                        '`/history` — View an existing Antigravity session history',
                         '`/mirror` — Toggle PC→Discord mirroring ON/OFF',
                     ].join('\n')
                 },
@@ -1698,7 +1715,7 @@ async function handleSlashInteraction(
             break;
         }
 
-        case 'join': {
+        case 'history': {
             if (joinHandler) {
                 await joinHandler.handleJoin(interaction, bridge);
             } else {

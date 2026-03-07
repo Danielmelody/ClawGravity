@@ -6,6 +6,7 @@ import { ChannelManager } from '../../src/services/channelManager';
 import { CdpConnectionPool } from '../../src/services/cdpConnectionPool';
 import { WorkspaceService } from '../../src/services/workspaceService';
 import Database from 'better-sqlite3';
+import { Collection } from 'discord.js';
 
 // Mock ensureUserMessageDetector and getCurrentChatTitle to prevent real polling in tests
 jest.mock('../../src/services/cdpBridgeManager', () => ({
@@ -29,6 +30,7 @@ describe('JoinCommandHandler', () => {
     let mockPool: jest.Mocked<CdpConnectionPool>;
     let mockWorkspaceService: jest.Mocked<WorkspaceService>;
     let mockClient: any;
+    let mockJoinedChannelSend: jest.Mock;
     let db: Database.Database;
     let chatSessionRepo: ChatSessionRepository;
     let bindingRepo: WorkspaceBindingRepository;
@@ -69,9 +71,10 @@ describe('JoinCommandHandler', () => {
             ensureBaseDir: jest.fn(),
         } as any;
 
+        mockJoinedChannelSend = jest.fn().mockResolvedValue(undefined);
         mockClient = {
             channels: {
-                cache: { get: jest.fn().mockReturnValue({ send: jest.fn().mockResolvedValue(undefined) }) },
+                cache: { get: jest.fn().mockReturnValue({ send: mockJoinedChannelSend }) },
             },
         };
 
@@ -224,7 +227,10 @@ describe('JoinCommandHandler', () => {
 
         it('creates new channel and binds session when no channel exists', async () => {
             bindingRepo.upsert({ channelId: 'ch-1', workspacePath: 'my-project', guildId: 'guild-1' });
-            const mockCdp = { isConnected: () => true } as any;
+            const mockCdp = {
+                isConnected: () => true,
+                injectMessage: jest.fn().mockResolvedValue({ ok: true }),
+            } as any;
             mockPool.getOrConnect.mockResolvedValue(mockCdp);
             mockService.activateSessionByTitle.mockResolvedValue({ ok: true });
 
@@ -240,6 +246,14 @@ describe('JoinCommandHandler', () => {
             const interaction = {
                 guild: guildWithCreate,
                 channelId: 'ch-1',
+                channel: {
+                    messages: {
+                        fetch: jest.fn().mockResolvedValue(new Collection([
+                            ['m1', { author: { bot: false }, content: 'First recent message', createdTimestamp: 1000 }],
+                            ['m2', { author: { bot: false }, content: 'Second recent message', createdTimestamp: 2000 }],
+                        ])),
+                    },
+                },
                 values: ['Brand New Session'],
                 editReply: jest.fn().mockResolvedValue(undefined),
             };
@@ -248,6 +262,8 @@ describe('JoinCommandHandler', () => {
             await handler.handleJoinSelect(interaction as any, bridge);
 
             expect(mockService.activateSessionByTitle).toHaveBeenCalledWith(mockCdp, 'Brand New Session');
+            expect(mockCdp.injectMessage).toHaveBeenNthCalledWith(1, 'First recent message');
+            expect(mockCdp.injectMessage).toHaveBeenNthCalledWith(2, 'Second recent message');
             // Verify channel was created
             expect(guildWithCreate.channels.create).toHaveBeenCalled();
             // Verify binding was created
@@ -257,6 +273,7 @@ describe('JoinCommandHandler', () => {
             const session = chatSessionRepo.findByChannelId('new-ch-42');
             expect(session?.displayName).toBe('Brand New Session');
             expect(session?.isRenamed).toBe(true);
+            expect(mockJoinedChannelSend).toHaveBeenCalled();
         });
 
         it('stops existing detector before starting mirroring (force re-prime)', async () => {

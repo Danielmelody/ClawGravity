@@ -1,5 +1,6 @@
 import { ChatSessionService } from '../../src/services/chatSessionService';
 import { CdpService } from '../../src/services/cdpService';
+import { readFileSync } from 'fs';
 
 jest.mock('../../src/services/cdpService');
 const MockedCdpService = CdpService as jest.MockedClass<typeof CdpService>;
@@ -286,25 +287,30 @@ describe('ChatSessionService', () => {
          */
         function classifyExpression(expression: string): string {
             if (expression.includes('data-past-conversations-toggle')) return 'findButton';
-            if (expression.includes('containers.some')) return 'panelReady';
+            if (
+                expression.includes('const rows = Array.from(panel.querySelectorAll')
+                || expression.includes('rows.some((row)')
+                || expression.includes('row.querySelector(\'span.text-sm\')')
+            ) return 'panelReady';
+            if (expression.includes('const items = []') || expression.includes('const seen = new Set()')) return 'scrape';
             if (expression.includes('Show\\s+\\d+\\s+more')) return 'showMore';
-            if (expression.includes('const items = [];')) return 'scrape';
             return 'unknown';
         }
 
         it('opens Past Conversations via CDP mouse click and returns scraped sessions', async () => {
             const calls: string[] = [];
+            let evalCount = 0;
             mockCdpService.call.mockImplementation(async (method: string, params?: any) => {
                 calls.push(method);
                 if (method === 'Runtime.evaluate') {
-                    const type = classifyExpression(params?.expression || '');
-                    if (type === 'findButton') {
+                    evalCount += 1;
+                    if (evalCount === 1) {
                         return { result: { value: { found: true, x: 200, y: 30 } } };
                     }
-                    if (type === 'panelReady') {
+                    if (evalCount === 2) {
                         return { result: { value: true } };
                     }
-                    if (type === 'scrape') {
+                    if (evalCount === 3) {
                         return {
                             result: {
                                 value: {
@@ -315,6 +321,9 @@ describe('ChatSessionService', () => {
                                 },
                             },
                         };
+                    }
+                    if (evalCount === 4) {
+                        return { result: { value: { found: false, x: 0, y: 0 } } };
                     }
                 }
                 return {};
@@ -330,16 +339,17 @@ describe('ChatSessionService', () => {
 
         it('clicks "Show more" when fewer than 10 sessions found initially', async () => {
             let scrapeCount = 0;
+            let evalCount = 0;
             mockCdpService.call.mockImplementation(async (method: string, params?: any) => {
                 if (method === 'Runtime.evaluate') {
-                    const type = classifyExpression(params?.expression || '');
-                    if (type === 'findButton') {
+                    evalCount += 1;
+                    if (evalCount === 1) {
                         return { result: { value: { found: true, x: 200, y: 30 } } };
                     }
-                    if (type === 'panelReady') {
+                    if (evalCount === 2) {
                         return { result: { value: true } };
                     }
-                    if (type === 'scrape') {
+                    if (evalCount === 3 || evalCount === 5) {
                         scrapeCount++;
                         if (scrapeCount === 1) {
                             return { result: { value: { sessions: [
@@ -356,7 +366,7 @@ describe('ChatSessionService', () => {
                             { title: 'Session E', isActive: false },
                         ] } } };
                     }
-                    if (type === 'showMore') {
+                    if (evalCount === 4) {
                         return { result: { value: { found: true, x: 150, y: 300 } } };
                     }
                 }
@@ -433,16 +443,17 @@ describe('ChatSessionService', () => {
         });
 
         it('scrape is scoped to QuickInput dialog or side panel and ignores file tabs outside', async () => {
+            let evalCount = 0;
             mockCdpService.call.mockImplementation(async (method: string, params?: any) => {
                 if (method === 'Runtime.evaluate') {
-                    const type = classifyExpression(params?.expression || '');
-                    if (type === 'findButton') {
+                    evalCount += 1;
+                    if (evalCount === 1) {
                         return { result: { value: { found: true, x: 200, y: 30 } } };
                     }
-                    if (type === 'panelReady') {
+                    if (evalCount === 2) {
                         return { result: { value: true } };
                     }
-                    if (type === 'scrape') {
+                    if (evalCount === 3) {
                         // Verify the scrape script checks QuickInput dialog first, then side panel
                         expect(params.expression).toContain('bg-quickinput-background');
                         expect(params.expression).toContain('.antigravity-agent-side-panel');
@@ -458,6 +469,9 @@ describe('ChatSessionService', () => {
                             },
                         };
                     }
+                    if (evalCount === 4) {
+                        return { result: { value: { found: false, x: 0, y: 0 } } };
+                    }
                 }
                 return {};
             });
@@ -466,6 +480,286 @@ describe('ChatSessionService', () => {
 
             expect(sessions).toHaveLength(1);
             expect(sessions[0].title).toBe('Chat Session Only');
+        });
+
+        it('scrape script targets rows directly from the quick input root', () => {
+            const source = readFileSync('src/services/chatSessionService.ts', 'utf8');
+            const marker = 'const SCRAPE_PAST_CONVERSATIONS_SCRIPT = `';
+            const start = source.indexOf(marker);
+            const scriptStart = start + marker.length;
+            const scriptEnd = source.indexOf('`;', scriptStart);
+            const scrapeScript = source.slice(scriptStart, scriptEnd);
+            expect(scrapeScript).toContain(`panel.querySelectorAll('div[class*="cursor-pointer"]')`);
+            expect(scrapeScript).toContain(`row.querySelector('span.text-sm')`);
+            expect(scrapeScript).toContain('Other\\\\s+Conversations?');
+            expect(scrapeScript).not.toContain('const container = containers.find');
+        });
+
+        it('conversation history scrape removes injected style tags before reading assistant text', () => {
+            const source = readFileSync('src/services/chatSessionService.ts', 'utf8');
+            const marker = 'const SCRAPE_CONVERSATION_HISTORY_SCRIPT = `';
+            const start = source.indexOf(marker);
+            const scriptStart = start + marker.length;
+            const scriptEnd = source.indexOf('`;', scriptStart);
+            const scrapeScript = source.slice(scriptStart, scriptEnd);
+            expect(scrapeScript).toContain("clone.querySelectorAll('style')");
+            expect(scrapeScript).toContain('clone.innerText || clone.textContent');
+            expect(scrapeScript).toContain('remark-github-blockquote-alert/alert.css');
+        });
+    });
+
+    describe('getConversationHistory()', () => {
+        it('waits for history nodes to become ready before the first scrape', async () => {
+            let readyChecks = 0;
+            mockCdpService.call.mockImplementation(async (_method: string, params?: any) => {
+                const expression = String(params?.expression || '');
+                if (expression.includes('assistantCount')) {
+                    readyChecks += 1;
+                    if (readyChecks === 1) {
+                        return { result: { value: { ready: false, userCount: 0, assistantCount: 0 } } };
+                    }
+                    return { result: { value: { ready: true, userCount: 0, assistantCount: 7 } } };
+                }
+                if (expression.includes('messages: entries.map')) {
+                    return {
+                        result: {
+                            value: {
+                                messages: [
+                                    { role: 'assistant', text: 'loaded after switch' },
+                                ],
+                            },
+                        },
+                    };
+                }
+                return { result: { value: { ok: false, error: 'scroll container not found' } } };
+            });
+
+            const history = await service.getConversationHistory(mockCdpService, {
+                maxMessages: 20,
+                maxScrollSteps: 0,
+            });
+
+            expect(readyChecks).toBeGreaterThanOrEqual(2);
+            expect(history.messages).toEqual([
+                { role: 'assistant', text: 'loaded after switch' },
+            ]);
+        });
+
+        it('skips empty history results from earlier contexts and uses the first non-empty one', async () => {
+            mockCdpService.getContexts = jest.fn().mockReturnValue([
+                { id: 1, name: 'empty-context', url: '' },
+                { id: 2, name: 'real-context', url: '' },
+            ]);
+
+            let scrapeCalls = 0;
+            mockCdpService.call.mockImplementation(async (_method: string, params?: any) => {
+                const expression = String(params?.expression || '');
+                if (expression.includes('assistantCount')) {
+                    return {
+                        result: {
+                            value: params?.contextId === 1
+                                ? { ready: false, userCount: 0, assistantCount: 0 }
+                                : { ready: true, userCount: 0, assistantCount: 2 },
+                        },
+                    };
+                }
+                if (!expression.includes('messages: entries.map')) {
+                    return { result: { value: { ok: false, error: 'scroll container not found' } } };
+                }
+
+                scrapeCalls += 1;
+                if (params?.contextId === 1) {
+                    return { result: { value: { messages: [] } } };
+                }
+                return {
+                    result: {
+                        value: {
+                            messages: [
+                                { role: 'user', text: 'visible question' },
+                                { role: 'assistant', text: 'visible answer' },
+                            ],
+                        },
+                    },
+                };
+            });
+
+            const history = await service.getConversationHistory(mockCdpService, {
+                maxMessages: 20,
+                maxScrollSteps: 0,
+            });
+
+            expect(scrapeCalls).toBe(2);
+            expect(history.messages).toEqual([
+                { role: 'user', text: 'visible question' },
+                { role: 'assistant', text: 'visible answer' },
+            ]);
+        });
+
+        it('skips failed scroll-state results from earlier contexts and keeps loading older history', async () => {
+            mockCdpService.getContexts = jest.fn().mockReturnValue([
+                { id: 1, name: 'bad-context', url: '' },
+                { id: 2, name: 'real-context', url: '' },
+            ]);
+
+            let scrapeCount = 0;
+            mockCdpService.call.mockImplementation(async (_method: string, params?: any) => {
+                const expression = String(params?.expression || '');
+                if (expression.includes('assistantCount')) {
+                    return {
+                        result: {
+                            value: params?.contextId === 1
+                                ? { ready: false, userCount: 0, assistantCount: 0 }
+                                : { ready: true, userCount: 0, assistantCount: 2 },
+                        },
+                    };
+                }
+                if (expression.includes('messages: entries.map')) {
+                    scrapeCount += 1;
+                    if (scrapeCount === 1) {
+                        return {
+                            result: {
+                                value: params?.contextId === 1
+                                    ? { messages: [] }
+                                    : { messages: [{ role: 'user', text: 'latest question' }] },
+                            },
+                        };
+                    }
+                    return {
+                        result: {
+                            value: params?.contextId === 1
+                                ? { messages: [] }
+                                : {
+                                    messages: [
+                                        { role: 'user', text: 'older question' },
+                                        { role: 'assistant', text: 'older answer' },
+                                        { role: 'user', text: 'latest question' },
+                                    ],
+                                },
+                        },
+                    };
+                }
+                if (expression.includes('scroll container not found')) {
+                    return {
+                        result: {
+                            value: params?.contextId === 1
+                                ? { ok: false, error: 'wrong context' }
+                                : { ok: true, atTop: true, scrolled: true },
+                        },
+                    };
+                }
+                return { result: { value: null } };
+            });
+
+            const history = await service.getConversationHistory(mockCdpService, {
+                maxMessages: 20,
+                maxScrollSteps: 1,
+            });
+
+            expect(history.messages).toEqual([
+                { role: 'user', text: 'older question' },
+                { role: 'assistant', text: 'older answer' },
+                { role: 'user', text: 'latest question' },
+            ]);
+        });
+
+        it('returns scraped messages and scrolls upward until history stops growing', async () => {
+            let scrapeCount = 0;
+            mockCdpService.call.mockImplementation(async (_method: string, params?: any) => {
+                const expression = String(params?.expression || '');
+                if (expression.includes('assistantCount')) {
+                    return { result: { value: { ready: true, userCount: 1, assistantCount: 1 } } };
+                }
+                if (expression.includes('messages: entries.map')) {
+                    scrapeCount += 1;
+                    if (scrapeCount === 1) {
+                        return {
+                            result: {
+                                value: {
+                                    messages: [
+                                        { role: 'user', text: 'latest question' },
+                                        { role: 'assistant', text: 'latest answer' },
+                                    ],
+                                },
+                            },
+                        };
+                    }
+                    return {
+                        result: {
+                            value: {
+                                messages: [
+                                    { role: 'user', text: 'older question' },
+                                    { role: 'assistant', text: 'older answer' },
+                                    { role: 'user', text: 'latest question' },
+                                    { role: 'assistant', text: 'latest answer' },
+                                ],
+                            },
+                        },
+                    };
+                }
+                if (expression.includes('scroll container not found')) {
+                    return { result: { value: { ok: true, atTop: true, scrolled: true } } };
+                }
+                return { result: { value: null } };
+            });
+
+            const history = await service.getConversationHistory(mockCdpService, {
+                maxMessages: 20,
+                maxScrollSteps: 3,
+            });
+
+            expect(history.truncated).toBe(false);
+            expect(history.messages).toEqual([
+                { role: 'user', text: 'older question' },
+                { role: 'assistant', text: 'older answer' },
+                { role: 'user', text: 'latest question' },
+                { role: 'assistant', text: 'latest answer' },
+            ]);
+        });
+
+        it('marks history as truncated when message count exceeds the configured limit', async () => {
+            mockCdpService.call.mockImplementation(async (_method: string, params?: any) => {
+                const expression = String(params?.expression || '');
+                if (expression.includes('assistantCount')) {
+                    return { result: { value: { ready: true, userCount: 1, assistantCount: 1 } } };
+                }
+                if (expression.includes('messages: entries.map')) {
+                    return {
+                        result: {
+                            value: {
+                                messages: [
+                                    { role: 'user', text: 'm1' },
+                                    { role: 'assistant', text: 'm2' },
+                                    { role: 'user', text: 'm3' },
+                                ],
+                            },
+                        },
+                    };
+                }
+                return { result: { value: { ok: false, error: 'scroll container not found' } } };
+            });
+
+            const history = await service.getConversationHistory(mockCdpService, {
+                maxMessages: 2,
+                maxScrollSteps: 0,
+            });
+
+            expect(history.truncated).toBe(true);
+            expect(history.messages).toEqual([
+                { role: 'assistant', text: 'm2' },
+                { role: 'user', text: 'm3' },
+            ]);
+        });
+
+        it('history scrape script does not reject .leading-relaxed.select-text nodes just because they match the selector themselves', () => {
+            const source = readFileSync('src/services/chatSessionService.ts', 'utf8');
+            const marker = 'const SCRAPE_CONVERSATION_HISTORY_SCRIPT = `';
+            const start = source.indexOf(marker);
+            const scriptStart = start + marker.length;
+            const scriptEnd = source.indexOf('`;', scriptStart);
+            const scrapeScript = source.slice(scriptStart, scriptEnd);
+
+            expect(scrapeScript).toContain(".leading-relaxed.select-text");
+            expect(scrapeScript).not.toContain("if (el.querySelector(selector)) return true;");
         });
     });
 });

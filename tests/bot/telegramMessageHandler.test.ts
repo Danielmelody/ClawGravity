@@ -1,4 +1,5 @@
 import { createTelegramMessageHandler } from '../../src/bot/telegramMessageHandler';
+import { TelegramSessionStateStore } from '../../src/bot/telegramJoinCommand';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -97,6 +98,7 @@ function createMockMessage(overrides: Record<string, unknown> = {}) {
 function createMockCdp() {
     return {
         injectMessage: jest.fn().mockResolvedValue({ ok: true }),
+        activateSessionByTitle: jest.fn(),
     };
 }
 
@@ -186,6 +188,26 @@ describe('createTelegramMessageHandler', () => {
         await handler(message as any);
 
         expect(pool.getOrConnect).toHaveBeenCalledWith('/workspace/a');
+        expect(mockCdp.injectMessage).toHaveBeenCalledWith('test prompt');
+    });
+
+    it('activates previously joined session before sending prompt', async () => {
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message } = createMockMessage({ content: 'test prompt' });
+        const sessionStateStore = new TelegramSessionStateStore();
+        sessionStateStore.setSelectedSession('chat-123', 'History Session');
+        const chatSessionService = {
+            activateSessionByTitle: jest.fn().mockResolvedValue({ ok: true }),
+        } as any;
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo, sessionStateStore, chatSessionService });
+        await handler(message as any);
+
+        expect(chatSessionService.activateSessionByTitle).toHaveBeenCalledWith(mockCdp, 'History Session');
         expect(mockCdp.injectMessage).toHaveBeenCalledWith('test prompt');
     });
 

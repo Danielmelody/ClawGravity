@@ -55,11 +55,19 @@ describe('QuotaService', () => {
 
     it('fetches quota info and caches port discovery for the same PID/Token', async () => {
         mockExec.mockImplementation((cmd: string, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
-            if (cmd.startsWith('pgrep -fl language_server')) {
+            if (process.platform === 'win32' && cmd.startsWith('powershell -NoProfile -Command "Get-CimInstance Win32_Process')) {
+                cb(null, JSON.stringify({ ProcessId: 123, CommandLine: 'language_server.exe --csrf_token abc-123' }), '');
+                return {} as any;
+            }
+            if (process.platform !== 'win32' && cmd.startsWith('pgrep -fl language_server')) {
                 cb(null, '123 language_server --csrf_token abc-123\n', '');
                 return {} as any;
             }
-            if (cmd.startsWith('lsof -nP -a -iTCP -sTCP:LISTEN -p 123')) {
+            if (process.platform === 'win32' && cmd.startsWith('powershell -NoProfile -Command "Get-NetTCPConnection -State Listen -OwningProcess 123')) {
+                cb(null, JSON.stringify([4444]), '');
+                return {} as any;
+            }
+            if (process.platform !== 'win32' && cmd.startsWith('lsof -nP -a -iTCP -sTCP:LISTEN -p 123')) {
                 cb(null, 'language_server 123 user 10u IPv4 0x0 0t0 TCP *:4444 (LISTEN)\n', '');
                 return {} as any;
             }
@@ -111,8 +119,10 @@ describe('QuotaService', () => {
         expect(second).toHaveLength(1);
 
         const executedCommands = mockExec.mock.calls.map((call) => call[0] as string);
-        const lsofCalls = executedCommands.filter((cmd) => cmd.startsWith('lsof -nP -a -iTCP -sTCP:LISTEN -p 123'));
-        expect(lsofCalls).toHaveLength(1);
+        const portDiscoveryCalls = process.platform === 'win32'
+            ? executedCommands.filter((cmd) => cmd.startsWith('powershell -NoProfile -Command "Get-NetTCPConnection -State Listen -OwningProcess 123'))
+            : executedCommands.filter((cmd) => cmd.startsWith('lsof -nP -a -iTCP -sTCP:LISTEN -p 123'));
+        expect(portDiscoveryCalls).toHaveLength(1);
         expect(mockRequest).toHaveBeenCalledTimes(2);
         expect(mockRequest.mock.calls[0][0].port).toBe(4444);
         expect(mockRequest.mock.calls[1][0].port).toBe(4444);

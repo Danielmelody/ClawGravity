@@ -26,9 +26,9 @@ import type { ExtractionMode } from '../utils/config';
 const MAX_EMBED_DESC = 4000;
 
 /**
- * Handler for /join and /mirror commands
+ * Handler for /history and /mirror commands
  *
- * /join   — List Antigravity sessions and connect to one via a select menu.
+ * /history — List Antigravity sessions and connect to one via a select menu.
  * /mirror — Toggle PC-to-Discord message mirroring ON/OFF.
  */
 export class JoinCommandHandler {
@@ -72,8 +72,80 @@ export class JoinCommandHandler {
         return this.workspaceService.getWorkspacePath(projectName);
     }
 
+    private getSendableChannel(channelId: string): { send: (...args: any[]) => Promise<any> } | null {
+        const channel = this.client.channels.cache.get(channelId);
+        return channel && 'send' in channel ? channel as { send: (...args: any[]) => Promise<any> } : null;
+    }
+
+    private async getRecentMessagesToReplay(
+        interaction: StringSelectMenuInteraction,
+        limit = 2,
+    ): Promise<string[]> {
+        const channel = interaction.channel;
+        if (!channel || !('messages' in channel) || typeof channel.messages?.fetch !== 'function') {
+            return [];
+        }
+
+        try {
+            const fetched = await channel.messages.fetch({ limit: 10 });
+            return fetched
+                .filter((msg) => !msg.author?.bot && typeof msg.content === 'string' && msg.content.trim().length > 0)
+                .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+                .map((msg) => msg.content.trim())
+                .slice(-limit);
+        } catch (error) {
+            logger.warn('[Join] Failed to fetch recent messages for replay:', error);
+            return [];
+        }
+    }
+
+    private async replayRecentMessagesToSession(
+        interaction: StringSelectMenuInteraction,
+        cdp: CdpService,
+        projectName: string,
+        targetChannelId: string,
+    ): Promise<string[]> {
+        const messages = await this.getRecentMessagesToReplay(interaction, 2);
+        if (messages.length === 0) return [];
+
+        const detector = this.pool.getUserMessageDetector(projectName);
+        const replayed: string[] = [];
+
+        for (const text of messages) {
+            detector?.addEchoHash?.(text);
+
+            const injectResult = await cdp.injectMessage(text);
+            if (!injectResult.ok) {
+                logger.warn(`[Join] Failed to replay message into joined session: ${injectResult.error}`);
+                continue;
+            }
+
+            replayed.push(text);
+        }
+
+        const targetChannel = this.getSendableChannel(targetChannelId);
+        if (targetChannel && replayed.length > 0) {
+            const preview = replayed
+                .map((text, index) => `${index + 1}. ${text.slice(0, 240)}`)
+                .join('\n');
+
+            const embed = new EmbedBuilder()
+                .setTitle(t('↪ Imported Recent Messages'))
+                .setDescription(preview)
+                .setColor(0x95A5A6)
+                .setFooter({ text: t('Automatically replayed after joining the session') })
+                .setTimestamp();
+
+            await targetChannel.send({ embeds: [embed] }).catch((error: Error) => {
+                logger.warn('[Join] Failed to send replay summary:', error);
+            });
+        }
+
+        return replayed;
+    }
+
     /**
-     * /join — Show session picker for the workspace bound to this channel.
+     * /history — Show session picker for the workspace bound to this channel.
      */
     async handleJoin(
         interaction: ChatInputCommandInteraction,
@@ -109,7 +181,7 @@ export class JoinCommandHandler {
     }
 
     /**
-     * Handle session selection from the /join picker.
+     * Handle session selection from the /history picker.
      *
      * Flow:
      *   1. Check if a channel already exists for this session (by displayName)
@@ -195,10 +267,18 @@ export class JoinCommandHandler {
         // Step 6: Start mirroring (routes dynamically to all bound session channels)
         this.startMirroring(bridge, cdp, projectName);
 
+        const replayedMessages = await this.replayRecentMessagesToSession(
+            interaction,
+            cdp,
+            projectName,
+            newChannelId,
+        );
+
         const embed = new EmbedBuilder()
             .setTitle(t('🔗 Joined Session'))
             .setDescription(t(
                 `Connected to: **${selectedTitle}**\n→ <#${newChannelId}>\n\n` +
+                `${replayedMessages.length > 0 ? `↪ Replayed ${replayedMessages.length} recent message(s) into this session.\n` : ''}` +
                 `📡 Mirroring is **ON** — PC messages will appear in the new channel.\n` +
                 `Use \`/mirror\` to toggle.`,
             ))
@@ -284,7 +364,7 @@ export class JoinCommandHandler {
     ): void {
         // Force re-prime: stop existing detector so that ensureUserMessageDetector
         // creates a fresh one. This prevents the detector from treating the
-        // new session's last message as a "new" user message after /join.
+        // new session's last message as a "new" user message after /history.
         const existing = this.pool.getUserMessageDetector(projectName);
         if (existing?.isActive()) {
             existing.stop();

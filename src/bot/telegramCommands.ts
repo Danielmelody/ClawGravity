@@ -36,12 +36,14 @@ import { buildScreenshotPayload } from '../ui/screenshotUi';
 import { logBuffer } from '../utils/logBuffer';
 import { escapeHtml } from '../platform/telegram/telegramFormatter';
 import { logger } from '../utils/logger';
+import type { TelegramSessionStateStore } from './telegramJoinCommand';
+import { handleTelegramJoinCommand } from './telegramJoinCommand';
 
 // ---------------------------------------------------------------------------
 // Known commands (used by both parser and /help output)
 // ---------------------------------------------------------------------------
 
-const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new'] as const;
+const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'history'] as const;
 type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
@@ -95,6 +97,7 @@ export interface TelegramCommandDeps {
     /** Shared map of active ResponseMonitors keyed by project name.
      *  Used by /stop to halt monitoring and prevent stale re-sends. */
     readonly activeMonitors?: Map<string, ResponseMonitor>;
+    readonly sessionStateStore?: TelegramSessionStateStore;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +162,9 @@ export async function handleTelegramCommand(
         case 'new':
             await handleNew(deps, message);
             break;
+        case 'history':
+            await handleHistory(deps, message);
+            break;
         default:
             // Should not happen — parser filters unknowns
             break;
@@ -200,6 +206,7 @@ async function handleHelp(message: PlatformMessage): Promise<void> {
         '/template_delete — Delete a prompt template',
         '/project_create — Create a new workspace',
         '/new — Start a new chat session',
+        '/history — View a history session',
         '/logs — Show recent log entries',
         '/stop — Interrupt active LLM generation',
         '/ping — Check bot latency',
@@ -516,6 +523,7 @@ async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): P
     try {
         const result = await deps.chatSessionService.startNewChat(cdp);
         if (result.ok) {
+            deps.sessionStateStore?.clearSelectedSession(message.channel.id);
             await message.reply({ text: 'New chat session started.' }).catch(logger.error);
         } else {
             logger.warn('[TelegramCommand:new] startNewChat failed:', result.error);
@@ -527,6 +535,21 @@ async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): P
         logger.error('[TelegramCommand:new] startNewChat threw:', err?.message || err);
         await message.reply({ text: 'Failed to start new chat.' }).catch(logger.error);
     }
+}
+
+async function handleHistory(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
+    if (!deps.chatSessionService || !deps.telegramBindingRepo || !deps.sessionStateStore) {
+        await message.reply({ text: 'History session picker is not available.' }).catch(logger.error);
+        return;
+    }
+
+    await handleTelegramJoinCommand({
+        bridge: deps.bridge,
+        telegramBindingRepo: deps.telegramBindingRepo,
+        workspaceService: deps.workspaceService,
+        chatSessionService: deps.chatSessionService,
+        sessionStateStore: deps.sessionStateStore,
+    }, message);
 }
 
 // ---------------------------------------------------------------------------

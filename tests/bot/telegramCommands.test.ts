@@ -141,6 +141,7 @@ describe('parseTelegramCommand', () => {
         ['/project_create', 'project_create', ''],
         ['/logs', 'logs', ''],
         ['/new', 'new', ''],
+        ['/history', 'history', ''],
     ])('parses %s as command=%s args=%s', (input, command, args) => {
         expect(parseTelegramCommand(input)).toEqual({ command, args });
     });
@@ -225,6 +226,7 @@ describe('handleTelegramCommand — /help', () => {
         expect(text).toContain('/template_add');
         expect(text).toContain('/template_delete');
         expect(text).toContain('/project_create');
+        expect(text).toContain('/history');
         expect(text).toContain('/logs');
         expect(text).toContain('/stop');
         expect(text).toContain('/ping');

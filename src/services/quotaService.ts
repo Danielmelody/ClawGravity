@@ -25,20 +25,44 @@ export class QuotaService {
     private cachedCsrfToken: string | null = null;
     private cachedPid: number | null = null;
 
-    private async getUnixProcessInfo(): Promise<{pid: number, csrf_token: string} | null> {
+    private extractCsrfToken(commandLine: string): string | null {
+        const tokenMatch = commandLine.match(/--csrf_token[=\s]+([a-zA-Z0-9\-]+)/);
+        return tokenMatch?.[1] || null;
+    }
+
+    private async getLanguageServerProcessInfo(): Promise<{pid: number, csrf_token: string} | null> {
         try {
-            // macOS
+            if (process.platform === 'win32') {
+                const command = `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'language_server' } | Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress"`;
+                const { stdout } = await execAsync(command);
+                const trimmed = stdout.trim();
+                if (!trimmed) return null;
+
+                const raw = JSON.parse(trimmed) as { ProcessId?: number; CommandLine?: string } | Array<{ ProcessId?: number; CommandLine?: string }>;
+                const processes = Array.isArray(raw) ? raw : [raw];
+
+                for (const proc of processes) {
+                    const pid = Number(proc.ProcessId);
+                    const commandLine = proc.CommandLine || '';
+                    const csrfToken = this.extractCsrfToken(commandLine);
+                    if (pid && csrfToken) {
+                        return { pid, csrf_token: csrfToken };
+                    }
+                }
+                return null;
+            }
+
             const { stdout } = await execAsync('pgrep -fl language_server');
             const lines = stdout.split('\n');
             for (const line of lines) {
-                if (line.includes('--csrf_token')) {
-                    const parts = line.trim().split(/\s+/);
-                    const pid = parseInt(parts[0], 10);
-                    const cmd = line.substring(parts[0].length).trim();
-                    const tokenMatch = cmd.match(/--csrf_token[=\s]+([a-zA-Z0-9\-]+)/);
-                    if (pid && tokenMatch && tokenMatch[1]) {
-                        return { pid, csrf_token: tokenMatch[1] };
-                    }
+                if (!line.includes('--csrf_token')) continue;
+
+                const parts = line.trim().split(/\s+/);
+                const pid = parseInt(parts[0], 10);
+                const cmd = line.substring(parts[0].length).trim();
+                const csrfToken = this.extractCsrfToken(cmd);
+                if (pid && csrfToken) {
+                    return { pid, csrf_token: csrfToken };
                 }
             }
         } catch (e) {
@@ -50,7 +74,23 @@ export class QuotaService {
     private async getListeningPorts(pid: number): Promise<number[]> {
         const ports: number[] = [];
         try {
-            // macOS
+            if (process.platform === 'win32') {
+                const command = `powershell -NoProfile -Command "Get-NetTCPConnection -State Listen -OwningProcess ${pid} | Select-Object -ExpandProperty LocalPort | ConvertTo-Json -Compress"`;
+                const { stdout } = await execAsync(command);
+                const trimmed = stdout.trim();
+                if (!trimmed) return [];
+
+                const raw = JSON.parse(trimmed) as number | number[];
+                const values = Array.isArray(raw) ? raw : [raw];
+                for (const value of values) {
+                    const port = Number(value);
+                    if (port && !ports.includes(port)) {
+                        ports.push(port);
+                    }
+                }
+                return ports;
+            }
+
             const { stdout } = await execAsync(`lsof -nP -a -iTCP -sTCP:LISTEN -p ${pid}`);
             const regex = new RegExp(`^\\S+\\s+${pid}\\s+.*?(?:TCP|UDP)\\s+(?:\\*|[\\d.]+|\\[[\\da-f:]+\\]):(\\d+)\\s+\\(LISTEN\\)`, 'gim');
             let match;
@@ -126,7 +166,7 @@ export class QuotaService {
     }
 
     public async fetchQuota(): Promise<ModelQuota[]> {
-        let processInfo = await this.getUnixProcessInfo();
+        let processInfo = await this.getLanguageServerProcessInfo();
         if (!processInfo) {
             logger.error('No language_server process found.');
             return [];

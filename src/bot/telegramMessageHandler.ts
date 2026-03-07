@@ -29,6 +29,7 @@ import { cleanupInboundImageAttachments } from '../utils/imageHandler';
 import type { InboundImageAttachment } from '../utils/imageHandler';
 import type { ExtractionMode } from '../utils/config';
 import type { ChatSessionService } from '../services/chatSessionService';
+import type { TelegramSessionStateStore } from './telegramJoinCommand';
 
 export interface TelegramMessageHandlerDeps {
     readonly bridge: CdpBridge;
@@ -47,6 +48,7 @@ export interface TelegramMessageHandlerDeps {
     /** Bot API object for getFile calls. */
     readonly botApi?: import('../platform/telegram/wrappers').TelegramBotLike['api'];
     readonly chatSessionService?: ChatSessionService;
+    readonly sessionStateStore?: TelegramSessionStateStore;
 }
 
 /**
@@ -99,6 +101,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     fetchQuota: deps.fetchQuota,
                     activeMonitors: deps.activeMonitors,
                     chatSessionService: deps.chatSessionService,
+                    sessionStateStore: deps.sessionStateStore,
                 },
                 message,
                 cmd,
@@ -117,6 +120,10 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 );
                 return;
             }
+        }
+
+        if (promptText) {
+            deps.sessionStateStore?.pushRecentMessage(chatId, promptText);
         }
 
         // Resolve workspace binding for this Telegram chat
@@ -153,6 +160,17 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             deps.bridge.lastActiveWorkspace = projectName;
             deps.bridge.lastActiveChannel = message.channel;
             registerApprovalWorkspaceChannel(deps.bridge, projectName, message.channel);
+
+            const selectedSession = deps.sessionStateStore?.getSelectedSession(chatId);
+            if (selectedSession && deps.chatSessionService) {
+                const activationResult = await deps.chatSessionService.activateSessionByTitle(cdp, selectedSession);
+                if (!activationResult.ok) {
+                    await message.reply({
+                        text: `Failed to activate joined session "${escapeHtml(selectedSession)}": ${escapeHtml(activationResult.error || 'unknown error')}`,
+                    }).catch(logger.error);
+                    return;
+                }
+            }
 
             // Always push ModeService's mode to Antigravity on CDP connect.
             // ModeService is the source of truth (what the user sees in /mode UI).
