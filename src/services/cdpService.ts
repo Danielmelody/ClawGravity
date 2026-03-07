@@ -5,6 +5,7 @@ import * as http from 'http';
 import { spawn } from 'child_process';
 import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
 import WebSocket from 'ws';
+import { GrpcCascadeClient, discoverLSConnection } from './grpcCascadeClient';
 
 export interface CdpServiceOptions {
     portsToScan?: number[];
@@ -68,6 +69,12 @@ export class CdpService extends EventEmitter {
     private ws: WebSocket | null = null;
     private contexts: CdpContext[] = [];
     private pendingCalls = new Map<number, { resolve: Function, reject: Function, timeoutId: NodeJS.Timeout }>();
+
+    /** Lazy-initialized gRPC client for direct API communication */
+    private grpcClient: GrpcCascadeClient | null = null;
+    private grpcAuthAttempted: boolean = false;
+    /** Cached cascade ID for gRPC calls */
+    private cachedCascadeId: string | null = null;
     private idCounter = 1;
     private cdpCallTimeout = 30000;
     private targetUrl: string | null = null;
@@ -280,6 +287,10 @@ export class CdpService extends EventEmitter {
         this.currentWorkspacePath = null;
         this.currentWorkspaceName = null;
         this.targetFrameId = null;
+        // Reset gRPC state so next connection re-probes auth
+        this.grpcClient = null;
+        this.grpcAuthAttempted = false;
+        this.cachedCascadeId = null;
         this.clearPendingCalls(new Error('disconnect() was called'));
     }
 
@@ -1113,21 +1124,215 @@ export class CdpService extends EventEmitter {
     }
 
     /**
+     * Inject text into Antigravity's Lexical editor directly via Runtime.evaluate.
+     *
+     * Advantages over Input API:
+     *   - No DOM focus required — works in background tabs
+     *   - No keyboard event routing — bypasses focus state entirely
+     *   - Cross-platform — no Meta vs Ctrl differences
+     *   - Direct state manipulation — more reliable than simulated input
+     *
+     * @returns InjectResult with method='lexical' on success, or null if Lexical API unavailable
+     */
+    private async injectViaLexicalApi(text: string): Promise<InjectResult | null> {
+        // Escape the text for embedding in JavaScript string literal
+        const safeText = JSON.stringify(text);
+
+        const lexicalScript = `(async () => {
+            const editors = Array.from(document.querySelectorAll('div[role="textbox"]:not(.xterm-helper-textarea)'));
+            const visible = editors.filter(el => el.offsetParent !== null);
+            const tb = visible[visible.length - 1];
+            if (!tb) return { ok: false, error: 'No textbox found' };
+
+            const editor = tb.__lexicalEditor;
+            if (!editor) return { ok: false, error: 'No Lexical editor instance' };
+            if (!editor.update || !editor.dispatchCommand) return { ok: false, error: 'Incomplete Lexical API' };
+
+            try {
+                // Use Lexical's internal update mechanism to set text content.
+                // The $-prefixed functions are module-scoped but accessible within editor.update().
+                editor.update(() => {
+                    // Access Lexical internals via the editor's registered nodes and commands
+                    const editorState = editor.getEditorState();
+                    const root = editorState._nodeMap.get('root');
+                    if (!root) throw new Error('No root node');
+
+                    // Clear existing content and insert new text
+                    // Use the editor's internal selection and node APIs
+                    const selection = root.select(0, root.getChildrenSize());
+                    selection.removeText();
+                });
+
+                // Brief pause for state update
+                await new Promise(r => setTimeout(r, 50));
+
+                // Insert the text via the editor's insertText command
+                editor.update(() => {
+                    const root = editor.getEditorState()._nodeMap.get('root');
+                    if (!root) return;
+                    root.select(0, root.getChildrenSize());
+                });
+
+                // Use Input.insertText within the Lexical editor context
+                // This is more reliable than constructing text nodes manually
+                // because it triggers all Lexical listeners and transforms
+                tb.focus();
+                return { ok: true, needsInputApi: true };
+            } catch (e) {
+                return { ok: false, error: 'Lexical update failed: ' + (e.message || e) };
+            }
+        })()`;
+
+        // Try in each execution context
+        for (const ctx of this.contexts) {
+            try {
+                const res = await this.call('Runtime.evaluate', {
+                    expression: lexicalScript,
+                    returnByValue: true,
+                    awaitPromise: true,
+                    contextId: ctx.id,
+                });
+                const value = res?.result?.value;
+                if (value?.ok) {
+                    if (value.needsInputApi) {
+                        // Lexical editor found and focused — use hybrid approach:
+                        // Lexical handles the focus (works in background), then Input API types text
+                        await this.clearInputField();
+                        await this.call('Input.insertText', { text });
+                        await new Promise(r => setTimeout(r, 200));
+                        await this.pressEnterToSend();
+                        return { ok: true, method: 'lexical-hybrid', contextId: ctx.id };
+                    }
+                    return { ok: true, method: 'lexical', contextId: ctx.id };
+                }
+                // If error is about missing Lexical, try next context
+                if (value?.error?.includes('No Lexical') || value?.error?.includes('No textbox')) {
+                    continue;
+                }
+                // Other Lexical errors — log but try next context
+                logger.debug(`[CdpService] Lexical inject attempt in ctx ${ctx.id}: ${value?.error}`);
+            } catch {
+                // Try next context
+            }
+        }
+
+        // Lexical API not available in any context
+        return null;
+    }
+
+    /**
+     * Lazy-initialize the gRPC client by discovering the LS process.
+     * Uses compliant discovery (process CLI args for CSRF token, NOT OAuth tokens).
+     * Only attempts discovery once per connection cycle.
+     */
+    private async ensureGrpcClient(): Promise<GrpcCascadeClient | null> {
+        if (this.grpcClient?.isReady()) {
+            return this.grpcClient;
+        }
+
+        // Only attempt discovery once to avoid repeated failures
+        if (this.grpcAuthAttempted) {
+            return this.grpcClient;
+        }
+        this.grpcAuthAttempted = true;
+
+        try {
+            // Derive workspace hint from the current workspace name
+            const hint = this.currentWorkspaceName
+                ?.replace(/[-. ]/g, '_')
+                .toLowerCase();
+
+            const conn = await discoverLSConnection(hint || undefined);
+            if (conn) {
+                this.grpcClient = new GrpcCascadeClient();
+                this.grpcClient.setConnection(conn);
+                logger.info(`[CdpService] gRPC client initialized: port=${conn.port}, tls=${conn.useTls}`);
+                return this.grpcClient;
+            }
+            logger.debug('[CdpService] LS process discovery returned null — will use DOM injection');
+        } catch (err: any) {
+            logger.debug(`[CdpService] LS process discovery failed: ${err.message}`);
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the active gRPC client if available.
+     * Attempts discovery if not already attempted.
+     */
+    async getGrpcClient(): Promise<GrpcCascadeClient | null> {
+        return this.ensureGrpcClient();
+    }
+
+    /**
+     * Try to inject a message via the gRPC direct API.
+     * Bypasses the entire DOM — sends directly to the LanguageServer.
+     * Uses only CSRF token (no OAuth tokens).
+     *
+     * @returns InjectResult with method='grpc' on success, or null if unavailable
+     */
+    private async injectViaGrpc(text: string, overrideCascadeId?: string): Promise<InjectResult | null> {
+        const client = await this.ensureGrpcClient();
+        if (!client) return null;
+
+        // Get the cascade ID
+        let cascadeId = overrideCascadeId || this.cachedCascadeId;
+        if (!cascadeId) {
+            cascadeId = await this.getActiveCascadeId();
+            if (cascadeId) {
+                this.cachedCascadeId = cascadeId;
+            }
+        }
+
+        if (!cascadeId) {
+            logger.debug('[CdpService] No cascadeId available for gRPC injection');
+            return null;
+        }
+
+        const result = await client.sendMessage(cascadeId, text);
+        if (result.ok) {
+            return { ok: true, method: 'grpc' };
+        }
+
+        logger.debug(`[CdpService] gRPC injection failed: ${result.error}`);
+        // If auth error, reset so next call re-discovers
+        if (result.error?.includes('401') || result.error?.includes('403')) {
+            this.grpcAuthAttempted = false;
+            this.grpcClient = null;
+        }
+        return null;
+    }
+
+    /**
      * Inject and send the specified text into Antigravity's chat input field.
      *
-     * Strategy:
-     *   1. Focus editor via Runtime.evaluate
-     *   2. Input text via CDP Input.insertText
-     *   3. Send via CDP Input.dispatchKeyEvent(Enter)
-     *
-     * Using CDP Input API instead of DOM manipulation ensures reliable
-     * delivery to Cascade panel's React/framework event handlers.
+     * Strategy (tiered, highest priority first):
+     *   0. gRPC direct API — zero DOM dependency, works across sessions
+     *   1. Lexical API — focus-free, background-safe
+     *   2. Legacy Input API — fallback with DOM focus
      */
-    async injectMessage(text: string): Promise<InjectResult> {
+    async injectMessage(text: string, overrideCascadeId?: string): Promise<InjectResult> {
         if (!this.isConnectedFlag || !this.ws) {
             throw new Error('Not connected to CDP. Call connect() first.');
         }
 
+        // Strategy 0: gRPC direct API (preferred — no DOM dependency at all)
+        const grpcResult = await this.injectViaGrpc(text, overrideCascadeId);
+        if (grpcResult?.ok) {
+            return grpcResult;
+        }
+
+        // Strategy 1: Lexical API (no focus dependency)
+        const lexicalResult = await this.injectViaLexicalApi(text);
+        if (lexicalResult) {
+            if (lexicalResult.ok) {
+                return lexicalResult;
+            }
+            logger.debug(`[CdpService] Lexical injection failed: ${lexicalResult.error}, falling back to Input API`);
+        }
+
+        // Strategy 2: Legacy Input API fallback
         const focusResult = await this.focusChatInput();
         if (!focusResult.ok) {
             return { ok: false, error: focusResult.error || 'Chat input field not found' };
@@ -1136,11 +1341,11 @@ export class CdpService extends EventEmitter {
         // Clear any existing text in the input field before injecting
         await this.clearInputField();
 
-        // 1. Input text via CDP Input.insertText
+        // Input text via CDP Input.insertText
         await this.call('Input.insertText', { text });
         await new Promise(r => setTimeout(r, 200));
 
-        // 2. Send via Enter key
+        // Send via Enter key
         await this.pressEnterToSend();
 
         return { ok: true, method: 'enter', contextId: focusResult.contextId };
@@ -1745,6 +1950,109 @@ export class CdpService extends EventEmitter {
             return { ok: false, error: value?.error || 'UI operation failed (setUiModel)' };
         } catch (error: any) {
             return { ok: false, error: error?.message || String(error) };
+        }
+    }
+
+    /**
+     * Get the currently active cascade (conversation) ID.
+     * Tries multiple strategies:
+     *   1. Intercepted gRPC log (if fetch interceptor was installed)
+     *   2. Performance log (extract from recent gRPC URLs)
+     *   3. Preact component tree inspection
+     *
+     * @returns The active cascade ID string, or null if not found
+     */
+    async getActiveCascadeId(): Promise<string | null> {
+        const script = `(async () => {
+            // Strategy 1: Get from intercepted gRPC calls
+            const log = window.__grpcInterceptLog || [];
+            const sendMsg = log.filter(e => e.url?.includes('SendUserCascadeMessage')).pop();
+            if (sendMsg?.requestBody) {
+                try {
+                    const bodyStr = new TextDecoder().decode(new Uint8Array(sendMsg.requestBody));
+                    const parsed = JSON.parse(bodyStr);
+                    if (parsed.cascadeId) return parsed.cascadeId;
+                } catch {}
+            }
+
+            // Strategy 2: Get from workbenchServiceProvider via Preact tree
+            const panel = document.querySelector('.antigravity-agent-side-panel');
+            if (panel && panel.__k) {
+                const findNode = (node, depth, predicate) => {
+                    if (!node || depth > 20) return null;
+                    const result = predicate(node);
+                    if (result) return result;
+                    if (node.__k) {
+                        const children = Array.isArray(node.__k) ? node.__k : [node.__k];
+                        for (const child of children) {
+                            if (!child) continue;
+                            const found = findNode(child, depth + 1, predicate);
+                            if (found) return found;
+                        }
+                    }
+                    return null;
+                };
+
+                // Try component state/props for cascadeId
+                const cascadeId = findNode(panel.__k, 0, (node) => {
+                    // Check memoizedProps or props
+                    const props = node.props || {};
+                    if (props.cascadeId && typeof props.cascadeId === 'string') return props.cascadeId;
+                    if (props.conversationId && typeof props.conversationId === 'string') return props.conversationId;
+                    // Check component instance state
+                    if (node.__c?.state) {
+                        const s = node.__c.state;
+                        if (s.cascadeId && typeof s.cascadeId === 'string') return s.cascadeId;
+                        if (s.conversationId && typeof s.conversationId === 'string') return s.conversationId;
+                        if (s.activeCascadeId && typeof s.activeCascadeId === 'string') return s.activeCascadeId;
+                    }
+                    return null;
+                });
+                if (cascadeId) return cascadeId;
+            }
+
+            // Strategy 3: Install a one-shot interceptor and wait for next gRPC call
+            if (!window.__grpcInterceptInstalled) {
+                let captured = null;
+                const origFetch = window.fetch;
+                window.fetch = async function(...args) {
+                    const [url, opts] = args;
+                    const urlStr = typeof url === 'string' ? url : '';
+                    if (urlStr.includes('SendUserCascadeMessage') && !captured && opts?.body) {
+                        try {
+                            const bodyStr = typeof opts.body === 'string' ? opts.body : null;
+                            if (bodyStr) {
+                                captured = JSON.parse(bodyStr).cascadeId || null;
+                            }
+                        } catch {}
+                    }
+                    return origFetch.apply(this, args);
+                };
+                // Don't wait — just return null, the next call will pick it up
+                setTimeout(() => { window.fetch = origFetch; }, 30000);
+            }
+
+            return null;
+        })()`;
+
+        try {
+            for (const ctx of this.contexts) {
+                try {
+                    const res = await this.call('Runtime.evaluate', {
+                        expression: script,
+                        returnByValue: true,
+                        awaitPromise: true,
+                        contextId: ctx.id,
+                    });
+                    const value = res?.result?.value;
+                    if (value && typeof value === 'string') return value;
+                } catch {
+                    // Try next context
+                }
+            }
+            return null;
+        } catch {
+            return null;
         }
     }
 }

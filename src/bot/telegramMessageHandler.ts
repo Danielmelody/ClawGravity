@@ -16,6 +16,7 @@ import { CdpBridge, registerApprovalWorkspaceChannel, ensureApprovalDetector, en
 import type { UserMessageInfo } from '../services/userMessageDetector';
 import { CdpService } from '../services/cdpService';
 import { ResponseMonitor } from '../services/responseMonitor';
+import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import { ProcessLogBuffer } from '../utils/processLogBuffer';
 import { splitOutputAndLogs } from '../utils/discordFormatter';
 import { parseTelegramProjectCommand, handleTelegramProjectCommand } from './telegramProjectCommand';
@@ -46,7 +47,7 @@ export interface TelegramMessageHandlerDeps {
     readonly fetchQuota?: () => Promise<any[]>;
     /** Shared map of active ResponseMonitors keyed by project name.
      *  Used by /stop to halt monitoring and prevent stale re-sends. */
-    readonly activeMonitors?: Map<string, ResponseMonitor>;
+    readonly activeMonitors?: Map<string, ResponseMonitor | GrpcResponseMonitor>;
     /** Bot token for downloading Telegram file attachments. */
     readonly botToken?: string;
     /** Bot API object for getFile calls. */
@@ -109,7 +110,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     templateRepo: deps.templateRepo,
                     workspaceService: deps.workspaceService,
                     fetchQuota: deps.fetchQuota,
-                    activeMonitors: deps.activeMonitors,
+                    activeMonitors: deps.activeMonitors as any,
                     chatSessionService: deps.chatSessionService,
                     sessionStateStore: deps.sessionStateStore,
                     scheduleService: deps.scheduleService,
@@ -261,15 +262,16 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     injectResult = await cdp.injectMessageWithImageFiles(
                         effectivePrompt,
                         inboundImages.map((img) => img.localPath),
+                        // cascadeId is not supported for images via DOM fallback yet, but we'll try to pass it to the parameter if it existed.
                     );
 
                     if (!injectResult.ok) {
                         // Fallback: send text-only with image reference
                         logger.warn('[TelegramHandler] Image injection failed, falling back to text-only');
-                        injectResult = await cdp.injectMessage(effectivePrompt);
+                        injectResult = await cdp.injectMessage(effectivePrompt, selectedSession || undefined);
                     }
                 } else {
-                    injectResult = await cdp.injectMessage(effectivePrompt);
+                    injectResult = await cdp.injectMessage(effectivePrompt, selectedSession || undefined);
                 }
             } finally {
                 // Cleanup temp files regardless of outcome
@@ -313,7 +315,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             // Send initial status message
             statusMsg = await channel.send({ text: 'Processing...' }).catch(() => null);
 
-            await new Promise<void>((resolve) => {
+            await new Promise<void>(async (resolve) => {
                 const TIMEOUT_MS = 600_000;
                 const SAFETY_IDLE_MS = 120_000; // Reset safety timer on each activity
 
@@ -326,14 +328,11 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     resolve();
                 };
 
-                const monitor = new ResponseMonitor({
-                    cdpService: cdp,
-                    pollIntervalMs: 2000,
-                    maxDurationMs: TIMEOUT_MS,
-                    stopGoneConfirmCount: 3,
-                    extractionMode: deps.extractionMode,
+                const grpcClient = await cdp.getGrpcClient();
+                const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
 
-                    onProcessLog: (logText) => {
+                const monitorConfig = {
+                    onProcessLog: (logText: string) => {
                         if (logText && logText.trim().length > 0) {
                             lastActivityLogText = processLogBuffer.append(logText);
                         }
@@ -341,13 +340,13 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                         renewSafetyTimer();
                     },
 
-                    onProgress: (progressText) => {
+                    onProgress: (progressText: string) => {
                         latestPreviewText = progressText || '';
                         refreshStatusMessage('streaming');
                         renewSafetyTimer();
                     },
 
-                    onComplete: async (finalText) => {
+                    onComplete: async (finalText: string) => {
                         try {
                             const elapsed = Math.round((Date.now() - startTime) / 1000);
 
@@ -408,19 +407,32 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                                     logger.done(`[TelegramHandler] @claw results injected — awaiting follow-up (depth=${clawDepth + 1})...`);
 
+                                    const fuClient = await cdp.getGrpcClient();
+                                    const fuCascadeId = fuClient ? await cdp.getActiveCascadeId() : null;
                                     currentText = await new Promise<string>((resolve) => {
-                                        const followUp = new ResponseMonitor({
-                                            cdpService: cdp,
-                                            pollIntervalMs: 2000,
-                                            maxDurationMs: 300_000,
-                                            stopGoneConfirmCount: 3,
-                                            extractionMode: deps.extractionMode,
-                                            onComplete: async (text) => resolve(text?.trim() || ''),
+                                        const fuConfig = {
+                                            onComplete: async (text: string) => resolve(text?.trim() || ''),
                                             onTimeout: async () => {
                                                 logger.warn(`[TelegramHandler] @claw follow-up timed out (depth=${clawDepth + 1})`);
                                                 resolve('');
                                             },
-                                        });
+                                        };
+
+                                        const followUp = (fuClient && fuCascadeId)
+                                            ? new GrpcResponseMonitor({
+                                                grpcClient: fuClient,
+                                                cascadeId: fuCascadeId,
+                                                maxDurationMs: 300_000,
+                                                ...fuConfig
+                                            })
+                                            : new ResponseMonitor({
+                                                cdpService: cdp,
+                                                pollIntervalMs: 2000,
+                                                maxDurationMs: 300_000,
+                                                stopGoneConfirmCount: 3,
+                                                extractionMode: deps.extractionMode,
+                                                ...fuConfig
+                                            });
                                         followUp.start();
                                     });
 
@@ -435,7 +447,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             settle();
                         }
                     },
-                    onTimeout: async (lastText) => {
+                    onTimeout: async (lastText: string) => {
                         try {
                             // Update status message on timeout
                             if (statusMsg) {
@@ -452,7 +464,23 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             settle();
                         }
                     },
-                });
+                };
+
+                const monitor = (grpcClient && cascadeId)
+                    ? new GrpcResponseMonitor({
+                        grpcClient,
+                        cascadeId,
+                        maxDurationMs: TIMEOUT_MS,
+                        ...monitorConfig
+                    })
+                    : new ResponseMonitor({
+                        cdpService: cdp,
+                        pollIntervalMs: 2000,
+                        maxDurationMs: TIMEOUT_MS,
+                        stopGoneConfirmCount: 3,
+                        extractionMode: deps.extractionMode,
+                        ...monitorConfig
+                    });
 
                 let safetyTimer = setTimeout(() => {
                     logger.warn(`[TelegramHandler:${projectName}] Safety timeout — releasing queue after idle period`);
@@ -573,7 +601,7 @@ function fitTelegramStatusBody(text: string, maxLength: number): string {
 // ---------------------------------------------------------------------------
 
 /** Per-workspace passive response monitors to avoid duplicates. */
-const passiveResponseMonitors = new Map<string, ResponseMonitor>();
+const passiveResponseMonitors = new Map<string, ResponseMonitor | GrpcResponseMonitor>();
 
 /**
  * Handle a user message detected from the Antigravity PC UI.
@@ -584,8 +612,8 @@ export async function handlePassiveUserMessage(
     channel: PlatformChannel,
     cdp: CdpService,
     projectName: string,
-    info: { text: string },
-    activeMonitors?: Map<string, ResponseMonitor>,
+    info: UserMessageInfo,
+    activeMonitors?: Map<string, ResponseMonitor | GrpcResponseMonitor>,
     extractionMode?: ExtractionMode,
     clawInterceptor?: ClawCommandInterceptor,
 ): Promise<void> {
@@ -594,7 +622,7 @@ export async function handlePassiveUserMessage(
     await channel.send({ text: `🖥️ ${preview}` }).catch(logger.error);
 
     // Start passive ResponseMonitor to capture AI response
-    startPassiveResponseMonitor(channel, cdp, projectName, activeMonitors, extractionMode, clawInterceptor);
+    startPassiveResponseMonitor(channel, cdp, projectName, info, activeMonitors, extractionMode, clawInterceptor);
 }
 
 /**
@@ -602,14 +630,15 @@ export async function handlePassiveUserMessage(
  * when generation completes. If a monitor is already running for this
  * workspace, it is stopped and replaced.
  */
-function startPassiveResponseMonitor(
+async function startPassiveResponseMonitor(
     channel: PlatformChannel,
     cdp: CdpService,
     projectName: string,
-    activeMonitors?: Map<string, ResponseMonitor>,
+    info: UserMessageInfo,
+    activeMonitors?: Map<string, ResponseMonitor | GrpcResponseMonitor>,
     extractionMode?: ExtractionMode,
     clawInterceptor?: ClawCommandInterceptor,
-): void {
+): Promise<void> {
     // Stop previous passive monitor if still running
     const prev = passiveResponseMonitors.get(projectName);
     if (prev?.isActive()) {
@@ -645,20 +674,18 @@ function startPassiveResponseMonitor(
         }
     };
 
-    const monitor = new ResponseMonitor({
-        cdpService: cdp,
-        pollIntervalMs: 2000,
-        maxDurationMs: 600_000,
-        extractionMode,
+    const grpcClient = await cdp.getGrpcClient();
+    const cascadeId = info.cascadeId || (grpcClient ? await cdp.getActiveCascadeId() : null);
 
-        onProcessLog: (logText) => {
+    const monitorConfig = {
+        onProcessLog: (logText: string) => {
             if (logText && logText.trim().length > 0) {
                 lastActivityLogText = processLogBuffer.append(logText);
             }
             ensureStatusMsg().then(() => refreshStatusMessage('streaming'));
         },
 
-        onProgress: (progressText) => {
+        onProgress: (progressText: string) => {
             latestPreviewText = progressText || '';
             ensureStatusMsg().then(() => refreshStatusMessage('streaming'));
         },
@@ -707,13 +734,25 @@ function startPassiveResponseMonitor(
                 await cdp.injectMessage(feedback);
                 logger.debug(`[TelegramPassive] Injected @claw results back to Antigravity (length: ${feedback.length})`);
 
+                const fuClient = await cdp.getGrpcClient();
+                const fuCascadeId = fuClient ? await cdp.getActiveCascadeId() : null;
+
                 const followUpPromise = new Promise<string>((resolve) => {
-                    const followUpMonitor = new ResponseMonitor({
-                        cdpService: cdp,
-                        extractionMode,
-                        onComplete: (followUpText) => resolve(followUpText),
-                        onTimeout: (lastText) => resolve(lastText || ''),
-                    });
+                    const fuConfig = {
+                        onComplete: (followUpText: string) => resolve(followUpText),
+                        onTimeout: (lastText: string) => resolve(lastText || ''),
+                    }
+                    const followUpMonitor = (fuClient && fuCascadeId)
+                        ? new GrpcResponseMonitor({
+                            grpcClient: fuClient,
+                            cascadeId: fuCascadeId,
+                            ...fuConfig,
+                        })
+                        : new ResponseMonitor({
+                            cdpService: cdp,
+                            extractionMode,
+                            ...fuConfig,
+                        });
 
                     passiveResponseMonitors.set(projectName, followUpMonitor);
                     activeMonitors?.set(`passive:${projectName}`, followUpMonitor);
@@ -740,14 +779,29 @@ function startPassiveResponseMonitor(
                 }
             }
         },
-        onTimeout: () => {
+        onTimeout: (lastText: string) => {
             passiveResponseMonitors.delete(projectName);
             activeMonitors?.delete(`passive:${projectName}`);
             if (statusMsg) {
                 refreshStatusMessage('timeout');
             }
         },
-    });
+    };
+
+    const monitor = (grpcClient && cascadeId)
+        ? new GrpcResponseMonitor({
+            grpcClient,
+            cascadeId,
+            maxDurationMs: 600_000,
+            ...monitorConfig
+        })
+        : new ResponseMonitor({
+            cdpService: cdp,
+            pollIntervalMs: 2000,
+            maxDurationMs: 600_000,
+            extractionMode,
+            ...monitorConfig
+        });
 
     passiveResponseMonitors.set(projectName, monitor);
     activeMonitors?.set(`passive:${projectName}`, monitor);
