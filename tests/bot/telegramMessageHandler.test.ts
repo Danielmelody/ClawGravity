@@ -24,6 +24,7 @@ jest.mock('../../src/services/cdpBridgeManager', () => ({
     ensureErrorPopupDetector: jest.fn(),
     ensurePlanningDetector: jest.fn(),
     ensureRunCommandDetector: jest.fn(),
+    ensureUserMessageDetector: jest.fn(),
     getCurrentCdp: jest.fn().mockReturnValue(null),
 }));
 
@@ -304,7 +305,7 @@ describe('createTelegramMessageHandler', () => {
         expect(bridge.lastActiveChannel).toBe(message.channel);
     });
 
-    it('sends response text via channel.send after ResponseMonitor completes', async () => {
+    it('merges final response text into the existing status message after completion', async () => {
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
         const bridge = createBridge(pool);
@@ -315,9 +316,9 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        // First call is status message "Processing...", second is the response
+        expect(channel.send).toHaveBeenCalledTimes(1);
         expect(channel.send).toHaveBeenCalledWith({ text: 'Processing...' });
-        expect(channel.send).toHaveBeenCalledWith({ text: 'Response text' });
+        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'Response text' });
     });
 
     it('sends "(Empty response from Antigravity)" when response is empty', async () => {
@@ -345,7 +346,7 @@ describe('createTelegramMessageHandler', () => {
         expect(channel._statusMsg.delete).toHaveBeenCalled();
     });
 
-    it('handles sendTextChunked for long messages (splits at 4096 chars)', async () => {
+    it('uses the status message for the first chunk of long final messages', async () => {
         // Build a response that exceeds 4096 characters
         const longText = 'A'.repeat(5000);
 
@@ -366,11 +367,11 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        // 1 status message + 2 response chunks (5000 chars -> 4096 + 904)
-        expect(channel.send).toHaveBeenCalledTimes(3);
+        // 1 status message + 1 overflow chunk (5000 chars -> 4096 in edit + 904 send)
+        expect(channel.send).toHaveBeenCalledTimes(2);
         expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
-        expect(channel.send).toHaveBeenNthCalledWith(2, { text: 'A'.repeat(4096) });
-        expect(channel.send).toHaveBeenNthCalledWith(3, { text: 'A'.repeat(904) });
+        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'A'.repeat(4096) });
+        expect(channel.send).toHaveBeenNthCalledWith(2, { text: 'A'.repeat(904) });
     });
 
     it('queues messages for same workspace (serial execution)', async () => {
@@ -511,6 +512,62 @@ describe('createTelegramMessageHandler', () => {
         expect(channel._statusMsg.edit).toHaveBeenCalled();
         const editCall = channel._statusMsg.edit.mock.calls[0][0];
         expect(editCall.text).toContain('Reading file.ts');
+    });
+
+    it('streams partial output into the status message before completion', async () => {
+        const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
+        ResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onProgress) opts.onProgress('Partial streamed answer');
+                if (opts.onComplete) await opts.onComplete('Final answer');
+            }),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        expect(channel._statusMsg.edit).toHaveBeenCalled();
+        const streamedEdit = channel._statusMsg.edit.mock.calls.find(
+            ([payload]: any[]) => payload.text.includes('[streaming preview]'),
+        )?.[0];
+        expect(streamedEdit).toBeDefined();
+        expect(streamedEdit.text).toContain('Partial streamed answer');
+        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'Final answer' });
+    });
+
+    it('truncates oversized streaming previews to fit Telegram message limits', async () => {
+        const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
+        const longPreview = 'P'.repeat(5000);
+        ResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onProgress) opts.onProgress(longPreview);
+                if (opts.onComplete) await opts.onComplete('Done');
+            }),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        const streamedEdit = channel._statusMsg.edit.mock.calls.find(
+            ([payload]: any[]) => payload.text.includes('... (earlier output truncated)'),
+        )?.[0];
+        expect(streamedEdit).toBeDefined();
+        expect(streamedEdit.text.length).toBeLessThanOrEqual(4096);
+        expect(streamedEdit.text).toContain('... (earlier output truncated)');
     });
 
     it('calls logger.divider on completion with process log', async () => {

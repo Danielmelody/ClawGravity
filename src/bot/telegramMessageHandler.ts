@@ -12,7 +12,8 @@
 import type { PlatformMessage, PlatformChannel, PlatformSentMessage } from '../platform/types';
 import type { TelegramBindingRepository } from '../database/telegramBindingRepository';
 import type { WorkspaceService } from '../services/workspaceService';
-import { CdpBridge, registerApprovalWorkspaceChannel, ensureApprovalDetector, ensureErrorPopupDetector, ensurePlanningDetector, ensureRunCommandDetector } from '../services/cdpBridgeManager';
+import { CdpBridge, registerApprovalWorkspaceChannel, ensureApprovalDetector, ensureErrorPopupDetector, ensurePlanningDetector, ensureRunCommandDetector, ensureUserMessageDetector } from '../services/cdpBridgeManager';
+import type { UserMessageInfo } from '../services/userMessageDetector';
 import { CdpService } from '../services/cdpService';
 import { ResponseMonitor } from '../services/responseMonitor';
 import { ProcessLogBuffer } from '../utils/processLogBuffer';
@@ -63,7 +64,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
         workspacePath: string,
         task: () => Promise<void>,
     ): Promise<void> {
-        const current = (workspaceQueues.get(workspacePath) ?? Promise.resolve()).catch(() => {});
+        const current = (workspaceQueues.get(workspacePath) ?? Promise.resolve()).catch(() => { });
         const next = current.then(async () => {
             try {
                 await task();
@@ -201,8 +202,14 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             ensurePlanningDetector(deps.bridge, cdp, projectName);
             ensureRunCommandDetector(deps.bridge, cdp, projectName);
 
+            // Start passive mirroring: forward PC-typed messages + AI responses to Telegram
+            ensureUserMessageDetector(deps.bridge, cdp, projectName, (info: UserMessageInfo) => {
+                handlePassiveUserMessage(message.channel, cdp, projectName, info, deps.activeMonitors, deps.extractionMode)
+                    .catch((err: any) => logger.error('[TelegramPassive] Error handling PC message:', err));
+            });
+
             // Acknowledge receipt
-            await message.react('\u{1F440}').catch(() => {});
+            await message.react('\u{1F440}').catch(() => { });
 
             // Download image attachments if present
             let inboundImages: InboundImageAttachment[] = [];
@@ -249,7 +256,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             } finally {
                 // Cleanup temp files regardless of outcome
                 if (inboundImages.length > 0) {
-                    await cleanupInboundImageAttachments(inboundImages).catch(() => {});
+                    await cleanupInboundImageAttachments(inboundImages).catch(() => { });
                 }
             }
 
@@ -265,7 +272,25 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             const startTime = Date.now();
             const processLogBuffer = new ProcessLogBuffer({ maxChars: 3500, maxEntries: 120, maxEntryLength: 220 });
             let lastActivityLogText = '';
+            let latestPreviewText = '';
             let statusMsg: PlatformSentMessage | null = null;
+            let lastStatusRender = '';
+
+            const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout') => {
+                if (!statusMsg) return;
+                const elapsed = Math.round((Date.now() - startTime) / 1000);
+                const nextText = buildTelegramStatusText({
+                    activityLogText: lastActivityLogText,
+                    previewText: mode === 'streaming' ? latestPreviewText : '',
+                    elapsedSeconds: elapsed,
+                    mode,
+                });
+                if (!nextText || nextText === lastStatusRender) {
+                    return;
+                }
+                lastStatusRender = nextText;
+                statusMsg.edit({ text: nextText }).catch(() => { });
+            };
 
             // Send initial status message
             statusMsg = await channel.send({ text: 'Processing...' }).catch(() => null);
@@ -293,14 +318,12 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                         if (logText && logText.trim().length > 0) {
                             lastActivityLogText = processLogBuffer.append(logText);
                         }
-                        if (statusMsg && lastActivityLogText) {
-                            const elapsed = Math.round((Date.now() - startTime) / 1000);
-                            // Escape HTML to prevent Telegram parse_mode errors
-                            // (activity logs may contain <, >, & from code/paths)
-                            statusMsg.edit({
-                                text: `${escapeHtml(lastActivityLogText)}\n\n⏱️ ${elapsed}s`,
-                            }).catch(() => {});
-                        }
+                        refreshStatusMessage('streaming');
+                    },
+
+                    onProgress: (progressText) => {
+                        latestPreviewText = progressText || '';
+                        refreshStatusMessage('streaming');
                     },
 
                     onComplete: async (finalText) => {
@@ -322,21 +345,15 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             }
                             logger.divider();
 
-                            // Update status message with final activity log
-                            if (statusMsg && finalLogText && finalLogText.trim().length > 0) {
-                                await statusMsg.edit({
-                                    text: `${escapeHtml(finalLogText)}\n\n✅ Done in ${elapsed}s`,
-                                }).catch(() => {});
-                            } else if (statusMsg) {
-                                await statusMsg.delete().catch(() => {});
-                            }
-
-                            // Send the final response
+                            // Merge the final response into the existing status message when possible.
                             if (finalOutputText && finalOutputText.trim().length > 0) {
-                                await sendTextChunked(channel, finalOutputText);
+                                await deliverFinalTelegramText(statusMsg, channel, finalOutputText);
                             } else if (finalText && finalText.trim().length > 0) {
-                                await sendTextChunked(channel, finalText);
+                                await deliverFinalTelegramText(statusMsg, channel, finalText);
                             } else {
+                                if (statusMsg) {
+                                    await statusMsg.delete().catch(() => { });
+                                }
                                 await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
                             }
                         } finally {
@@ -347,10 +364,8 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                         try {
                             // Update status message on timeout
                             if (statusMsg) {
-                                const elapsed = Math.round((Date.now() - startTime) / 1000);
-                                await statusMsg.edit({
-                                    text: `⏰ Timed out after ${elapsed}s`,
-                                }).catch(() => {});
+                                latestPreviewText = '';
+                                refreshStatusMessage('timeout');
                             }
 
                             if (lastText && lastText.trim().length > 0) {
@@ -366,7 +381,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                 const safetyTimer = setTimeout(() => {
                     logger.warn(`[TelegramHandler:${projectName}] Safety timeout — releasing queue after 300s`);
-                    monitor.stop().catch(() => {});
+                    monitor.stop().catch(() => { });
                     settle();
                 }, TIMEOUT_MS);
 
@@ -394,4 +409,149 @@ async function sendTextChunked(
         remaining = remaining.slice(MAX_LENGTH);
         await channel.send({ text: chunk }).catch(logger.error);
     }
+}
+
+async function deliverFinalTelegramText(
+    statusMsg: PlatformSentMessage | null,
+    channel: PlatformChannel,
+    text: string,
+): Promise<void> {
+    const chunks = splitTelegramText(text);
+    if (chunks.length === 0) {
+        return;
+    }
+
+    if (statusMsg) {
+        await statusMsg.edit({ text: chunks[0] }).catch(() => { });
+        for (const chunk of chunks.slice(1)) {
+            await channel.send({ text: chunk }).catch(logger.error);
+        }
+        return;
+    }
+
+    for (const chunk of chunks) {
+        await channel.send({ text: chunk }).catch(logger.error);
+    }
+}
+
+function splitTelegramText(text: string): string[] {
+    const MAX_LENGTH = 4096;
+    const chunks: string[] = [];
+    let remaining = text;
+    while (remaining.length > 0) {
+        chunks.push(remaining.slice(0, MAX_LENGTH));
+        remaining = remaining.slice(MAX_LENGTH);
+    }
+    return chunks;
+}
+
+function buildTelegramStatusText(options: {
+    activityLogText: string;
+    previewText: string;
+    elapsedSeconds: number;
+    mode: 'streaming' | 'complete' | 'timeout';
+}): string {
+    const MAX_LENGTH = 4096;
+    const activityLogText = options.activityLogText.trim();
+    const previewText = options.previewText.trim();
+    const footer = options.mode === 'complete'
+        ? `Status: Done in ${options.elapsedSeconds}s`
+        : options.mode === 'timeout'
+            ? `Status: Timed out after ${options.elapsedSeconds}s`
+            : `Elapsed: ${options.elapsedSeconds}s`;
+
+    const sections: string[] = [];
+    if (activityLogText) {
+        sections.push(`[activity]\n${activityLogText}`);
+    }
+    if (previewText && options.mode === 'streaming') {
+        sections.push(`[streaming preview]\n${previewText}`);
+    }
+    sections.push(footer);
+
+    const body = fitTelegramStatusBody(sections.join('\n\n'), MAX_LENGTH - 8);
+    return `\`\`\`\n${body}\n\`\`\``;
+}
+
+function fitTelegramStatusBody(text: string, maxLength: number): string {
+    if (text.length <= maxLength) {
+        return text;
+    }
+
+    const prefix = '... (earlier output truncated)\n';
+    const tailLength = Math.max(0, maxLength - prefix.length);
+    return `${prefix}${text.slice(-tailLength)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Passive PC → Telegram notification
+// ---------------------------------------------------------------------------
+
+/** Per-workspace passive response monitors to avoid duplicates. */
+const passiveResponseMonitors = new Map<string, ResponseMonitor>();
+
+/**
+ * Handle a user message detected from the Antigravity PC UI.
+ * Forwards the message text to the linked Telegram chat and starts a passive
+ * ResponseMonitor to relay the AI response.
+ */
+async function handlePassiveUserMessage(
+    channel: PlatformChannel,
+    cdp: CdpService,
+    projectName: string,
+    info: { text: string },
+    activeMonitors?: Map<string, ResponseMonitor>,
+    extractionMode?: ExtractionMode,
+): Promise<void> {
+    // Forward the user message
+    const preview = info.text.length > 200 ? info.text.slice(0, 200) + '…' : info.text;
+    await channel.send({ text: `🖥️ ${preview}` }).catch(logger.error);
+
+    // Start passive ResponseMonitor to capture AI response
+    startPassiveResponseMonitor(channel, cdp, projectName, activeMonitors, extractionMode);
+}
+
+/**
+ * Start a passive ResponseMonitor that sends the AI response to Telegram
+ * when generation completes. If a monitor is already running for this
+ * workspace, it is stopped and replaced.
+ */
+function startPassiveResponseMonitor(
+    channel: PlatformChannel,
+    cdp: CdpService,
+    projectName: string,
+    activeMonitors?: Map<string, ResponseMonitor>,
+    extractionMode?: ExtractionMode,
+): void {
+    // Stop previous passive monitor if still running
+    const prev = passiveResponseMonitors.get(projectName);
+    if (prev?.isActive()) {
+        prev.stop().catch(() => { });
+    }
+
+    const monitor = new ResponseMonitor({
+        cdpService: cdp,
+        pollIntervalMs: 2000,
+        maxDurationMs: 300_000,
+        extractionMode,
+        onComplete: async (finalText: string) => {
+            passiveResponseMonitors.delete(projectName);
+            activeMonitors?.delete(`passive:${projectName}`);
+            if (!finalText || finalText.trim().length === 0) return;
+
+            await sendTextChunked(channel, finalText);
+        },
+        onTimeout: () => {
+            passiveResponseMonitors.delete(projectName);
+            activeMonitors?.delete(`passive:${projectName}`);
+        },
+    });
+
+    passiveResponseMonitors.set(projectName, monitor);
+    activeMonitors?.set(`passive:${projectName}`, monitor);
+    monitor.startPassive().catch((err: any) => {
+        logger.error('[TelegramPassive] Failed to start response monitor:', err?.message || err);
+        passiveResponseMonitors.delete(projectName);
+        activeMonitors?.delete(`passive:${projectName}`);
+    });
 }
