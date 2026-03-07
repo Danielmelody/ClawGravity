@@ -1068,6 +1068,87 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         logger.info(`[Claw] Created agent workspace: ${clawWorkspacePath}`);
     }
 
+    // Auto-launch Antigravity with __claw__ workspace if not already open.
+    // This ensures scheduled tasks always have a dedicated CDP endpoint.
+    (async () => {
+        const http = await import('http');
+        const { execFile } = await import('child_process');
+        const { CDP_PORTS } = await import('../utils/cdpPorts');
+        const clawProjectName = path.basename(clawWorkspacePath);
+
+        // Check if __claw__ is already open in an Antigravity instance
+        const checkPort = (port: number): Promise<string[]> => {
+            return new Promise((resolve) => {
+                const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
+                    let data = '';
+                    res.on('data', (chunk: string) => (data += chunk));
+                    res.on('end', () => {
+                        try {
+                            const tabs = JSON.parse(data);
+                            const titles = tabs
+                                .filter((t: any) => t.type === 'page')
+                                .map((t: any) => t.title || '');
+                            resolve(titles);
+                        } catch { resolve([]); }
+                    });
+                });
+                req.on('error', () => resolve([]));
+                req.setTimeout(2000, () => { req.destroy(); resolve([]); });
+            });
+        };
+
+        for (const port of CDP_PORTS) {
+            const titles = await checkPort(port);
+            if (titles.some(t => t.includes(clawProjectName))) {
+                logger.info(`[Claw] __claw__ workspace already open on CDP port ${port}`);
+                return;
+            }
+        }
+
+        // Find an available port (one that is NOT responding = free)
+        const net = await import('net');
+        const isPortFree = (port: number): Promise<boolean> => {
+            return new Promise((resolve) => {
+                const server = net.createServer();
+                server.once('error', () => resolve(false));
+                server.once('listening', () => { server.close(() => resolve(true)); });
+                server.listen(port, '127.0.0.1');
+            });
+        };
+
+        let freePort: number | null = null;
+        for (const port of CDP_PORTS) {
+            if (await isPortFree(port)) {
+                freePort = port;
+                break;
+            }
+        }
+
+        if (!freePort) {
+            logger.warn(`[Claw] No free CDP port available to auto-launch __claw__ workspace. Scheduled tasks may fail.`);
+            return;
+        }
+
+        logger.info(`[Claw] Launching Antigravity for __claw__ workspace on CDP port ${freePort}...`);
+        try {
+            const platform = (await import('os')).platform();
+            if (platform === 'win32') {
+                execFile('Antigravity', [`--remote-debugging-port=${freePort}`, clawWorkspacePath], { shell: true }, () => { });
+            } else if (platform === 'darwin') {
+                execFile('open', ['-a', 'Antigravity', '--args', `--remote-debugging-port=${freePort}`, clawWorkspacePath], () => { });
+            } else {
+                const { spawn } = await import('child_process');
+                const child = spawn('antigravity', [`--remote-debugging-port=${freePort}`, clawWorkspacePath], {
+                    detached: true, stdio: 'ignore',
+                });
+                child.unref();
+            }
+            logger.info(`[Claw] Antigravity launched for __claw__ workspace (port ${freePort})`);
+        } catch (err: any) {
+            logger.warn(`[Claw] Failed to auto-launch Antigravity: ${err?.message || err}`);
+        }
+    })();
+
     // Auto-generate GEMINI.md — Antigravity reads this to learn about @claw commands.
     // Regenerated on every boot to keep instructions up-to-date.
     const geminiMdPath = path.join(clawWorkspacePath, 'GEMINI.md');
@@ -1181,64 +1262,66 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
      * This runs when a cron-scheduled task fires.
      *
      * Execution flow:
-     *   1. Connect CDP to the dedicated schedule workspace (__claw-schedule__)
-     *   2. Wait for any ongoing generation to finish (busy detection)
-     *   3. Open a new Antigravity chat session (isolation)
+     *   1. Connect CDP to the dedicated __claw__ workspace (separate Antigravity instance)
+     *   2. Wait for any previous task to finish (busy detection)
+     *   3. Open a new chat session (isolation)
      *   4. Inject the scheduled prompt
      *
-     * The dedicated workspace ensures scheduled tasks never interfere with
-     * the user's current conversation in their regular workspace.
+     * IMPORTANT: The __claw__ workspace must be opened in a SEPARATE Antigravity
+     * window for scheduled tasks to work without interfering with the user.
      */
     const scheduleJobCallback = async (schedule: ScheduleRecord) => {
-        logger.info(`[ScheduleJob] Firing schedule #${schedule.id}: "${schedule.prompt.slice(0, 80)}..." → schedule-workspace=${clawWorkspacePath}`);
+        logger.info(`[ScheduleJob] Firing schedule #${schedule.id}: "${schedule.prompt.slice(0, 80)}..." → claw-workspace=${clawWorkspacePath}`);
         try {
-            // Always use the dedicated schedule workspace, not the user's workspace
             const cdp = await bridge.pool.getOrConnect(clawWorkspacePath);
             const projectName = bridge.pool.extractProjectName(clawWorkspacePath);
 
-            // Safety check: is the schedule workspace currently generating?
+            // Safety check: is the claw workspace currently generating from a previous task?
             const busy = await isAntigravityBusy(cdp);
             if (busy) {
-                logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Schedule workspace is busy — waiting for previous task to finish...`);
+                logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Claw workspace is busy — waiting for previous task...`);
 
                 const becameIdle = await waitForIdle(cdp, 300_000);
                 if (!becameIdle) {
-                    logger.error(`[ScheduleJob] Schedule #${schedule.id}: Still busy after 5min — SKIPPING this run`);
+                    logger.error(`[ScheduleJob] Schedule #${schedule.id}: Still busy after 5min — SKIPPING`);
                     return;
                 }
 
-                logger.info(`[ScheduleJob] Schedule #${schedule.id}: Schedule workspace is now idle`);
+                logger.info(`[ScheduleJob] Schedule #${schedule.id}: Claw workspace idle — proceeding`);
                 await new Promise(r => setTimeout(r, 3000));
             }
 
             bridge.lastActiveWorkspace = projectName;
 
-            // Open a new Antigravity session to isolate this task's context.
-            // This prevents scheduled prompts from mixing with previous task history.
+            // Open a new Antigravity session for this task
             const newChatResult = await chatSessionService.startNewChat(cdp);
             if (newChatResult.ok) {
-                logger.debug(`[ScheduleJob] Schedule #${schedule.id}: Opened new session for isolation`);
+                logger.debug(`[ScheduleJob] Schedule #${schedule.id}: New session opened`);
                 await new Promise(r => setTimeout(r, 1500));
             } else {
-                // Non-fatal: if we can't open a new session, proceed anyway
                 logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Could not open new session: ${newChatResult.error}`);
             }
 
             const injectResult = await cdp.injectMessage(schedule.prompt);
             if (injectResult.ok) {
-                logger.done(`[ScheduleJob] Schedule #${schedule.id} executed successfully in isolated session`);
+                logger.done(`[ScheduleJob] Schedule #${schedule.id} executed successfully`);
             } else {
                 logger.error(`[ScheduleJob] Schedule #${schedule.id} inject failed: ${injectResult.error}`);
             }
         } catch (err: any) {
-            logger.error(`[ScheduleJob] Schedule #${schedule.id} failed:`, err?.message || err);
+            const msg = err?.message || String(err);
+            if (msg.includes('No matching') || msg.includes('ECONNREFUSED') || msg.includes('not found')) {
+                logger.error(`[ScheduleJob] Schedule #${schedule.id}: Cannot connect to __claw__ workspace. Please open "${clawWorkspacePath}" in a separate Antigravity window.`);
+            } else {
+                logger.error(`[ScheduleJob] Schedule #${schedule.id} failed:`, msg);
+            }
         }
     };
 
     // Restore persisted schedules on startup
     const restoredCount = scheduleService.restoreAll(scheduleJobCallback);
     if (restoredCount > 0) {
-        logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s) → workspace: ${clawWorkspacePath}`);
+        logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s)`);
     }
 
     // ClawCommandInterceptor — scans AI output for @claw directives and auto-executes them.
