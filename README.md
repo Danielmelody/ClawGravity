@@ -37,21 +37,21 @@ ClawGravity is a second-generation fork of LazyGravity that implements the **Ope
 Runtime: **Node >= 18**.
 
 ```bash
-npm install -g clawgravity
-clawgravity setup
+npm install -g claw-gravity
+claw-gravity setup
 ```
 
 The interactive wizard walks you through Discord bot creation, token setup, and workspace configuration. When done:
 
 ```bash
-clawgravity open     # Launch Antigravity with CDP enabled
-clawgravity start    # Start the bot (Discord by default, or both platforms)
+claw-gravity open     # Launch Antigravity with CDP enabled
+claw-gravity start    # Start the bot (Discord by default, or both platforms)
 ```
 
 Or run directly without installing:
 
 ```bash
-npx clawgravity
+npx claw-gravity
 ```
 
 ---
@@ -136,15 +136,15 @@ Telegram commands use underscores instead of subcommand syntax (Telegram does no
 ### CLI Commands
 
 ```bash
-clawgravity              # Auto: runs setup if unconfigured, otherwise starts the bot
-clawgravity setup        # Interactive setup wizard
-clawgravity open         # Open Antigravity with CDP (auto-selects available port)
-clawgravity start        # Start the Discord bot
-clawgravity doctor       # Check environment and dependencies
-clawgravity --verbose    # Show debug-level logs (CDP details, detector events, etc.)
-clawgravity --quiet      # Only show errors
-clawgravity --version    # Show version
-clawgravity --help       # Show help
+claw-gravity              # Auto: runs setup if unconfigured, otherwise starts the bot
+claw-gravity setup        # Interactive setup wizard
+claw-gravity open         # Open Antigravity with CDP (auto-selects available port)
+claw-gravity start        # Start the Discord bot
+claw-gravity doctor       # Check environment and dependencies
+claw-gravity --verbose    # Show debug-level logs (CDP details, detector events, etc.)
+claw-gravity --quiet      # Only show errors
+claw-gravity --version    # Show version
+claw-gravity --help       # Show help
 ```
 
 ---
@@ -154,8 +154,8 @@ clawgravity --help       # Show help
 ### Option A: npm (Recommended)
 
 ```bash
-npm install -g clawgravity
-clawgravity setup
+npm install -g claw-gravity
+claw-gravity setup
 ```
 
 The wizard guides you through 4 steps:
@@ -168,13 +168,13 @@ The wizard guides you through 4 steps:
 3. **Allowed User IDs** — Discord users authorized to interact with the bot.
 4. **Workspace Directory** — parent directory where your coding projects live.
 
-Config is saved to `~/.clawgravity/config.json`.
+Config is saved to `~/.claw-gravity/config.json`.
 
 ### Option B: From source
 
 ```bash
 git clone https://github.com/Danielmelody/ClawGravity.git
-cd clawgravity
+cd claw-gravity
 npm install
 ```
 
@@ -228,7 +228,7 @@ You need to launch Antigravity with a remote debugging port enabled.
 
 ```bash
 # Easiest way (auto-selects an available port):
-clawgravity open
+claw-gravity open
 ```
 
 If you cloned from source, you can also use the bundled launcher scripts (they auto-detect an available port from 9222–9666):
@@ -261,17 +261,17 @@ If the bot is unresponsive or you've updated the code, restart it:
 
 1. **Stop the bot** — press `Ctrl + C` in the terminal, or:
    ```bash
-   pkill -f "clawgravity"
+   pkill -f "claw-gravity"
    ```
 2. **Restart**
    ```bash
-   clawgravity start
+   claw-gravity start
    # or, from source: npm run start
    ```
 
 If Antigravity is restarted, the bot automatically attempts CDP reconnection. Sending a message triggers automatic project reconnection.
 
-Run `clawgravity doctor` to diagnose configuration and connectivity issues.
+Run `claw-gravity doctor` to diagnose configuration and connectivity issues.
 
 ---
 

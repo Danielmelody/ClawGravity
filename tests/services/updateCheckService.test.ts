@@ -26,7 +26,7 @@ const mockedOs = jest.mocked(os);
 
 // Stable home directory for all tests
 const FAKE_HOME = '/home/testuser';
-const CACHE_PATH = path.join(FAKE_HOME, '.clawgravity', UPDATE_CHECK_FILE);
+const CACHE_PATH = path.join(FAKE_HOME, '.claw-gravity', UPDATE_CHECK_FILE);
 
 beforeEach(() => {
     jest.clearAllMocks();
@@ -119,7 +119,7 @@ describe('fetchLatestVersion', () => {
         const version = await fetchLatestVersion();
         expect(version).toBe('1.2.3');
         expect(mockedHttps.get).toHaveBeenCalledWith(
-            'https://registry.npmjs.org/clawgravity/latest',
+            'https://registry.npmjs.org/claw-gravity/latest',
             expect.any(Function),
         );
     });
@@ -179,12 +179,12 @@ describe('isGlobalInstall', () => {
     });
 
     it('returns true for global npm install path (unix)', () => {
-        process.argv[1] = '/usr/local/lib/node_modules/clawgravity/dist/bin/cli.js';
+        process.argv[1] = '/usr/local/lib/node_modules/claw-gravity/dist/bin/cli.js';
         expect(isGlobalInstall()).toBe(true);
     });
 
     it('returns true for global npm install path (windows)', () => {
-        process.argv[1] = 'C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\clawgravity\\dist\\bin\\cli.js';
+        process.argv[1] = 'C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\claw-gravity\\dist\\bin\\cli.js';
         expect(isGlobalInstall()).toBe(true);
     });
 
@@ -200,7 +200,7 @@ describe('checkForUpdates', () => {
 
     beforeEach(() => {
         // Simulate global install so checkForUpdates proceeds past the guard
-        process.argv[1] = '/usr/local/lib/node_modules/clawgravity/dist/bin/cli.js';
+        process.argv[1] = '/usr/local/lib/node_modules/claw-gravity/dist/bin/cli.js';
     });
 
     afterEach(() => {

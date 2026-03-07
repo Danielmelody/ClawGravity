@@ -10,7 +10,7 @@ import { openAction } from './commands/open';
 import { ConfigLoader } from '../utils/configLoader';
 
 const program = new Command()
-    .name('clawgravity')
+    .name('claw-gravity')
     .description('Control your AI coding assistant from Discord')
     .version(version)
     .option('--verbose', 'Show debug-level logs')

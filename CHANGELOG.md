@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Project rebranded**: LazyGravity → ClawGravity (OpenClaw implementation)
-- npm package name: `lazy-gravity` → `clawgravity`
-- CLI command: `lazy-gravity` → `clawgravity`
-- Config directory: `~/.lazy-gravity/` → `~/.clawgravity/`
+- npm package name: `lazy-gravity` → `claw-gravity`
+- CLI command: `lazy-gravity` → `claw-gravity`
+- Config directory: `~/.lazy-gravity/` → `~/.claw-gravity/`
 - Repository moved to [Danielmelody/ClawGravity](https://github.com/Danielmelody/ClawGravity)
 
 ## [0.3.0] - 2026-03-03

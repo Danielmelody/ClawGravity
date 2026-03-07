@@ -15,7 +15,7 @@
 ## CLI & Management
 
 - [x] **`/status` command** — Show bot connection state, active projects, and current mode
-- [x] **Invite Link Generator** — Auto-generate a bot invite URL during `clawgravity setup`
+- [x] **Invite Link Generator** — Auto-generate a bot invite URL during `claw-gravity setup`
 - [x] **`doctor` enhancements** — Colored output and expanded checks ([#4](https://github.com/tokyoweb3/LazyGravity/issues/4))
 
 ## UX & Notifications
@@ -56,7 +56,7 @@ Replace `innerText`-based extraction with structured DOM walking and HTML-to-Dis
 ## Public Release
 
 - [x] **Assets** — Demo video, banner image, and Mermaid architecture diagram (all in README)
-- [x] **npm Publish** — Published as `clawgravity`
+- [x] **npm Publish** — Published as `claw-gravity`
 - [x] **GitHub Infrastructure** — Issue/PR templates, `CONTRIBUTING.md`, Discussions ([#15](https://github.com/tokyoweb3/LazyGravity/issues/15))
 - [ ] **v1.0 Stable Release** — First production-ready version ([#16](https://github.com/tokyoweb3/LazyGravity/issues/16))
 

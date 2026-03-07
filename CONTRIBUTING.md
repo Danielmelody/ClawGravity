@@ -14,7 +14,7 @@ First off, thank you for considering contributing to ClawGravity! It's people li
 ### Cloning the Repository
 ```bash
 git clone https://github.com/Danielmelody/ClawGravity.git
-cd clawgravity
+cd claw-gravity
 ```
 
 ### Installation

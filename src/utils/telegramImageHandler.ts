@@ -19,7 +19,7 @@ import { sanitizeFileName, mimeTypeToExtension } from './imageHandler';
 import { logger } from './logger';
 
 const MAX_TELEGRAM_IMAGE_ATTACHMENTS = 4;
-const TEMP_IMAGE_DIR = path.join(os.tmpdir(), 'clawgravity-images');
+const TEMP_IMAGE_DIR = path.join(os.tmpdir(), 'claw-gravity-images');
 
 /**
  * Extract the Telegram file_id from a telegram-file:// URL.

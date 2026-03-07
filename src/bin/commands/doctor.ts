@@ -67,7 +67,7 @@ function checkRequiredEnvVars(): { name: string; set: boolean }[] {
 }
 
 export async function doctorAction(): Promise<void> {
-    console.log(`\n${COLORS.cyan}clawgravity doctor${COLORS.reset}\n`);
+    console.log(`\n${COLORS.cyan}claw-gravity doctor${COLORS.reset}\n`);
     let allOk = true;
 
     // 1. Config directory check
@@ -76,7 +76,7 @@ export async function doctorAction(): Promise<void> {
         ok(`Config directory exists: ${configDir}`);
     } else {
         warn(`Config directory not found: ${configDir}`);
-        hint('Run: clawgravity setup  (optional if using .env)');
+        hint('Run: claw-gravity setup  (optional if using .env)');
     }
 
     // 2. Config file check

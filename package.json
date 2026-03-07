@@ -1,10 +1,10 @@
 {
-  "name": "clawgravity",
+  "name": "claw-gravity",
   "version": "0.3.0",
   "description": "ClawGravity — An OpenClaw implementation built on Antigravity's Agent capabilities. More stable, more token-efficient, all-in-one. Control Antigravity remotely via Discord + Telegram.",
   "main": "dist/index.js",
   "bin": {
-    "clawgravity": "dist/bin/cli.js"
+    "claw-gravity": "dist/bin/cli.js"
   },
   "files": [
     "dist/",

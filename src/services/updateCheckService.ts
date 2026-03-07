@@ -3,11 +3,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-const CONFIG_DIR = '.clawgravity';
+const CONFIG_DIR = '.claw-gravity';
 export const UPDATE_CHECK_FILE = 'update-check.json';
 export const COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-const REGISTRY_URL = 'https://registry.npmjs.org/clawgravity/latest';
+const REGISTRY_URL = 'https://registry.npmjs.org/claw-gravity/latest';
 const REQUEST_TIMEOUT_MS = 5000;
 
 interface UpdateCheckCache {
@@ -104,7 +104,7 @@ export function isGlobalInstall(): boolean {
     const execPath = process.argv[1] || '';
     // Global installs run from a path containing node_modules
     // Local dev runs from the source tree (no node_modules/.bin in argv[1])
-    const globalIndicators = ['/lib/node_modules/', '\\node_modules\\clawgravity\\'];
+    const globalIndicators = ['/lib/node_modules/', '\\node_modules\\claw-gravity\\'];
     return globalIndicators.some((indicator) => execPath.includes(indicator));
 }
 
@@ -123,7 +123,7 @@ export async function checkForUpdates(currentVersion: string): Promise<void> {
 
         if (compareSemver(currentVersion, latest) < 0) {
             console.info(
-                `\n  Update available: ${currentVersion} \u2192 ${latest} \u2014 run \x1b[36mnpm i -g clawgravity\x1b[0m\n`,
+                `\n  Update available: ${currentVersion} \u2192 ${latest} \u2014 run \x1b[36mnpm i -g claw-gravity\x1b[0m\n`,
             );
         }
     } catch {

@@ -622,9 +622,9 @@ export async function setupAction(): Promise<void> {
 
                     console.log(`  ${C.cyan}Start:${C.reset}`);
                     console.log(`  ${C.bold}1.${C.reset} Open Antigravity with CDP enabled:`);
-                    console.log(`     ${C.green}clawgravity open${C.reset}`);
+                    console.log(`     ${C.green}claw-gravity open${C.reset}`);
                     console.log(`     ${C.dim}(auto-selects an available port from: ${CDP_PORTS.join(', ')})${C.reset}\n`);
-                    console.log(`  ${C.bold}2.${C.reset} Run: ${C.green}clawgravity start${C.reset}\n`);
+                    console.log(`  ${C.bold}2.${C.reset} Run: ${C.green}claw-gravity start${C.reset}\n`);
 
                     return;
                 }

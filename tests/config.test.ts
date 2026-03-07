@@ -1,6 +1,6 @@
 import { loadConfig, resolveResponseDeliveryMode } from '../src/utils/config';
 
-// Prevent ~/.clawgravity/config.json from leaking real credentials into tests.
+// Prevent ~/.claw-gravity/config.json from leaking real credentials into tests.
 // Override ConfigLoader.load to pass empty persisted config.
 jest.mock('../src/utils/configLoader', () => {
     const actual = jest.requireActual('../src/utils/configLoader');
