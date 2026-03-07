@@ -10,6 +10,8 @@ import {
     StringSelectMenuBuilder, MessageFlags,
 } from 'discord.js';
 import Database from 'better-sqlite3';
+import * as path from 'path';
+import * as fs from 'fs';
 
 import { wrapDiscordChannel } from '../platform/discord/wrappers';
 import type { PlatformType } from '../platform/types';
@@ -1018,19 +1020,104 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     const scheduleService = new ScheduleService(scheduleRepo);
 
     /**
+     * Check if Antigravity is currently generating a response (stop button visible).
+     * Returns true if busy, false if idle.
+     */
+    async function isAntigravityBusy(cdp: CdpService): Promise<boolean> {
+        try {
+            const result = await cdp.call('Runtime.evaluate', {
+                expression: RESPONSE_SELECTORS.STOP_BUTTON,
+                returnByValue: true,
+                awaitPromise: false,
+            });
+            return result?.result?.value?.isGenerating === true;
+        } catch {
+            return false; // If we can't check, assume not busy
+        }
+    }
+
+    /**
+     * Wait for Antigravity to finish generating (stop button disappears).
+     * Returns true if idle within timeout, false if still busy.
+     */
+    async function waitForIdle(cdp: CdpService, maxWaitMs: number = 300_000): Promise<boolean> {
+        const checkIntervalMs = 10_000; // Check every 10 seconds
+        const maxChecks = Math.ceil(maxWaitMs / checkIntervalMs);
+
+        for (let i = 0; i < maxChecks; i++) {
+            const busy = await isAntigravityBusy(cdp);
+            if (!busy) return true;
+            logger.debug(`[ScheduleJob] Antigravity is busy, waiting... (${i + 1}/${maxChecks})`);
+            await new Promise(r => setTimeout(r, checkIntervalMs));
+        }
+        return false;
+    }
+
+    // TODO: Future enhancement — notify bound channels when scheduled tasks execute.
+    // Requires mapping workspace paths back to Discord channels or Telegram chats.
+
+    // Resolve scheduler workspace — dedicated directory for cron-based tasks.
+    // This keeps scheduled work isolated from the user's active conversations.
+    const scheduleWorkspacePath = config.scheduleWorkspace
+        ?? path.join(config.workspaceBaseDir, '__claw-schedule__');
+
+    // Ensure the scheduler workspace directory exists
+    if (!fs.existsSync(scheduleWorkspacePath)) {
+        fs.mkdirSync(scheduleWorkspacePath, { recursive: true });
+        logger.info(`[Schedule] Created schedule workspace: ${scheduleWorkspacePath}`);
+    }
+
+    /**
      * Schedule job callback: dispatches the prompt to Antigravity via CDP.
      * This runs when a cron-scheduled task fires.
+     *
+     * Execution flow:
+     *   1. Connect CDP to the dedicated schedule workspace (__claw-schedule__)
+     *   2. Wait for any ongoing generation to finish (busy detection)
+     *   3. Open a new Antigravity chat session (isolation)
+     *   4. Inject the scheduled prompt
+     *
+     * The dedicated workspace ensures scheduled tasks never interfere with
+     * the user's current conversation in their regular workspace.
      */
     const scheduleJobCallback = async (schedule: ScheduleRecord) => {
-        logger.info(`[ScheduleJob] Firing schedule #${schedule.id}: "${schedule.prompt.slice(0, 80)}..." → workspace=${schedule.workspacePath}`);
+        logger.info(`[ScheduleJob] Firing schedule #${schedule.id}: "${schedule.prompt.slice(0, 80)}..." → schedule-workspace=${scheduleWorkspacePath}`);
         try {
-            const cdp = await bridge.pool.getOrConnect(schedule.workspacePath);
-            const projectName = bridge.pool.extractProjectName(schedule.workspacePath);
+            // Always use the dedicated schedule workspace, not the user's workspace
+            const cdp = await bridge.pool.getOrConnect(scheduleWorkspacePath);
+            const projectName = bridge.pool.extractProjectName(scheduleWorkspacePath);
+
+            // Safety check: is the schedule workspace currently generating?
+            const busy = await isAntigravityBusy(cdp);
+            if (busy) {
+                logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Schedule workspace is busy — waiting for previous task to finish...`);
+
+                const becameIdle = await waitForIdle(cdp, 300_000);
+                if (!becameIdle) {
+                    logger.error(`[ScheduleJob] Schedule #${schedule.id}: Still busy after 5min — SKIPPING this run`);
+                    return;
+                }
+
+                logger.info(`[ScheduleJob] Schedule #${schedule.id}: Schedule workspace is now idle`);
+                await new Promise(r => setTimeout(r, 3000));
+            }
+
             bridge.lastActiveWorkspace = projectName;
+
+            // Open a new Antigravity session to isolate this task's context.
+            // This prevents scheduled prompts from mixing with previous task history.
+            const newChatResult = await chatSessionService.startNewChat(cdp);
+            if (newChatResult.ok) {
+                logger.debug(`[ScheduleJob] Schedule #${schedule.id}: Opened new session for isolation`);
+                await new Promise(r => setTimeout(r, 1500));
+            } else {
+                // Non-fatal: if we can't open a new session, proceed anyway
+                logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Could not open new session: ${newChatResult.error}`);
+            }
 
             const injectResult = await cdp.injectMessage(schedule.prompt);
             if (injectResult.ok) {
-                logger.done(`[ScheduleJob] Schedule #${schedule.id} executed successfully`);
+                logger.done(`[ScheduleJob] Schedule #${schedule.id} executed successfully in isolated session`);
             } else {
                 logger.error(`[ScheduleJob] Schedule #${schedule.id} inject failed: ${injectResult.error}`);
             }
@@ -1042,7 +1129,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     // Restore persisted schedules on startup
     const restoredCount = scheduleService.restoreAll(scheduleJobCallback);
     if (restoredCount > 0) {
-        logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s)`);
+        logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s) → workspace: ${scheduleWorkspacePath}`);
     }
 
     // Discord platform — only initialise the Discord client when the platform is enabled

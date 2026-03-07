@@ -22,7 +22,7 @@
 
 - [x] **Startup Dashboard** — Rich embed on bot launch with system info ([#5](https://github.com/Danielmelody/ClawGravity/issues/5))
 - [ ] **Heartbeat** — Optional periodic alive-check notification ([#6](https://github.com/Danielmelody/ClawGravity/issues/6))
-- [ ] **Scheduled Tasks** — Wire `ScheduleService` backend to `/schedule` command ([#7](https://github.com/Danielmelody/ClawGravity/issues/7))
+- [x] **Scheduled Tasks** — Wire `ScheduleService` backend to `/schedule` command ([#7](https://github.com/Danielmelody/ClawGravity/issues/7))
 - [x] **Usage Stats & Rate Limiting** — `/stats` command and per-user rate limits ([#8](https://github.com/Danielmelody/ClawGravity/issues/8))
 - [ ] **External Webhooks** — Notify Slack, LINE Notify, etc. on task completion ([#9](https://github.com/Danielmelody/ClawGravity/issues/9))
 
@@ -44,7 +44,7 @@ Replace `innerText`-based extraction with structured DOM walking and HTML-to-Dis
 - [ ] **Phase 2: Activity Log Dedicated DOM Selectors** — Target activity containers directly to reduce regex dependency
 - [ ] **Phase 3a: Network Traffic Discovery** — Diagnostic tool to capture AG ↔ LLM API traffic patterns
 - [ ] **Phase 3b: Network Response Capture** — Intercept API responses pre-DOM rendering (based on 3a findings)
-- [ ] **Phase 4: Event-Driven DOM Monitoring** — `MutationObserver` + `Runtime.addBinding` to replace polling
+- [x] **Phase 4: Event-Driven DOM Monitoring** — `MutationObserver` + `Runtime.addBinding` to replace polling
 - [ ] **Phase 5: Selector Health Monitoring** — Sliding-window failure tracking and graceful degradation
 
 ## Scalability & Architecture
@@ -79,3 +79,6 @@ Replace `innerText`-based extraction with structured DOM walking and HTML-to-Dis
 - [x] Quota error detection — improved popup and inline pattern matching ([#22](https://github.com/Danielmelody/ClawGravity/issues/22))
 - [x] Project list pagination — support for >25 projects ([#21](https://github.com/Danielmelody/ClawGravity/pull/21))
 - [x] Dialog exclusion — exclude role="dialog" containers from activity scan ([#32](https://github.com/Danielmelody/ClawGravity/pull/32))
+- [x] Scheduled tasks — `/schedule` command wiring for Discord + Telegram with cron persistence ([#7](https://github.com/Danielmelody/ClawGravity/issues/7))
+- [x] Event-driven DOM monitoring — hybrid polling+push via MutationObserver + Runtime.addBinding (Phase 4)
+- [x] Passive PC→Telegram notifications — mirror locally-typed prompts and AI responses to Telegram

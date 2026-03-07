@@ -21,6 +21,8 @@ export interface AppConfig {
     telegramAllowedUserIds?: string[];
     /** Active platforms. Defaults to ['discord']. */
     platforms: PlatformType[];
+    /** Dedicated workspace for scheduled tasks (optional — defaults to workspaceBaseDir/__claw-schedule__). */
+    scheduleWorkspace?: string;
 }
 
 export type ResponseDeliveryMode = 'stream';
