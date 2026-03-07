@@ -510,12 +510,17 @@ export function ensureErrorPopupDetector(
             }
 
             const bodyText = info.body || t('An error occurred in the Antigravity agent.');
+            const supportsActions = info.buttons.some((label) => {
+                const normalized = label.trim().toLowerCase();
+                return normalized === 'dismiss' || normalized === 'copy debug info' || normalized === 'retry';
+            });
 
             const payload = buildErrorPopupNotification({
                 title: info.title || t('Agent Error'),
                 errorMessage: bodyText.substring(0, 4096),
                 projectName,
                 channelId: targetChannelId,
+                includeActions: supportsActions,
                 extraFields: [
                     { name: t('Buttons'), value: info.buttons.join(', ') || t('(None)'), inline: true },
                     { name: t('Workspace'), value: projectName, inline: true },

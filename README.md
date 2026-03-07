@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/tokyoweb3/LazyGravity/main/docs/assets/LazyGravityBanner.png" alt="LazyGravity Banner" width="100%" />
+  <img src="https://raw.githubusercontent.com/Danielmelody/ClawGravity/main/docs/assets/LazyGravityBanner.png" alt="ClawGravity Banner" width="100%" />
 </p>
 
 <p align="center">
@@ -12,35 +12,46 @@
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>
 
-# LazyGravity
+# ClawGravity
 
-**LazyGravity** is a local, secure bot that lets you remotely operate [Antigravity](https://antigravity.dev) on your home PC — from your smartphone, anywhere. Supports **Discord** and **Telegram** (optional).
+> **An [OpenClaw](https://github.com/AntiguardDev/OpenClaw) implementation built on [Antigravity](https://antigravity.dev)'s Agent capabilities.**
+> More stable. More token-efficient. All-in-one. Does not violate Antigravity's Terms of Service.
+
+**ClawGravity** (formerly [LazyGravity](https://github.com/tokyoweb3/LazyGravity)) is a local, secure bot that lets you remotely operate [Antigravity](https://antigravity.dev) on your home PC — from your smartphone, anywhere. Supports **Discord** and **Telegram** (optional).
 
 Send natural language instructions like "fix that bug" or "start designing the new feature" from your phone. Antigravity executes them locally on your home PC using its full resources, and reports results back to your chat platform.
 
 https://github.com/user-attachments/assets/08eac63e-5ede-469b-ac6c-1c40ec77b0c0
 
+## What is ClawGravity?
+
+ClawGravity is a second-generation fork of LazyGravity that implements the **OpenClaw** concept — using Antigravity's publicly available CDP (Chrome DevTools Protocol) debugging interface as an automation bridge. Key principles:
+
+- **TOS Compliant** — Uses only the standard CDP debugging interface (same as Chrome DevTools, Puppeteer, Playwright). No reverse engineering, no binary modification, no proprietary protocol interception.
+- **More Stable** — Improved CDP connection management, automatic reconnection, and structured DOM extraction for reliable long-running sessions.
+- **More Token-Efficient** — Intelligent activity log filtering, structured response extraction, and deduplication reduce unnecessary token consumption.
+- **All-in-One** — Discord + Telegram dual-platform support, project management, session continuity, and scheduled tasks in a single process.
 
 ## Quick Setup
 
 Runtime: **Node >= 18**.
 
 ```bash
-npm install -g lazy-gravity
-lazy-gravity setup
+npm install -g clawgravity
+clawgravity setup
 ```
 
 The interactive wizard walks you through Discord bot creation, token setup, and workspace configuration. When done:
 
 ```bash
-lazy-gravity open     # Launch Antigravity with CDP enabled
-lazy-gravity start    # Start the bot (Discord by default, or both platforms)
+clawgravity open     # Launch Antigravity with CDP enabled
+clawgravity start    # Start the bot (Discord by default, or both platforms)
 ```
 
 Or run directly without installing:
 
 ```bash
-npx lazy-gravity
+npx clawgravity
 ```
 
 ---
@@ -125,15 +136,15 @@ Telegram commands use underscores instead of subcommand syntax (Telegram does no
 ### CLI Commands
 
 ```bash
-lazy-gravity              # Auto: runs setup if unconfigured, otherwise starts the bot
-lazy-gravity setup        # Interactive setup wizard
-lazy-gravity open         # Open Antigravity with CDP (auto-selects available port)
-lazy-gravity start        # Start the Discord bot
-lazy-gravity doctor       # Check environment and dependencies
-lazy-gravity --verbose    # Show debug-level logs (CDP details, detector events, etc.)
-lazy-gravity --quiet      # Only show errors
-lazy-gravity --version    # Show version
-lazy-gravity --help       # Show help
+clawgravity              # Auto: runs setup if unconfigured, otherwise starts the bot
+clawgravity setup        # Interactive setup wizard
+clawgravity open         # Open Antigravity with CDP (auto-selects available port)
+clawgravity start        # Start the Discord bot
+clawgravity doctor       # Check environment and dependencies
+clawgravity --verbose    # Show debug-level logs (CDP details, detector events, etc.)
+clawgravity --quiet      # Only show errors
+clawgravity --version    # Show version
+clawgravity --help       # Show help
 ```
 
 ---
@@ -143,8 +154,8 @@ lazy-gravity --help       # Show help
 ### Option A: npm (Recommended)
 
 ```bash
-npm install -g lazy-gravity
-lazy-gravity setup
+npm install -g clawgravity
+clawgravity setup
 ```
 
 The wizard guides you through 4 steps:
@@ -157,13 +168,13 @@ The wizard guides you through 4 steps:
 3. **Allowed User IDs** — Discord users authorized to interact with the bot.
 4. **Workspace Directory** — parent directory where your coding projects live.
 
-Config is saved to `~/.lazy-gravity/config.json`.
+Config is saved to `~/.clawgravity/config.json`.
 
 ### Option B: From source
 
 ```bash
-git clone https://github.com/tokyoweb3/LazyGravity.git
-cd LazyGravity
+git clone https://github.com/Danielmelody/ClawGravity.git
+cd clawgravity
 npm install
 ```
 
@@ -212,12 +223,12 @@ node dist/bin/cli.js setup    # or: node dist/bin/cli.js start
 
 ### Launch Antigravity with CDP
 
-LazyGravity connects to Antigravity via Chrome DevTools Protocol (CDP).
+ClawGravity connects to Antigravity via Chrome DevTools Protocol (CDP).
 You need to launch Antigravity with a remote debugging port enabled.
 
 ```bash
 # Easiest way (auto-selects an available port):
-lazy-gravity open
+clawgravity open
 ```
 
 If you cloned from source, you can also use the bundled launcher scripts (they auto-detect an available port from 9222–9666):
@@ -250,24 +261,24 @@ If the bot is unresponsive or you've updated the code, restart it:
 
 1. **Stop the bot** — press `Ctrl + C` in the terminal, or:
    ```bash
-   pkill -f "lazy-gravity"
+   pkill -f "clawgravity"
    ```
 2. **Restart**
    ```bash
-   lazy-gravity start
+   clawgravity start
    # or, from source: npm run start
    ```
 
 If Antigravity is restarted, the bot automatically attempts CDP reconnection. Sending a message triggers automatic project reconnection.
 
-Run `lazy-gravity doctor` to diagnose configuration and connectivity issues.
+Run `clawgravity doctor` to diagnose configuration and connectivity issues.
 
 ---
 
 ## How CDP Connection Works
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/tokyoweb3/LazyGravity/main/docs/images/architecture.svg" alt="LazyGravity Architecture" width="100%" />
+  <img src="https://raw.githubusercontent.com/Danielmelody/ClawGravity/main/docs/images/architecture.svg" alt="ClawGravity Architecture" width="100%" />
 </p>
 
 1. The bot scans debug ports (default: 9222) and auto-detects the Antigravity target
@@ -278,7 +289,7 @@ Run `lazy-gravity doctor` to diagnose configuration and connectivity issues.
 
 ## Platform Architecture
 
-LazyGravity uses a **platform abstraction layer** so the core bot logic is platform-independent:
+ClawGravity uses a **platform abstraction layer** so the core bot logic is platform-independent:
 
 ```
 src/platform/
@@ -295,6 +306,10 @@ src/platform/
 ```
 
 Both adapters implement the same `PlatformAdapter` interface and emit events through `PlatformAdapterEvents`. The `EventRouter` dispatches events to platform-agnostic handlers, and the `WorkspaceQueue` serializes concurrent requests per workspace across platforms.
+
+## Attribution
+
+ClawGravity is a fork of [LazyGravity](https://github.com/tokyoweb3/LazyGravity), an open-source project for remote Antigravity automation. This project builds upon LazyGravity's foundation to provide an **OpenClaw**-compatible implementation with improved stability, token efficiency, and an all-in-one user experience.
 
 ## License
 

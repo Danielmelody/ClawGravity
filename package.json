@@ -1,10 +1,10 @@
 {
-  "name": "lazy-gravity",
+  "name": "clawgravity",
   "version": "0.3.0",
-  "description": "Control Antigravity from anywhere — a local, secure bot (Discord + Telegram) that lets you remotely operate Antigravity on your home PC from your smartphone.",
+  "description": "ClawGravity — An OpenClaw implementation built on Antigravity's Agent capabilities. More stable, more token-efficient, all-in-one. Control Antigravity remotely via Discord + Telegram.",
   "main": "dist/index.js",
   "bin": {
-    "lazy-gravity": "dist/bin/cli.js"
+    "clawgravity": "dist/bin/cli.js"
   },
   "files": [
     "dist/",
@@ -34,18 +34,19 @@
     "bot",
     "ai",
     "antigravity",
+    "openclaw",
     "remote-control"
   ],
-  "author": "LazyGravity Contributors",
+  "author": "ClawGravity Contributors",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tokyoweb3/LazyGravity.git"
+    "url": "git+https://github.com/Danielmelody/ClawGravity.git"
   },
   "bugs": {
-    "url": "https://github.com/tokyoweb3/LazyGravity/issues"
+    "url": "https://github.com/Danielmelody/ClawGravity/issues"
   },
-  "homepage": "https://github.com/tokyoweb3/LazyGravity#readme",
+  "homepage": "https://github.com/Danielmelody/ClawGravity#readme",
   "dependencies": {
     "@inquirer/select": "^4.4.2",
     "better-sqlite3": "^12.6.2",

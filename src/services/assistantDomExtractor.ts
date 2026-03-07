@@ -150,7 +150,7 @@ export function extractAssistantSegmentsPayloadScript(): string {
     var looksLikeActivityLog = function(text) {
         var normalized = (text || '').trim().toLowerCase();
         if (!normalized) return false;
-        if (/^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|loading|executing|testing|debugging|fetching|connecting|creating|updating|deleting|installing|building|compiling|deploying|checking|scanning|parsing|resolving|downloading|uploading|analyzed|read|wrote|ran|created|updated|deleted|fetched|built|compiled|installed|resolved|downloaded|connected)\\b/i.test(normalized) && normalized.length <= 220) return true;
+        if (/^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|loading|executing|testing|debugging|fetching|connecting|creating|updating|deleting|installing|building|compiling|deploying|checking|scanning|parsing|resolving|downloading|uploading|working|analyzed|read|wrote|ran|created|updated|deleted|fetched|built|compiled|installed|resolved|downloaded|connected)\\b/i.test(normalized) && normalized.length <= 220) return true;
         if (/^initiating\\s/i.test(normalized) && normalized.length <= 500) return true;
         if (/^thought for\\s/i.test(normalized) && normalized.length <= 500) return true;
         return false;
@@ -163,10 +163,56 @@ export function extractAssistantSegmentsPayloadScript(): string {
 
     var looksLikeToolOutput = function(text) {
         var first = (text || '').trim().split('\\n')[0] || '';
+        first = first.replace(/\\s*show details\\s*$/i, '').trim();
         if (/^[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(first)) return true;
+        if (/^mcp tool:\\s*[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(first)) return true;
         if (/^full output written to\\b/i.test(first)) return true;
         if (/^output\\.[a-z0-9._-]+(?:#l\\d+(?:-\\d+)?)?$/i.test(first)) return true;
         return false;
+    };
+
+    var isInlineStatusLeaf = function(text) {
+        var normalized = (text || '').replace(/\\r/g, '').trim();
+        if (!normalized) return false;
+        normalized = normalized.replace(/\\s*show details\\s*$/i, '').trim();
+        if (!normalized) return false;
+        if (normalized === 'Good' || normalized === 'Bad') return false;
+        if (/^show details$/i.test(normalized)) return false;
+        if (normalized.length > 180) return false;
+        if (normalized.split('\\n').length > 3) return false;
+        return true;
+    };
+
+    var extractRunCommandCard = function(container) {
+        if (!container) return null;
+        var headerCandidates = Array.from(container.querySelectorAll('div, span, strong, b'));
+        var hasRanCommandHeader = headerCandidates.some(function(el) {
+            return /^ran command$/i.test((el.textContent || '').trim());
+        });
+        if (!hasRanCommandHeader) return null;
+
+        var pre = container.querySelector('pre');
+        if (!pre) return null;
+
+        var commandText = (pre.innerText || pre.textContent || '').replace(/\\r/g, '').trim();
+        if (!commandText) return null;
+
+        var lines = ['Ran command', commandText];
+        var flatContainerText = (container.textContent || '').replace(/\\s+/g, ' ').trim();
+        var exitCodeMatch = flatContainerText.match(/(exit code\\s+\\d+)/i);
+        if (exitCodeMatch && exitCodeMatch[1]) {
+            lines.push(exitCodeMatch[1]);
+        }
+        return lines.join('\\n');
+    };
+
+    var markSubtreeSeen = function(root, set) {
+        if (!root) return;
+        set.add(root);
+        var descendants = root.querySelectorAll('*');
+        for (var i = 0; i < descendants.length; i++) {
+            set.add(descendants[i]);
+        }
     };
 
     var isInsideExcludedContainer = function(node) {
@@ -180,6 +226,7 @@ export function extractAssistantSegmentsPayloadScript(): string {
     var segments = [];
     var seen = new Set();
     var bodyFound = false;
+    var latestBodyNode = null;
 
     // Pass 1: Find assistant body — last non-excluded content node (recency first)
     var combinedSelector = selectors.join(', ');
@@ -202,6 +249,13 @@ export function extractAssistantSegmentsPayloadScript(): string {
         // embedded <style> tags, and code-line divs — NOT standard <pre><code>.
         // We normalize to <pre><code> for htmlToDiscordMarkdown.
         var clone = node.cloneNode(true);
+        var commandCards = clone.querySelectorAll('div, section, article');
+        for (var cci = 0; cci < commandCards.length; cci++) {
+            var cardText = extractRunCommandCard(commandCards[cci]);
+            if (cardText && commandCards[cci].parentNode) {
+                commandCards[cci].parentNode.removeChild(commandCards[cci]);
+            }
+        }
         var pres = clone.querySelectorAll('pre');
         for (var pi = 0; pi < pres.length; pi++) {
             var pre = pres[pi];
@@ -252,6 +306,7 @@ export function extractAssistantSegmentsPayloadScript(): string {
         }
         var bodyHtml = clone.innerHTML;
         if (bodyHtml && bodyHtml.trim()) {
+            latestBodyNode = node;
             segments.push({
                 kind: 'assistant-body',
                 text: bodyHtml,
@@ -287,6 +342,7 @@ export function extractAssistantSegmentsPayloadScript(): string {
             var child = children[ci];
             if (child.tagName === 'SUMMARY' || child.tagName === 'STYLE') continue;
             var childText = (child.innerText || child.textContent || '').trim();
+            childText = childText.replace(/\\s*show details\\s*$/i, '').trim();
             if (!childText || childText.length < 2) continue;
             var childKind = looksLikeToolOutput(childText) ? 'tool-result' : 'tool-call';
             segments.push({
@@ -297,6 +353,32 @@ export function extractAssistantSegmentsPayloadScript(): string {
                 domPath: 'details:nth(' + di + ') child:nth(' + ci + ')'
             });
         }
+    }
+
+    // Pass 2.4: Extract explicit "Ran command" cards.
+    var latestTurnScope = latestBodyNode || scope;
+    var commandCardsLive = latestTurnScope.querySelectorAll('div, section, article');
+    for (var rci = 0; rci < commandCardsLive.length; rci++) {
+        var runCardText = extractRunCommandCard(commandCardsLive[rci]);
+        if (!runCardText) continue;
+        var hasNestedRunCard = false;
+        var nestedCards = commandCardsLive[rci].querySelectorAll('div, section, article');
+        for (var nri = 0; nri < nestedCards.length; nri++) {
+            if (nestedCards[nri] === commandCardsLive[rci]) continue;
+            if (extractRunCommandCard(nestedCards[nri])) {
+                hasNestedRunCard = true;
+                break;
+            }
+        }
+        if (hasNestedRunCard) continue;
+        markSubtreeSeen(commandCardsLive[rci], seen);
+        segments.push({
+            kind: 'tool-result',
+            text: runCardText.slice(0, 500),
+            role: 'assistant',
+            messageIndex: 0,
+            domPath: 'run-command-card:nth(' + rci + ')'
+        });
     }
 
     // Pass 2.5: Broad activity scan - leaf-ish elements with activity-like text
@@ -314,6 +396,7 @@ export function extractAssistantSegmentsPayloadScript(): string {
         // Skip nodes inside response body containers (prevents capturing inline words)
         if (el.closest('.leading-relaxed, .rendered-markdown, .prose, .animate-markdown, [data-message-role], [data-message-author-role]')) continue;
         var aText = (el.innerText || el.textContent || '').replace(/\\r/g, '').trim();
+        aText = aText.replace(/\\s*show details\\s*$/i, '').trim();
         if (!aText || aText.length < 4 || aText.length > 300) continue;
         if (looksLikeActivityLog(aText) || looksLikeToolOutput(aText)) {
             // Ancestor dedup: skip if a parent was already captured as activity
@@ -332,6 +415,45 @@ export function extractAssistantSegmentsPayloadScript(): string {
                 role: 'assistant',
                 messageIndex: 0,
                 domPath: 'activity-scan:nth(' + ai + ')'
+            });
+        }
+    }
+
+    // Pass 2.6: Activity scan inside rendered response containers.
+    // Some AG builds render "Thought for 2s", "Analyzed ...", "Working..."
+    // inline inside the latest message card instead of separate details blocks.
+    var activityContainers = latestTurnScope.querySelectorAll('.leading-relaxed, .rendered-markdown, .prose, .animate-markdown, [data-message-role], [data-message-author-role]');
+    for (var aci = 0; aci < activityContainers.length; aci++) {
+        var container = activityContainers[aci];
+        var leafs = container.querySelectorAll('*');
+        for (var li = 0; li < leafs.length; li++) {
+            var leaf = leafs[li];
+            if (leaf.children.length > 2) continue;
+            if (seen.has(leaf)) continue;
+            if (isInsideExcludedContainer(leaf)) continue;
+            var leafText = (leaf.innerText || leaf.textContent || '').replace(/\\r/g, '').trim();
+            leafText = leafText.replace(/\\s*show details\\s*$/i, '').trim();
+            if (!leafText || leafText.length < 4 || leafText.length > 300) continue;
+            if (!isInlineStatusLeaf(leafText) && !looksLikeToolOutput(leafText)) continue;
+
+            var nestedDup = false;
+            for (var ci2 = 0; ci2 < leaf.children.length; ci2++) {
+                var childText2 = ((leaf.children[ci2].innerText || leaf.children[ci2].textContent || '') + '').replace(/\\r/g, '').trim();
+                childText2 = childText2.replace(/\\s*show details\\s*$/i, '').trim();
+                if (childText2 && childText2 === leafText) {
+                    nestedDup = true;
+                    break;
+                }
+            }
+            if (nestedDup) continue;
+
+            seen.add(leaf);
+            segments.push({
+                kind: looksLikeToolOutput(leafText) ? 'tool-result' : 'thinking',
+                text: leafText.slice(0, 300),
+                role: 'assistant',
+                messageIndex: 0,
+                domPath: 'activity-inline:nth(' + aci + ':' + li + ')'
             });
         }
     }

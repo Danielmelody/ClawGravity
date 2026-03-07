@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Project rebranded**: LazyGravity → ClawGravity (OpenClaw implementation)
+- npm package name: `lazy-gravity` → `clawgravity`
+- CLI command: `lazy-gravity` → `clawgravity`
+- Config directory: `~/.lazy-gravity/` → `~/.clawgravity/`
+- Repository moved to [Danielmelody/ClawGravity](https://github.com/Danielmelody/ClawGravity)
+
 ## [0.3.0] - 2026-03-03
 
 ### Added
@@ -92,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI entry point (`lazy-gravity` command) with setup wizard and doctor command
 - Comprehensive test suite (390+ tests)
 
-[Unreleased]: https://github.com/tokyoweb3/LazyGravity/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Danielmelody/ClawGravity/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/tokyoweb3/LazyGravity/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tokyoweb3/LazyGravity/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tokyoweb3/LazyGravity/releases/tag/v0.1.0

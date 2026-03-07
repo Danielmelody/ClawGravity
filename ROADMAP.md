@@ -1,5 +1,6 @@
-# LazyGravity Roadmap
+# ClawGravity Roadmap
 
+> An OpenClaw implementation built on Antigravity's Agent capabilities.
 > Tracking upcoming work and known issues.
 > Items link to GitHub Issues — contributions welcome!
 
@@ -14,7 +15,7 @@
 ## CLI & Management
 
 - [x] **`/status` command** — Show bot connection state, active projects, and current mode
-- [x] **Invite Link Generator** — Auto-generate a bot invite URL during `lazy-gravity setup`
+- [x] **Invite Link Generator** — Auto-generate a bot invite URL during `clawgravity setup`
 - [x] **`doctor` enhancements** — Colored output and expanded checks ([#4](https://github.com/tokyoweb3/LazyGravity/issues/4))
 
 ## UX & Notifications
@@ -55,7 +56,7 @@ Replace `innerText`-based extraction with structured DOM walking and HTML-to-Dis
 ## Public Release
 
 - [x] **Assets** — Demo video, banner image, and Mermaid architecture diagram (all in README)
-- [x] **npm Publish** — Published as `lazy-gravity` (v0.1.0)
+- [x] **npm Publish** — Published as `clawgravity`
 - [x] **GitHub Infrastructure** — Issue/PR templates, `CONTRIBUTING.md`, Discussions ([#15](https://github.com/tokyoweb3/LazyGravity/issues/15))
 - [ ] **v1.0 Stable Release** — First production-ready version ([#16](https://github.com/tokyoweb3/LazyGravity/issues/16))
 

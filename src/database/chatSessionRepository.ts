@@ -95,6 +95,13 @@ export class ChatSessionRepository {
         return rows.map(this.mapRow);
     }
 
+    public findAll(): ChatSessionRecord[] {
+        const rows = this.db.prepare(
+            'SELECT * FROM chat_sessions ORDER BY id ASC'
+        ).all() as any[];
+        return rows.map(this.mapRow);
+    }
+
     /**
      * Get the next session number within a category (MAX + 1, or 1 if none)
      */
@@ -124,6 +131,21 @@ export class ChatSessionRepository {
         const row = this.db.prepare(
             'SELECT * FROM chat_sessions WHERE workspace_path = ? AND display_name = ? ORDER BY id DESC LIMIT 1'
         ).get(workspacePath, displayName) as any;
+        if (!row) return undefined;
+        return this.mapRow(row);
+    }
+
+    public findLatestRestorableByWorkspace(workspacePath: string): ChatSessionRecord | undefined {
+        const row = this.db.prepare(
+            `SELECT *
+             FROM chat_sessions
+             WHERE workspace_path = ?
+               AND is_renamed = 1
+               AND display_name IS NOT NULL
+               AND trim(display_name) <> ''
+             ORDER BY id DESC
+             LIMIT 1`
+        ).get(workspacePath) as any;
         if (!row) return undefined;
         return this.mapRow(row);
     }

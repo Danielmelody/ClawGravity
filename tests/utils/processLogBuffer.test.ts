@@ -72,4 +72,48 @@ describe('ProcessLogBuffer', () => {
         expect(result).toContain('Step B');
         expect(result).toContain('Step C');
     });
+
+    it('coalesces short token-per-line fragments into a single entry', () => {
+        const buffer = new ProcessLogBuffer({ maxChars: 2000 });
+
+        // Simulate streaming tokens on separate lines (no blank-line separator)
+        const result = buffer.append(
+            'successful:\nclosed\nwe\'re\nsaved.\nsecond\nTELEGRAM\nTELEGRAM_CHAT_ID\nscroll\ndown\nverify',
+        );
+
+        // Should be coalesced into one or few entries, NOT 10 separate bullets
+        const lines = result.split('\n');
+        expect(lines.length).toBeLessThanOrEqual(2);
+        expect(result).toContain('successful:');
+        expect(result).toContain("we're");
+        expect(result).toContain('verify');
+    });
+
+    it('preserves standalone activity entries during coalescing', () => {
+        const buffer = new ProcessLogBuffer({ maxChars: 2000 });
+
+        // All single-newline separated (triggers fallback path with coalescing).
+        // Standalone entries (verb-prefixed or >40 chars) should remain separate;
+        // short fragments should be coalesced together.
+        const result = buffer.append(
+            'Analyzing package.json for dependencies\nfoo\nbar\nbaz',
+        );
+
+        // The long standalone entry should be its own line
+        expect(result).toContain('🔍 Analyzing package.json for dependencies');
+        // Short fragments should be coalesced
+        expect(result).toContain('foo bar baz');
+    });
+
+    it('does not coalesce entries separated by blank lines', () => {
+        const buffer = new ProcessLogBuffer({ maxChars: 2000 });
+
+        const result = buffer.append('Initiating Step A\n\nThought for 6s');
+
+        // Blank-line separated blocks should remain separate
+        const lines = result.split('\n');
+        expect(lines.length).toBe(2);
+        expect(result).toContain('🚀 Initiating Step A');
+        expect(result).toContain('🧠 Thought for 6s');
+    });
 });

@@ -180,6 +180,13 @@ describe('Lean discordFormatter (new API)', () => {
         expect(result.output).toBe('');
     });
 
+    it("splitOutputAndLogs: 'MCP Tool: chrome-devtools-mcp / evaluate_script' is classified as log", () => {
+        const result = splitOutputAndLogs('MCP Tool: chrome-devtools-mcp / evaluate_script');
+
+        expect(result.logs).toContain('MCP Tool: chrome-devtools-mcp / evaluate_script');
+        expect(result.output).toBe('');
+    });
+
     // ---------------------------------------------------------------
     // Test 14: Tool result redirect is classified as log
     // ---------------------------------------------------------------

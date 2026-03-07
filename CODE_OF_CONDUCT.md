@@ -8,8 +8,8 @@ By participating in this project, you agree to abide by its terms.
 
 If you experience or witness unacceptable behavior, please report it via:
 
-- [GitHub Issues](https://github.com/tokyoweb3/LazyGravity/issues)
-- [GitHub Discussions](https://github.com/tokyoweb3/LazyGravity/discussions)
+- [GitHub Issues](https://github.com/Danielmelody/ClawGravity/issues)
+- [GitHub Discussions](https://github.com/Danielmelody/ClawGravity/discussions)
 
 All reports will be reviewed and investigated promptly and fairly.
 

@@ -10,12 +10,12 @@ import type { PlatformType } from '../platform/types';
 // dotenv will NOT override already-set env vars by default.
 dotenv.config();
 
-const CONFIG_DIR_NAME = '.lazy-gravity';
+const CONFIG_DIR_NAME = '.clawgravity';
 const CONFIG_FILE_NAME = 'config.json';
 const DEFAULT_DB_NAME = 'antigravity.db';
 
 /**
- * JSON-serializable shape stored in ~/.lazy-gravity/config.json.
+ * JSON-serializable shape stored in ~/.clawgravity/config.json.
  * Every field is optional — missing keys fall through to env / defaults.
  */
 export interface PersistedConfig {
@@ -228,16 +228,16 @@ function resolveBoolean(
 // ---------------------------------------------------------------------------
 
 export const ConfigLoader = {
-    /** Return the config directory path (~/.lazy-gravity/). */
+    /** Return the config directory path (~/.clawgravity/). */
     getConfigDir,
 
     /** Return the full path to config.json. */
     getConfigFilePath,
 
-    /** Return the default database file path (~/.lazy-gravity/antigravity.db). */
+    /** Return the default database file path (~/.clawgravity/antigravity.db). */
     getDefaultDbPath,
 
-    /** Check whether ~/.lazy-gravity/config.json exists on disk. */
+    /** Check whether ~/.clawgravity/config.json exists on disk. */
     configExists(): boolean {
         return fs.existsSync(getConfigFilePath());
     },
@@ -249,7 +249,7 @@ export const ConfigLoader = {
 
     /**
      * Load config using resolution order:
-     *   env vars  >  ~/.lazy-gravity/config.json  >  .env  >  defaults
+     *   env vars  >  ~/.clawgravity/config.json  >  .env  >  defaults
      */
     load(persistedOverride?: PersistedConfig): AppConfig {
         const persisted = persistedOverride ?? readPersistedConfig(getConfigFilePath());
@@ -257,7 +257,7 @@ export const ConfigLoader = {
     },
 
     /**
-     * Persist the given config to ~/.lazy-gravity/config.json.
+     * Persist the given config to ~/.clawgravity/config.json.
      * Creates the directory if it doesn't exist.
      */
     save(config: Partial<PersistedConfig>): void {

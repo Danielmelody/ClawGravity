@@ -4,16 +4,17 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
+| 0.3.x   | Yes                |
 | 0.1.x   | Yes                |
 
 ## Reporting a Vulnerability
 
-We take the security of LazyGravity seriously. If you discover a security vulnerability, please report it responsibly.
+We take the security of ClawGravity seriously. If you discover a security vulnerability, please report it responsibly.
 
 ### How to Report
 
 1. **Do NOT open a public GitHub issue** for security vulnerabilities.
-2. Use [GitHub Security Advisories](https://github.com/tokyoweb3/LazyGravity/security/advisories/new) to report the vulnerability privately.
+2. Use [GitHub Security Advisories](https://github.com/Danielmelody/ClawGravity/security/advisories/new) to report the vulnerability privately.
 3. Provide as much detail as possible:
    - Description of the vulnerability
    - Steps to reproduce
@@ -53,4 +54,4 @@ The following are in scope for security reports:
 
 ---
 
-Copyright (c) LazyGravity Project
+Copyright (c) ClawGravity Project

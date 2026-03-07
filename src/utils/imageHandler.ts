@@ -8,7 +8,7 @@ import { logger } from './logger';
 
 const MAX_INBOUND_IMAGE_ATTACHMENTS = 4;
 const IMAGE_EXT_PATTERN = /\.(png|jpe?g|webp|gif|bmp)$/i;
-const TEMP_IMAGE_DIR = path.join(os.tmpdir(), 'lazy-gravity-images');
+const TEMP_IMAGE_DIR = path.join(os.tmpdir(), 'clawgravity-images');
 
 export interface InboundImageAttachment {
     localPath: string;

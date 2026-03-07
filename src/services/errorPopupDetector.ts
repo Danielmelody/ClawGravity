@@ -32,6 +32,9 @@ export interface ErrorPopupDetectorOptions {
 const DETECT_ERROR_POPUP_SCRIPT = `(() => {
     const ERROR_PATTERNS = [
         'agent terminated',
+        'agent execution terminated',
+        'execution terminated',
+        'execution failed',
         'terminated due to error',
         'unexpected error',
         'something went wrong',
@@ -39,11 +42,65 @@ const DETECT_ERROR_POPUP_SCRIPT = `(() => {
     ];
 
     const normalize = (text) => (text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    const isVisible = (el) => !!el && (el.offsetParent !== null || el.getAttribute('aria-hidden') !== 'true');
+    const isGeneratingNow = () => {
+        const panel = document.querySelector('.antigravity-agent-side-panel') || document;
+        if (panel.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]')) return true;
+        const normalizeButton = (value) => normalize(value);
+        const STOP_PATTERNS = ['stop', 'stop generating', 'stop response', '停止', '生成を停止', '応答を停止'];
+        const buttons = Array.from(panel.querySelectorAll('button, [role="button"]'));
+        for (const btn of buttons) {
+            const labels = [
+                btn.textContent || '',
+                btn.getAttribute('aria-label') || '',
+                btn.getAttribute('title') || '',
+            ];
+            if (labels.some(label => STOP_PATTERNS.includes(normalizeButton(label)))) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const hasErrorSignal = (text) => {
+        const normalized = normalize(text);
+        if (!normalized) return false;
+        if (ERROR_PATTERNS.some(p => normalized.includes(p))) return true;
+        if (normalized === 'error' || normalized === 'agent error') return true;
+        if (normalized.startsWith('error ') && /(terminate|terminated|failure|failed|exception|crash|crashed)/.test(normalized)) return true;
+        return false;
+    };
+    const extractInfo = (container) => {
+        const headingEl = container.querySelector('h1, h2, h3, h4, [class*="title"], [class*="heading"]');
+        const title = headingEl ? (headingEl.textContent || '').trim() : '';
+        const allButtons = Array.from(container.querySelectorAll('button'))
+            .filter(btn => isVisible(btn));
+        const buttonTexts = new Set(allButtons.map(btn => (btn.textContent || '').trim()).filter(Boolean));
+
+        const bodyParts = [];
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+            const text = (node.textContent || '').trim();
+            if (!text) continue;
+            if (buttonTexts.has(text)) continue;
+            if (text === title) continue;
+            if (text === 'Good' || text === 'Bad') continue;
+            bodyParts.push(text);
+        }
+
+        const body = bodyParts.join(' ').replace(/\\s+/g, ' ').trim().slice(0, 1000);
+        const buttons = allButtons
+            .map(btn => (btn.textContent || '').trim())
+            .filter(t => t.length > 0 && t !== 'Good' && t !== 'Bad');
+        const fallbackTitle = title || (body.toLowerCase().startsWith('error ') ? 'Error' : 'Agent Error');
+
+        return { title: fallbackTitle, body, buttons };
+    };
 
     // Try dialog/modal first
     const dialogs = Array.from(document.querySelectorAll(
         '[role="dialog"], [role="alertdialog"], .modal, .dialog'
-    )).filter(el => el.offsetParent !== null || el.getAttribute('aria-modal') === 'true');
+    )).filter(el => isVisible(el) || el.getAttribute('aria-modal') === 'true');
 
     // Fallback: look for fixed/absolute positioned overlays
     if (dialogs.length === 0) {
@@ -52,46 +109,47 @@ const DETECT_ERROR_POPUP_SCRIPT = `(() => {
                 const style = window.getComputedStyle(el);
                 return (style.position === 'fixed' || style.position === 'absolute')
                     && style.zIndex && parseInt(style.zIndex, 10) > 10
-                    && el.querySelector('button');
+                    && isVisible(el);
             });
         dialogs.push(...overlays);
     }
 
     for (const dialog of dialogs) {
         const fullText = normalize(dialog.textContent || '');
-        const isError = ERROR_PATTERNS.some(p => fullText.includes(p));
-        if (!isError) continue;
+        if (!hasErrorSignal(fullText)) continue;
+        return extractInfo(dialog);
+    }
 
-        // Extract title from heading elements or first prominent text
-        const headingEl = dialog.querySelector('h1, h2, h3, h4, [class*="title"], [class*="heading"]');
-        const title = headingEl ? (headingEl.textContent || '').trim() : '';
+    const panel = document.querySelector('.antigravity-agent-side-panel') || document;
+    if (isGeneratingNow()) return null;
+    const inlineCandidates = Array.from(panel.querySelectorAll('div, section, article, li, span'))
+        .filter(el => {
+            if (!isVisible(el)) return false;
+            if (el.closest('[role="dialog"], [role="alertdialog"], .modal, .dialog')) return false;
+            if (el.closest('.notify-user-container')) return false;
+            if (el.closest('[class*="feedback"], footer')) return false;
+            const text = normalize(el.textContent || '');
+            if (!text || text.length < 8 || text.length > 240) return false;
+            if (!hasErrorSignal(text)) return false;
+            for (const child of Array.from(el.children)) {
+                const childText = normalize(child.textContent || '');
+                if (childText && childText.length >= 8 && hasErrorSignal(childText)) {
+                    return false;
+                }
+            }
+            return true;
+        });
 
-        // Extract body text (excluding button text and title)
-        const allButtons = Array.from(dialog.querySelectorAll('button'))
-            .filter(btn => btn.offsetParent !== null);
-        const buttonTexts = new Set(allButtons.map(btn => (btn.textContent || '').trim()));
-
-        const bodyParts = [];
-        const walker = document.createTreeWalker(dialog, NodeFilter.SHOW_TEXT);
-        let node;
-        while ((node = walker.nextNode())) {
-            const text = (node.textContent || '').trim();
-            if (!text) continue;
-            if (buttonTexts.has(text)) continue;
-            if (text === title) continue;
-            bodyParts.push(text);
-        }
-        const body = bodyParts.join(' ').slice(0, 1000);
-
-        const buttons = allButtons.map(btn => (btn.textContent || '').trim()).filter(t => t.length > 0);
-
-        if (buttons.length === 0) continue;
-
-        return { title: title || 'Error', body, buttons };
+    for (let i = inlineCandidates.length - 1; i >= 0; i--) {
+        const candidate = inlineCandidates[i];
+        const card = candidate.closest('div, section, article, li') || candidate;
+        return extractInfo(card);
     }
 
     return null;
 })()`;
+
+export const ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST = DETECT_ERROR_POPUP_SCRIPT;
 
 /**
  * Read clipboard content via navigator.clipboard.readText().

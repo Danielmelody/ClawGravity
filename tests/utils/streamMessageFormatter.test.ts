@@ -42,6 +42,15 @@ describe('streamMessageFormatter', () => {
             expect(shouldSkipActivityLog('pull.', 'Fast', 'Gemini 3.1 Pro')).toBe(true);
         });
 
+        it('filters out uppercase and punctuated single-word noise', () => {
+            expect(shouldSkipActivityLog('TELEGRAM', 'Fast', 'Gemini 3.1 Pro')).toBe(true);
+            expect(shouldSkipActivityLog('successful:', 'Fast', 'Gemini 3.1 Pro')).toBe(true);
+            expect(shouldSkipActivityLog("we're", 'Fast', 'Gemini 3.1 Pro')).toBe(true);
+            expect(shouldSkipActivityLog('saved.', 'Fast', 'Gemini 3.1 Pro')).toBe(true);
+            expect(shouldSkipActivityLog('closed', 'Fast', 'Gemini 3.1 Pro')).toBe(true);
+            expect(shouldSkipActivityLog('scroll', 'Fast', 'Gemini 3.1 Pro')).toBe(true);
+        });
+
         it('filters out analyzed-type scan logs', () => {
             expect(shouldSkipActivityLog('Analyzed.gemini/antigravity/global_skills', 'Fast', 'Gemini 3.1 Pro')).toBe(true);
             expect(shouldSkipActivityLog('Analyzedantigravity_claw_development.md#L1-49', 'Fast', 'Gemini 3.1 Pro')).toBe(true);

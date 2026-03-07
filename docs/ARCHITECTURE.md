@@ -1,11 +1,11 @@
 # Architecture & Core Design
 
 ## 1. System Overview
-LazyGravity communicates with the Discord/Telegram APIs entirely within the user's local PC, without routing through any external intermediary server.
+ClawGravity communicates with the Discord/Telegram APIs entirely within the user's local PC, without routing through any external intermediary server.
 
 ```mermaid
 graph TD
-    A[📱 Discord App] -->|WebSocket Gateway| B[🔒 Local PC - LazyGravity Bot]
+    A[📱 Discord App] -->|WebSocket Gateway| B[🔒 Local PC - ClawGravity Bot]
     T[📱 Telegram App] -->|Long Polling| B
     B -->|REST API| A
     B -->|Bot API| T

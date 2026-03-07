@@ -14,6 +14,8 @@ const UI_CHROME_LITERALS = new Set([
     'thinking',
     'thinking...',
     'processing',
+    'working',
+    'working...',
     'loading',
     'executing',
     'testing',
@@ -155,7 +157,7 @@ function isMcpFormatLine(line: string): boolean {
 function isActivityLogLine(line: string): boolean {
     const trimmed = (line || '').trim();
     if (!trimmed) return false;
-    return /^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|loading|executing|testing|debugging|analyzed|read|wrote|ran)\s+.+/i.test(trimmed)
+    return /^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|working|loading|executing|testing|debugging|analyzed|read|wrote|ran)\s+.+/i.test(trimmed)
         && trimmed.length <= 220;
 }
 

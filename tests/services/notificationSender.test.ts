@@ -890,5 +890,16 @@ describe('extraFields parameter', () => {
             });
             expect(payload.richContent!.fields).toBeUndefined();
         });
+
+        it('omits action buttons when includeActions is false', () => {
+            const payload = buildErrorPopupNotification({
+                title: 'Error',
+                errorMessage: 'Something broke',
+                projectName: 'proj',
+                channelId: 'ch',
+                includeActions: false,
+            });
+            expect(payload.components).toBeUndefined();
+        });
     });
 });

@@ -197,7 +197,7 @@ describe('handleTelegramCommand — /start', () => {
 
         expect(message.reply).toHaveBeenCalledTimes(1);
         const text = message.reply.mock.calls[0][0].text;
-        expect(text).toContain('Welcome to LazyGravity');
+        expect(text).toContain('Welcome to ClawGravity');
         expect(text).toContain('/project');
     });
 });

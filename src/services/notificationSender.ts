@@ -177,10 +177,11 @@ export function buildErrorPopupNotification(opts: {
     readonly errorMessage: string;
     readonly projectName: string;
     readonly channelId: string | null;
+    readonly includeActions?: boolean;
     /** Additional fields appended before footer. */
     readonly extraFields?: readonly { readonly name: string; readonly value: string; readonly inline?: boolean }[];
 }): MessagePayload {
-    const { title, errorMessage, projectName, channelId, extraFields } = opts;
+    const { title, errorMessage, projectName, channelId, extraFields, includeActions = true } = opts;
 
     const richContent = pipe(
         createRichContent(),
@@ -195,13 +196,15 @@ export function buildErrorPopupNotification(opts: {
         (rc) => withTimestamp(rc),
     );
 
-    const components: readonly ComponentRow[] = [
-        buttonRow(
-            button(customId(ERROR_POPUP_DISMISS_ACTION_PREFIX, projectName, channelId), 'Dismiss', 'secondary'),
-            button(customId(ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX, projectName, channelId), 'Copy Debug', 'primary'),
-            button(customId(ERROR_POPUP_RETRY_ACTION_PREFIX, projectName, channelId), 'Retry', 'success'),
-        ),
-    ];
+    const components: readonly ComponentRow[] | undefined = includeActions
+        ? [
+              buttonRow(
+                  button(customId(ERROR_POPUP_DISMISS_ACTION_PREFIX, projectName, channelId), 'Dismiss', 'secondary'),
+                  button(customId(ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX, projectName, channelId), 'Copy Debug', 'primary'),
+                  button(customId(ERROR_POPUP_RETRY_ACTION_PREFIX, projectName, channelId), 'Retry', 'success'),
+              ),
+          ]
+        : undefined;
 
     return { richContent, components };
 }

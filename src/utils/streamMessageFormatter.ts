@@ -29,8 +29,8 @@ export function shouldSkipActivityLog(activity: string, modeName: string, modelN
         return true;
     }
 
-    // Single-word logs that tend to be noise (create / ready / pull. etc.)
-    if (/^[a-z][a-z0-9_-]{1,24}[.!…]?$/.test(normalized)) {
+    // Single-word logs that tend to be noise (create / ready / pull. / TELEGRAM / we're etc.)
+    if (/^[a-z][a-z0-9'_-]{0,24}[.:,;!…]?$/i.test(normalized)) {
         return true;
     }
 

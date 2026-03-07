@@ -54,3 +54,4 @@ coverage/
 
 # npm pack artifacts
 *.tgz
+nul

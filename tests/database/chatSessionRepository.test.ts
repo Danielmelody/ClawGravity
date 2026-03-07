@@ -81,6 +81,17 @@ describe('ChatSessionRepository', () => {
         });
     });
 
+    describe('findAll', () => {
+        it('returns all sessions in insertion order', () => {
+            repo.create({ channelId: 'ch-1', categoryId: 'cat-1', workspacePath: 'proj-a', sessionNumber: 1, guildId: 'guild-1' });
+            repo.create({ channelId: 'ch-2', categoryId: 'cat-2', workspacePath: 'proj-b', sessionNumber: 1, guildId: 'guild-1' });
+
+            const results = repo.findAll();
+            expect(results).toHaveLength(2);
+            expect(results.map((item) => item.channelId)).toEqual(['ch-1', 'ch-2']);
+        });
+    });
+
     describe('getNextSessionNumber', () => {
         it('returns 1 when there are no sessions', () => {
             expect(repo.getNextSessionNumber('cat-1')).toBe(1);
@@ -124,6 +135,28 @@ describe('ChatSessionRepository', () => {
 
         it('returns false when deleting a non-existent channel ID', () => {
             expect(repo.deleteByChannelId('nonexistent')).toBe(false);
+        });
+    });
+
+    describe('findLatestRestorableByWorkspace', () => {
+        it('returns the newest renamed session with a display name for the workspace', () => {
+            repo.create({ channelId: 'ch-1', categoryId: 'cat-1', workspacePath: 'proj', sessionNumber: 1, guildId: 'guild-1' });
+            repo.updateDisplayName('ch-1', 'Older Session');
+
+            repo.create({ channelId: 'ch-2', categoryId: 'cat-1', workspacePath: 'proj', sessionNumber: 2, guildId: 'guild-1' });
+            repo.updateDisplayName('ch-2', 'Newest Session');
+
+            repo.create({ channelId: 'ch-3', categoryId: 'cat-2', workspacePath: 'other', sessionNumber: 1, guildId: 'guild-1' });
+            repo.updateDisplayName('ch-3', 'Other Workspace');
+
+            const found = repo.findLatestRestorableByWorkspace('proj');
+            expect(found?.channelId).toBe('ch-2');
+            expect(found?.displayName).toBe('Newest Session');
+        });
+
+        it('returns undefined when no renamed session exists for the workspace', () => {
+            repo.create({ channelId: 'ch-1', categoryId: 'cat-1', workspacePath: 'proj', sessionNumber: 1, guildId: 'guild-1' });
+            expect(repo.findLatestRestorableByWorkspace('proj')).toBeUndefined();
         });
     });
 });

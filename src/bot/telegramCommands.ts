@@ -177,7 +177,7 @@ export async function handleTelegramCommand(
 
 async function handleStart(message: PlatformMessage): Promise<void> {
     const text = [
-        '<b>Welcome to LazyGravity!</b>',
+        '<b>Welcome to ClawGravity!</b>',
         '',
         'This bot connects you to Antigravity AI workspaces.',
         '',

@@ -36,7 +36,7 @@ export function resolveResponseDeliveryMode(): ResponseDeliveryMode {
 /**
  * Load application config.
  * Delegates to ConfigLoader which resolves:
- *   env vars  >  ~/.lazy-gravity/config.json  >  .env  >  defaults
+ *   env vars  >  ~/.clawgravity/config.json  >  .env  >  defaults
  */
 export function loadConfig(): AppConfig {
     return ConfigLoader.load();

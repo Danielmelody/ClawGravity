@@ -1,6 +1,8 @@
-# Contributing to LazyGravity
+# Contributing to ClawGravity
 
-First off, thank you for considering contributing to LazyGravity! It's people like you that make LazyGravity such a great tool.
+First off, thank you for considering contributing to ClawGravity! It's people like you that make ClawGravity such a great tool.
+
+> **Note**: ClawGravity is a fork of [LazyGravity](https://github.com/tokyoweb3/LazyGravity), providing an OpenClaw implementation built on Antigravity's Agent capabilities.
 
 ## Development Setup
 
@@ -11,8 +13,8 @@ First off, thank you for considering contributing to LazyGravity! It's people li
 
 ### Cloning the Repository
 ```bash
-git clone https://github.com/tokyoweb3/LazyGravity.git
-cd LazyGravity
+git clone https://github.com/Danielmelody/ClawGravity.git
+cd clawgravity
 ```
 
 ### Installation
@@ -148,10 +150,10 @@ npm run test:watch
 ---
 
 ## Reporting Issues
-Please use the provided [Issue Templates](https://github.com/tokyoweb3/LazyGravity/issues/new/choose) for bugs and feature requests.
+Please use the provided [Issue Templates](https://github.com/Danielmelody/ClawGravity/issues/new/choose) for bugs and feature requests.
 
 ## GitHub Discussions
-For general questions or ideas, please visit our [Discussions](https://github.com/tokyoweb3/LazyGravity/discussions) page.
+For general questions or ideas, please visit our [Discussions](https://github.com/Danielmelody/ClawGravity/discussions) page.
 
 ## License
 

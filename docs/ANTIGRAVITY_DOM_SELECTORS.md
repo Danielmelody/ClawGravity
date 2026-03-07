@@ -204,7 +204,7 @@ Open/Proceed button pair for plan review.
 
 ## 9. Error Popup
 
-Agent termination / unexpected error dialogs.
+Agent termination / unexpected error dialogs and inline error cards.
 
 ### Detection
 
@@ -213,10 +213,11 @@ Agent termination / unexpected error dialogs.
 | `[role="dialog"], [role="alertdialog"], .modal, .dialog` | Dialog elements | `errorPopupDetector.ts` |
 | `div[class*="fixed"], div[class*="absolute"]` with z-index > 10 | Overlay fallback | `errorPopupDetector.ts` |
 | `h1, h2, h3, h4, [class*="title"], [class*="heading"]` | Error title extraction | `errorPopupDetector.ts` |
+| `.antigravity-agent-side-panel` descendants (`div`, `section`, `article`, `li`, `span`) | Inline error card detection | `errorPopupDetector.ts` |
 
 ### Error Text Patterns
 
-`agent terminated`, `terminated due to error`, `unexpected error`, `something went wrong`, `an error occurred`
+`agent terminated`, `agent execution terminated`, `execution terminated`, `execution failed`, `terminated due to error`, `unexpected error`, `something went wrong`, `an error occurred`, title-only `Error`
 
 ---
 

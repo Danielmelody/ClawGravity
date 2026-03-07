@@ -6,5 +6,5 @@ export const LOGO = `
               \\_  \\________/  /          .
                 \\__)      \\__)
 
-     ~ Booting... LazyGravity ~
+     ~ Booting... ClawGravity ~
 `;

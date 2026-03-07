@@ -31,7 +31,7 @@ export const RESPONSE_SELECTORS = {
         const looksLikeActivityLog = (text) => {
             const normalized = (text || '').trim().toLowerCase();
             if (!normalized) return false;
-            const activityPattern = /^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|loading|executing|testing|debugging|fetching|connecting|creating|updating|deleting|installing|building|compiling|deploying|checking|scanning|parsing|resolving|downloading|uploading|analyzed|read|wrote|ran|created|updated|deleted|fetched|built|compiled|installed|resolved|downloaded|connected)\\b/i;
+            const activityPattern = /^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|loading|executing|testing|debugging|fetching|connecting|creating|updating|deleting|installing|building|compiling|deploying|checking|scanning|parsing|resolving|downloading|uploading|working|analyzed|read|wrote|ran|created|updated|deleted|fetched|built|compiled|installed|resolved|downloaded|connected)\\b/i;
             if (activityPattern.test(normalized) && normalized.length <= 220) return true;
             if (/^initiating\\s/i.test(normalized) && normalized.length <= 500) return true;
             if (/^thought for\\s/i.test(normalized) && normalized.length <= 500) return true;
@@ -54,12 +54,14 @@ export const RESPONSE_SELECTORS = {
 
         const looksLikeToolOutput = (text) => {
             const first = (text || '').trim().split('\\n')[0] || '';
-            if (/^[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(first)) return true;
-            if (/^full output written to\\b/i.test(first)) return true;
-            if (/^output\\.[a-z0-9._-]+(?:#l\\d+(?:-\\d+)?)?$/i.test(first)) return true;
+            const normalizedFirst = first.replace(/\\s*show details\\s*$/i, '').trim();
+            if (/^[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(normalizedFirst)) return true;
+            if (/^mcp tool:\\s*[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(normalizedFirst)) return true;
+            if (/^full output written to\\b/i.test(normalizedFirst)) return true;
+            if (/^output\\.[a-z0-9._-]+(?:#l\\d+(?:-\\d+)?)?$/i.test(normalizedFirst)) return true;
             var lower = (text || '').trim().toLowerCase();
             if (/^title:\\s/.test(lower) && /\\surl:\\s/.test(lower) && /\\ssnippet:\\s/.test(lower)) return true;
-            if (/^(json|javascript|typescript|python|bash|sh|html|css|xml|yaml|yml|toml|sql|graphql|markdown|text|plaintext|log|ruby|go|rust|java|c|cpp|csharp|php|swift|kotlin)$/i.test(first)) return true;
+            if (/^(json|javascript|typescript|python|bash|sh|html|css|xml|yaml|yml|toml|sql|graphql|markdown|text|plaintext|log|ruby|go|rust|java|c|cpp|csharp|php|swift|kotlin)$/i.test(normalizedFirst)) return true;
             return false;
         };
 
@@ -201,7 +203,7 @@ export const RESPONSE_SELECTORS = {
         const looksLikeActivityLog = (text) => {
             const normalized = (text || '').trim().toLowerCase();
             if (!normalized) return false;
-            const activityPattern = /^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|loading|executing|testing|debugging|fetching|connecting|creating|updating|deleting|installing|building|compiling|deploying|checking|scanning|parsing|resolving|downloading|uploading|analyzed|read|wrote|ran|created|updated|deleted|fetched|built|compiled|installed|resolved|downloaded|connected)\\b/i;
+            const activityPattern = /^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|loading|executing|testing|debugging|fetching|connecting|creating|updating|deleting|installing|building|compiling|deploying|checking|scanning|parsing|resolving|downloading|uploading|working|analyzed|read|wrote|ran|created|updated|deleted|fetched|built|compiled|installed|resolved|downloaded|connected)\\b/i;
             if (activityPattern.test(normalized) && normalized.length <= 220) return true;
             if (/^initiating\\s/i.test(normalized) && normalized.length <= 500) return true;
             if (/^thought for\\s/i.test(normalized) && normalized.length <= 500) return true;
@@ -221,12 +223,14 @@ export const RESPONSE_SELECTORS = {
         };
         const looksLikeToolOutput = (text) => {
             const first = (text || '').trim().split('\\n')[0] || '';
-            if (/^[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(first)) return true;
-            if (/^full output written to\\b/i.test(first)) return true;
-            if (/^output\\.[a-z0-9._-]+(?:#l\\d+(?:-\\d+)?)?$/i.test(first)) return true;
+            const normalizedFirst = first.replace(/\\s*show details\\s*$/i, '').trim();
+            if (/^[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(normalizedFirst)) return true;
+            if (/^mcp tool:\\s*[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(normalizedFirst)) return true;
+            if (/^full output written to\\b/i.test(normalizedFirst)) return true;
+            if (/^output\\.[a-z0-9._-]+(?:#l\\d+(?:-\\d+)?)?$/i.test(normalizedFirst)) return true;
             var lower = (text || '').trim().toLowerCase();
             if (/^title:\\s/.test(lower) && /\\surl:\\s/.test(lower) && /\\ssnippet:\\s/.test(lower)) return true;
-            if (/^(json|javascript|typescript|python|bash|sh|html|css|xml|yaml|yml|toml|sql|graphql|markdown|text|plaintext|log|ruby|go|rust|java|c|cpp|csharp|php|swift|kotlin)$/i.test(first)) return true;
+            if (/^(json|javascript|typescript|python|bash|sh|html|css|xml|yaml|yml|toml|sql|graphql|markdown|text|plaintext|log|ruby|go|rust|java|c|cpp|csharp|php|swift|kotlin)$/i.test(normalizedFirst)) return true;
             return false;
         };
 
@@ -287,7 +291,7 @@ export const RESPONSE_SELECTORS = {
         const looksLikeActivityLog = (text) => {
             const normalized = (text || '').trim().toLowerCase();
             if (!normalized) return false;
-            const activityPattern = /^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|loading|executing|testing|debugging|fetching|connecting|creating|updating|deleting|installing|building|compiling|deploying|checking|scanning|parsing|resolving|downloading|uploading|analyzed|read|wrote|ran|created|updated|deleted|fetched|built|compiled|installed|resolved|downloaded|connected)\\b/i;
+            const activityPattern = /^(?:analy[sz]ing|reading|writing|running|searching|planning|thinking|processing|loading|executing|testing|debugging|fetching|connecting|creating|updating|deleting|installing|building|compiling|deploying|checking|scanning|parsing|resolving|downloading|uploading|working|analyzed|read|wrote|ran|created|updated|deleted|fetched|built|compiled|installed|resolved|downloaded|connected)\\b/i;
             if (activityPattern.test(normalized) && normalized.length <= 220) return true;
             if (/^initiating\\s/i.test(normalized) && normalized.length <= 500) return true;
             if (/^thought for\\s/i.test(normalized) && normalized.length <= 500) return true;
@@ -296,12 +300,14 @@ export const RESPONSE_SELECTORS = {
 
         const looksLikeToolOutput = (text) => {
             const first = (text || '').trim().split('\\n')[0] || '';
-            if (/^[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(first)) return true;
-            if (/^full output written to\\b/i.test(first)) return true;
-            if (/^output\\.[a-z0-9._-]+(?:#l\\d+(?:-\\d+)?)?$/i.test(first)) return true;
+            const normalizedFirst = first.replace(/\\s*show details\\s*$/i, '').trim();
+            if (/^[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(normalizedFirst)) return true;
+            if (/^mcp tool:\\s*[a-z0-9._-]+\\s*\\/\\s*[a-z0-9._-]+$/i.test(normalizedFirst)) return true;
+            if (/^full output written to\\b/i.test(normalizedFirst)) return true;
+            if (/^output\\.[a-z0-9._-]+(?:#l\\d+(?:-\\d+)?)?$/i.test(normalizedFirst)) return true;
             var lower = (text || '').trim().toLowerCase();
             if (/^title:\\s/.test(lower) && /\\surl:\\s/.test(lower) && /\\ssnippet:\\s/.test(lower)) return true;
-            if (/^(json|javascript|typescript|python|bash|sh|html|css|xml|yaml|yml|toml|sql|graphql|markdown|text|plaintext|log|ruby|go|rust|java|c|cpp|csharp|php|swift|kotlin)$/i.test(first)) return true;
+            if (/^(json|javascript|typescript|python|bash|sh|html|css|xml|yaml|yml|toml|sql|graphql|markdown|text|plaintext|log|ruby|go|rust|java|c|cpp|csharp|php|swift|kotlin)$/i.test(normalizedFirst)) return true;
             return false;
         };
 

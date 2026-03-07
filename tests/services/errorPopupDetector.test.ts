@@ -9,7 +9,12 @@
  *   - Verify duplicate prevention, cooldown, stop, and CDP error recovery
  */
 
-import { ErrorPopupDetector, ErrorPopupDetectorOptions, ErrorPopupInfo } from '../../src/services/errorPopupDetector';
+import {
+    ErrorPopupDetector,
+    ErrorPopupDetectorOptions,
+    ErrorPopupInfo,
+    ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST,
+} from '../../src/services/errorPopupDetector';
 import { CdpService } from '../../src/services/cdpService';
 
 // Mock CdpService
@@ -43,6 +48,13 @@ describe('ErrorPopupDetector - error popup detection and remote execution', () =
             ...overrides,
         };
     }
+
+    it('detect script explicitly matches dialogs whose title is just Error', () => {
+        expect(ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST).toContain("normalized === 'error'");
+        expect(ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST).toContain("normalized.startsWith('error ')");
+        expect(ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST).toContain('agent execution terminated');
+        expect(ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST).toContain('input-send-button-cancel-tooltip');
+    });
 
     // ──────────────────────────────────────────────────────
     // Test 1: Call onErrorPopup when error popup is detected

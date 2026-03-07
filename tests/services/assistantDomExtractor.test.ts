@@ -180,6 +180,28 @@ describe('assistantDomExtractor', () => {
             expect(result.activityLines).toContain('jina-mcp-server / search_web');
         });
 
+        it('captures MCP Tool card text and strips trailing Show Details', () => {
+            const panel = document.createElement('div');
+            panel.className = 'antigravity-agent-side-panel';
+
+            const toolNode = document.createElement('div');
+            toolNode.className = 'flex flex-row';
+            toolNode.textContent = 'MCP Tool: chrome-devtools-mcp / evaluate_script Show Details';
+            panel.appendChild(toolNode);
+
+            document.body.appendChild(panel);
+
+            const script = extractAssistantSegmentsPayloadScript();
+            const scriptEl = document.createElement('script');
+            scriptEl.textContent = `window.__mcpToolCardPayload = ${script};`;
+            document.body.appendChild(scriptEl);
+            const payload = (window as any).__mcpToolCardPayload;
+            const result = classifyAssistantSegments(payload);
+
+            expect(result.activityLines).toContain('MCP Tool: chrome-devtools-mcp / evaluate_script');
+            expect(result.activityLines.join('\n')).not.toContain('Show Details');
+        });
+
         it('captures new activity verbs (fetching, creating, building, etc.)', () => {
             const panel = document.createElement('div');
             panel.className = 'antigravity-agent-side-panel';
@@ -204,6 +226,75 @@ describe('assistantDomExtractor', () => {
             for (const verb of verbs) {
                 expect(result.activityLines).toContain(verb);
             }
+        });
+
+        it('captures inline activity rows inside the rendered response container', () => {
+            const panel = document.createElement('div');
+            panel.className = 'antigravity-agent-side-panel';
+
+            const body = document.createElement('div');
+            body.className = 'leading-relaxed select-text';
+
+            const thought = document.createElement('div');
+            thought.textContent = 'Thought for 2s';
+            body.appendChild(thought);
+
+            const analyzed = document.createElement('div');
+            analyzed.textContent = 'Analyzed ...DeepMarket\\\\components';
+            body.appendChild(analyzed);
+
+            const working = document.createElement('div');
+            working.textContent = 'Working...';
+            body.appendChild(working);
+
+            panel.appendChild(body);
+            document.body.appendChild(panel);
+
+            const script = extractAssistantSegmentsPayloadScript();
+            const scriptEl = document.createElement('script');
+            scriptEl.textContent = `window.__inlineActivityPayload = ${script};`;
+            document.body.appendChild(scriptEl);
+            const payload = (window as any).__inlineActivityPayload;
+            const result = classifyAssistantSegments(payload);
+
+            expect(result.activityLines).toContain('Thought for 2s');
+            expect(result.activityLines).toContain('Analyzed ...DeepMarket\\\\components');
+            expect(result.activityLines).toContain('Working...');
+        });
+
+        it('captures Ran command cards as activity logs', () => {
+            const panel = document.createElement('div');
+            panel.className = 'antigravity-agent-side-panel';
+
+            const body = document.createElement('div');
+            body.className = 'leading-relaxed select-text';
+
+            const card = document.createElement('div');
+
+            const header = document.createElement('div');
+            header.textContent = 'Ran command';
+            card.appendChild(header);
+
+            const pre = document.createElement('pre');
+            pre.textContent = '...\\\\DeepMarket > git status';
+            card.appendChild(pre);
+
+            const footer = document.createElement('div');
+            footer.textContent = 'Exit code 0';
+            card.appendChild(footer);
+
+            body.appendChild(card);
+            panel.appendChild(body);
+            document.body.appendChild(panel);
+
+            const script = extractAssistantSegmentsPayloadScript();
+            const scriptEl = document.createElement('script');
+            scriptEl.textContent = `window.__runCommandCardPayload = ${script};`;
+            document.body.appendChild(scriptEl);
+            const payload = (window as any).__runCommandCardPayload;
+            const result = classifyAssistantSegments(payload);
+
+            expect(result.activityLines).toContain('Ran command\n...\\\\DeepMarket > git status\nExit code 0');
         });
 
         it('skips mode description inside role="dialog" container', () => {

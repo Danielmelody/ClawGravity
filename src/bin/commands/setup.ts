@@ -45,7 +45,7 @@ ${C.cyan}            \\_                __)${C.reset}
 ${C.cyan}              \\_  \\________/  /${C.reset}          .
 ${C.cyan}                \\__)      \\__)${C.reset}
 
-     ${C.bold}~ LazyGravity Setup ~${C.reset}
+     ${C.bold}~ ClawGravity Setup ~${C.reset}
 `;
 
 // ---------------------------------------------------------------------------
@@ -400,15 +400,15 @@ async function platformSubMenu(
     const choices: Array<{ name: string; value: PlatformAction }> =
         status === 'disabled'
             ? [
-                  { name: 'Enable', value: 'enable' as const },
-                  { name: 'Reconfigure', value: 'reconfigure' as const },
-                  { name: 'Back', value: 'back' as const },
-              ]
+                { name: 'Enable', value: 'enable' as const },
+                { name: 'Reconfigure', value: 'reconfigure' as const },
+                { name: 'Back', value: 'back' as const },
+            ]
             : [
-                  { name: 'Reconfigure', value: 'reconfigure' as const },
-                  { name: 'Disable', value: 'disable' as const },
-                  { name: 'Back', value: 'back' as const },
-              ];
+                { name: 'Reconfigure', value: 'reconfigure' as const },
+                { name: 'Disable', value: 'disable' as const },
+                { name: 'Back', value: 'back' as const },
+            ];
 
     rl.pause();
     try {
@@ -428,7 +428,7 @@ async function platformSubMenu(
 async function runDiscordSetup(rl: readline.Interface): Promise<void> {
     sectionHeader('Discord Bot Token');
     hint('1. Go to https://discord.com/developers/applications and log in');
-    hint('2. Click "New Application" (top-right), enter a name (e.g. LazyGravity), and create it');
+    hint('2. Click "New Application" (top-right), enter a name (e.g. ClawGravity), and create it');
     hint('3. Go to the "Bot" tab on the left sidebar');
     hint('4. Click "Reset Token" to generate and copy the token');
     hint(`5. Scroll down to ${C.bold}"Privileged Gateway Intents"${C.dim} and enable ALL of:`);
@@ -506,7 +506,7 @@ async function runTelegramSetup(rl: readline.Interface): Promise<void> {
 async function runWorkspaceSetup(rl: readline.Interface): Promise<void> {
     sectionHeader('Workspace Base Directory');
     hint('The parent directory where your coding projects live.');
-    hint('LazyGravity will scan subdirectories as workspaces.');
+    hint('ClawGravity will scan subdirectories as workspaces.');
     hintBlank();
     const workspaceBaseDir = await promptWorkspaceDir(rl);
     console.log('');
@@ -622,9 +622,9 @@ export async function setupAction(): Promise<void> {
 
                     console.log(`  ${C.cyan}Start:${C.reset}`);
                     console.log(`  ${C.bold}1.${C.reset} Open Antigravity with CDP enabled:`);
-                    console.log(`     ${C.green}lazy-gravity open${C.reset}`);
+                    console.log(`     ${C.green}clawgravity open${C.reset}`);
                     console.log(`     ${C.dim}(auto-selects an available port from: ${CDP_PORTS.join(', ')})${C.reset}\n`);
-                    console.log(`  ${C.bold}2.${C.reset} Run: ${C.green}lazy-gravity start${C.reset}\n`);
+                    console.log(`  ${C.bold}2.${C.reset} Run: ${C.green}clawgravity start${C.reset}\n`);
 
                     return;
                 }
