@@ -1,26 +1,8 @@
 import { t } from "../utils/i18n";
 
 /**
- * Fallback model list used when CDP is not connected.
- * NOT used for validation — CDP is the sole source of truth
- * for available models. This list may become stale after
- * Antigravity updates.
- */
-export const AVAILABLE_MODELS = [
-    'gemini-3.1-pro-high',
-    'gemini-3.1-pro-low',
-    'gemini-3-flash',
-    'claude-sonnet-4.6-thinking',
-    'claude-opus-4.6-thinking',
-    'gpt-oss-120b-medium'
-] as const;
-
-/** Default LLM model (initial value before CDP connects) */
-export const DEFAULT_MODEL = 'gemini-3-flash';
-
-/**
- * Model type — plain string. CDP is the source of truth for
- * valid model names; we do not restrict to AVAILABLE_MODELS.
+ * Model type — plain string. CDP is the sole source of truth
+ * for valid model names; no hardcoded list is maintained.
  */
 export type Model = string;
 
@@ -44,14 +26,19 @@ export interface DefaultModelSetResult {
  * Model validation is intentionally NOT performed here.
  * The actual model list is dynamic (fetched from CDP via
  * cdp.getUiModels()), so setModel() accepts any string.
+ *
+ * No hardcoded model names — CDP is the sole source of truth.
+ * Before CDP connects, currentModel will be empty until
+ * the actual model is read from the Antigravity UI.
  */
 export class ModelService {
-    private currentModel: string = DEFAULT_MODEL;
+    private currentModel: string = '';
     private defaultModel: string | null = null;
     private pendingSync: boolean = false;
 
     /**
-     * Get the current LLM model
+     * Get the current LLM model.
+     * Returns empty string if not yet synced with CDP.
      */
     public getCurrentModel(): string {
         return this.currentModel;
@@ -93,14 +80,6 @@ export class ModelService {
             success: true,
             model: this.currentModel,
         };
-    }
-
-    /**
-     * Get the fallback list of available models.
-     * Prefer cdp.getUiModels() when CDP is connected.
-     */
-    public getAvailableModels(): readonly string[] {
-        return AVAILABLE_MODELS;
     }
 
     /**

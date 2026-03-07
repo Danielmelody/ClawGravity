@@ -1,4 +1,4 @@
-import { ModelService, AVAILABLE_MODELS, DEFAULT_MODEL } from '../../src/services/modelService';
+import { ModelService } from '../../src/services/modelService';
 
 describe('ModelService', () => {
     let modelService: ModelService;
@@ -8,8 +8,8 @@ describe('ModelService', () => {
     });
 
     describe('getCurrentModel - get current model', () => {
-        it('returns the default model in the initial state', () => {
-            expect(modelService.getCurrentModel()).toBe(DEFAULT_MODEL);
+        it('returns empty string in the initial state (no hardcoded default)', () => {
+            expect(modelService.getCurrentModel()).toBe('');
         });
     });
 
@@ -35,9 +35,9 @@ describe('ModelService', () => {
         });
 
         it('sets the model case-insensitively', () => {
-            const result = modelService.setModel('GEMINI-3-FLASH');
+            const result = modelService.setModel('SOME-MODEL');
             expect(result.success).toBe(true);
-            expect(result.model).toBe('gemini-3-flash');
+            expect(result.model).toBe('some-model');
         });
 
         it('returns an error when an empty string is specified', () => {
@@ -46,25 +46,19 @@ describe('ModelService', () => {
             expect(result.error).toBeDefined();
         });
 
-        it('can set the claude-opus-4.6-thinking model', () => {
-            const result = modelService.setModel('claude-opus-4.6-thinking');
+        it('can set any arbitrary model name', () => {
+            const result = modelService.setModel('future-model-v5');
             expect(result.success).toBe(true);
-            expect(result.model).toBe('claude-opus-4.6-thinking');
-        });
-
-        it('can set the gpt-oss-120b-medium model', () => {
-            const result = modelService.setModel('gpt-oss-120b-medium');
-            expect(result.success).toBe(true);
-            expect(result.model).toBe('gpt-oss-120b-medium');
+            expect(result.model).toBe('future-model-v5');
         });
 
         it('sets pendingSync to true by default', () => {
-            modelService.setModel('gemini-3-flash');
+            modelService.setModel('test-model');
             expect(modelService.isPendingSync()).toBe(true);
         });
 
         it('sets pendingSync to false when synced=true', () => {
-            modelService.setModel('gemini-3-flash', true);
+            modelService.setModel('test-model', true);
             expect(modelService.isPendingSync()).toBe(false);
         });
     });
@@ -75,12 +69,12 @@ describe('ModelService', () => {
         });
 
         it('becomes true after setModel without synced', () => {
-            modelService.setModel('gemini-3-flash');
+            modelService.setModel('test-model');
             expect(modelService.isPendingSync()).toBe(true);
         });
 
         it('is cleared by markSynced', () => {
-            modelService.setModel('gemini-3-flash');
+            modelService.setModel('test-model');
             modelService.markSynced();
             expect(modelService.isPendingSync()).toBe(false);
         });
@@ -131,14 +125,6 @@ describe('ModelService', () => {
         it('ignores null value', () => {
             modelService.loadDefaultModel(null);
             expect(modelService.getDefaultModel()).toBeNull();
-        });
-    });
-
-    describe('getAvailableModels - fallback model list', () => {
-        it('returns the fallback list of available models', () => {
-            const models = modelService.getAvailableModels();
-            expect(models).toEqual(AVAILABLE_MODELS);
-            expect(models.length).toBeGreaterThan(0);
         });
     });
 });

@@ -1419,11 +1419,30 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     const version = pkg.default?.version ?? pkg.version ?? 'unknown';
                     const projects = workspaceService.scanWorkspaces();
 
+                    // Eagerly connect CDP to read actual model/mode from Antigravity UI
+                    let cdpModel: string | null = null;
+                    let cdpMode: string | null = null;
+                    if (projects.length > 0) {
+                        try {
+                            const cdp = await bridge.pool.getOrConnect(projects[0]);
+                            cdpModel = await cdp.getCurrentModel();
+                            cdpMode = await cdp.getCurrentMode();
+                        } catch (e) {
+                            logger.debug('Startup CDP probe failed (will use defaults):', e instanceof Error ? e.message : e);
+                        }
+                    }
+
                     // Check CDP connection status
                     const activeWorkspaces = bridge.pool.getActiveWorkspaceNames();
                     const cdpStatus = activeWorkspaces.length > 0
                         ? `Connected (${activeWorkspaces.join(', ')})`
                         : 'Not connected';
+
+                    const startupModel = cdpModel || modelService.getDefaultModel() || modelService.getCurrentModel() || 'Not synced';
+                    const startupMode = cdpMode || modeService.getCurrentMode();
+                    // Sync model service with actual UI state
+                    if (cdpModel) modelService.setModel(cdpModel, true);
+                    if (cdpMode) modeService.setMode(cdpMode);
 
                     const dashboardEmbed = new EmbedBuilder()
                         .setTitle('ClawGravity Online')
@@ -1433,8 +1452,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                             { name: 'Node.js', value: process.versions.node, inline: true },
                             { name: 'OS', value: `${os.platform()} ${os.release()}`, inline: true },
                             { name: 'CDP', value: cdpStatus, inline: true },
-                            { name: 'Model', value: modelService.getCurrentModel(), inline: true },
-                            { name: 'Mode', value: modeService.getCurrentMode(), inline: true },
+                            { name: 'Model', value: startupModel, inline: true },
+                            { name: 'Mode', value: startupMode, inline: true },
                             { name: 'Projects', value: `${projects.length} registered`, inline: true },
                             { name: 'Extraction', value: config.extractionMode, inline: true },
                         )
@@ -1791,10 +1810,30 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 const pkg = await import('../../package.json');
                 const version = pkg.default?.version ?? pkg.version ?? 'unknown';
                 const projects = workspaceService.scanWorkspaces();
+
+                // Eagerly connect CDP to read actual model/mode from Antigravity UI
+                let tgCdpModel: string | null = null;
+                let tgCdpMode: string | null = null;
+                if (projects.length > 0) {
+                    try {
+                        const cdp = await bridge.pool.getOrConnect(projects[0]);
+                        tgCdpModel = await cdp.getCurrentModel();
+                        tgCdpMode = await cdp.getCurrentMode();
+                    } catch (e) {
+                        logger.debug('Telegram startup CDP probe failed (will use defaults):', e instanceof Error ? e.message : e);
+                    }
+                }
+
                 const activeWorkspaces = bridge.pool.getActiveWorkspaceNames();
                 const cdpStatus = activeWorkspaces.length > 0
                     ? `Connected (${activeWorkspaces.join(', ')})`
                     : 'Not connected';
+
+                const tgStartupModel = tgCdpModel || modelService.getDefaultModel() || modelService.getCurrentModel() || 'Not synced';
+                const tgStartupMode = tgCdpMode || modeService.getCurrentMode();
+                // Sync model service with actual UI state
+                if (tgCdpModel) modelService.setModel(tgCdpModel, true);
+                if (tgCdpMode) modeService.setMode(tgCdpMode);
 
                 const startupText = [
                     '<b>ClawGravity Online</b>',
@@ -1803,8 +1842,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     `Node.js: ${process.versions.node}`,
                     `OS: ${os.platform()} ${os.release()}`,
                     `CDP: ${cdpStatus}`,
-                    `Model: ${modelService.getCurrentModel()}`,
-                    `Mode: ${modeService.getCurrentMode()}`,
+                    `Model: ${tgStartupModel}`,
+                    `Mode: ${tgStartupMode}`,
                     `Projects: ${projects.length} registered`,
                     `Extraction: ${config.extractionMode}`,
                     '',
