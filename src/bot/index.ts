@@ -64,6 +64,7 @@ import {
     ensureErrorPopupDetector,
     ensurePlanningDetector,
     ensureRunCommandDetector,
+    ensureUserMessageDetector,
     getCurrentCdp,
     initCdpBridge,
     parseApprovalCustomId,
@@ -100,7 +101,8 @@ import { Bot, InputFile } from 'grammy';
 import { TelegramAdapter } from '../platform/telegram/telegramAdapter';
 import { TelegramBindingRepository } from '../database/telegramBindingRepository';
 import { TelegramRecentMessageRepository } from '../database/telegramRecentMessageRepository';
-import { createTelegramMessageHandler } from './telegramMessageHandler';
+import { createTelegramMessageHandler, handlePassiveUserMessage } from './telegramMessageHandler';
+import { wrapTelegramChannel } from '../platform/telegram/wrappers';
 import { createTelegramSelectHandler } from './telegramProjectCommand';
 import { createTelegramJoinSelectHandler, TelegramSessionStateStore } from './telegramJoinCommand';
 import { EventRouter } from './eventRouter';
@@ -1874,6 +1876,27 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     logger.warn(`[Telegram] Startup message failed for ${failed.length}/${bindings.length} chat(s) after retries: ${(failed[0] as PromiseRejectedResult).reason?.message ?? 'unknown error'}`);
                 } else {
                     logger.info(`Telegram startup message sent to ${bindings.length} bound chat(s).`);
+                }
+
+                // Eagerly start passive mirroring for all bound workspaces
+                // so that PC-typed messages are forwarded to Telegram even if the user
+                // never sends a message from Telegram first.
+                for (const binding of bindings) {
+                    try {
+                        const bWorkspacePath = workspaceService.getWorkspacePath(binding.workspacePath);
+                        const cdp = await bridge.pool.getOrConnect(bWorkspacePath);
+                        const bProjectName = bridge.pool.extractProjectName(bWorkspacePath);
+                        const tgChannel = wrapTelegramChannel(telegramBot.api as any, binding.chatId, (data: Buffer, filename?: string) => new InputFile(data, filename));
+
+                        // Start the UserMessageDetector with passive notification callback
+                        ensureUserMessageDetector(bridge, cdp, bProjectName, (info) => {
+                            handlePassiveUserMessage(tgChannel, cdp, bProjectName, info, activeMonitors, config.extractionMode)
+                                .catch((err: any) => logger.error('[TelegramPassive:Startup] Error handling PC message:', err?.message || err));
+                        });
+                        logger.info(`[TelegramPassive] Eager mirroring started for ${bProjectName} → chat ${binding.chatId}`);
+                    } catch (e: any) {
+                        logger.warn(`[TelegramPassive] Failed to start eager mirroring for ${binding.workspacePath}: ${e?.message || e}`);
+                    }
                 }
             }
         } catch (e: unknown) {

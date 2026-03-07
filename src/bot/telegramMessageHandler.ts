@@ -246,6 +246,13 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             // Determine the prompt text — use default for image-only messages
             const effectivePrompt = promptText || 'Please review the attached images and respond accordingly.';
 
+            // Register echo hash so UserMessageDetector skips this message
+            // (prevents Telegram-sent messages from being echoed back as "PC" messages)
+            const userMsgDetector = deps.bridge.pool.getUserMessageDetector?.(projectName);
+            if (userMsgDetector) {
+                userMsgDetector.addEchoHash(effectivePrompt);
+            }
+
             // Inject prompt (with or without images) into Antigravity
             logger.prompt(effectivePrompt);
             let injectResult;
@@ -515,7 +522,7 @@ const passiveResponseMonitors = new Map<string, ResponseMonitor>();
  * Forwards the message text to the linked Telegram chat and starts a passive
  * ResponseMonitor to relay the AI response.
  */
-async function handlePassiveUserMessage(
+export async function handlePassiveUserMessage(
     channel: PlatformChannel,
     cdp: CdpService,
     projectName: string,
