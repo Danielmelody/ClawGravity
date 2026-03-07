@@ -6,6 +6,8 @@ import { CdpService } from './cdpService';
 export interface UserMessageInfo {
     /** Message text content */
     text: string;
+    /** Title of the conversation session where the message was detected */
+    sessionTitle?: string;
 }
 
 export interface UserMessageDetectorOptions {
@@ -69,7 +71,17 @@ const DETECT_USER_MESSAGE_SCRIPT = `(() => {
 
     if (!text || text.length < 1) return null;
 
-    return { text };
+    // Get current session title to detect manual switching
+    const header = panel.querySelector('div[class*="border-b"]');
+    let sessionTitle = '';
+    if (header) {
+        const titleEl = header.querySelector('div[class*="text-ellipsis"]');
+        if (titleEl) {
+            sessionTitle = (titleEl.textContent || '').trim();
+        }
+    }
+
+    return { text, sessionTitle };
 })()`;
 
 /**
@@ -100,6 +112,8 @@ export class UserMessageDetector {
     private isRunning: boolean = false;
     /** Hash of the last detected message (for duplicate prevention) */
     private lastDetectedHash: string | null = null;
+    /** Title of the last checked session (to ignore history dumps on manual session switch) */
+    private lastSessionTitle: string | null = null;
     /** Set of echo hashes — messages sent by ClawGravity that should be ignored */
     private readonly echoHashes = new Set<string>();
     /** Set of all previously detected message hashes (defense-in-depth dedup) */
@@ -132,6 +146,7 @@ export class UserMessageDetector {
         if (this.isRunning) return;
         this.isRunning = true;
         this.lastDetectedHash = null;
+        this.lastSessionTitle = null;
         this.seenHashes.clear();
         this.isPriming = true;
         // echoHashes are intentionally NOT cleared — they have their own 60s TTL
@@ -207,15 +222,31 @@ export class UserMessageDetector {
             if (info && info.text) {
                 const hash = computeEchoHash(info.text);
                 const preview = info.text.slice(0, 40);
+                const currentSessionTitle = info.sessionTitle || null;
 
                 // First poll: seed the current DOM state without firing callback
                 if (this.isPriming) {
                     this.isPriming = false;
                     this.lastDetectedHash = hash;
+                    this.lastSessionTitle = currentSessionTitle;
                     this.addToSeenHashes(hash);
                     logger.debug(`[UserMessageDetector] Primed with existing message: "${preview}..."`);
                     return;
                 }
+
+                // If session changed, the user switched chats manually in Antigravity.
+                // We should update our tracked state but NOT broadcast the message,
+                // because it's just history from the newly focused chat, not a new message.
+                if (this.lastSessionTitle !== null && this.lastSessionTitle !== currentSessionTitle) {
+                    logger.debug(`[UserMessageDetector] Session manually switched to "${currentSessionTitle}". Ignoring history.`);
+                    this.lastSessionTitle = currentSessionTitle;
+                    this.lastDetectedHash = hash;
+                    this.addToSeenHashes(hash);
+                    return;
+                }
+
+                // Track session title changes organically
+                this.lastSessionTitle = currentSessionTitle;
 
                 // Skip if same as last detected message
                 if (hash === this.lastDetectedHash) return;
