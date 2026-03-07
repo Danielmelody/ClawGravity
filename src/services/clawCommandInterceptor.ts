@@ -1,0 +1,227 @@
+import { logger } from '../utils/logger';
+import { ScheduleService } from './scheduleService';
+import type { ScheduleRecord } from '../database/scheduleRepository';
+import type { JobCallback } from './scheduleService';
+
+/**
+ * Parsed @claw command from Antigravity's response text.
+ */
+export interface ClawCommand {
+    action: string;           // e.g. 'schedule_add', 'schedule_list', 'schedule_remove', 'memory_write'
+    params: Record<string, string>;
+    raw: string;              // The original matched block
+}
+
+/**
+ * Result of executing a @claw command.
+ */
+export interface ClawCommandResult {
+    command: ClawCommand;
+    success: boolean;
+    message: string;
+}
+
+/**
+ * Regex to match @claw command blocks in Antigravity's output.
+ *
+ * Supported formats:
+ *
+ *   ```@claw
+ *   action: schedule_add
+ *   cron: * /3 * * * *
+ *   prompt: Hello, this is ping #{count}
+ *   ```
+ *
+ * Or inline:
+ *   @claw:schedule_add cron="* /3 * * * *" prompt="Hello"
+ */
+const CLAW_BLOCK_REGEX = /```@claw\s*\n([\s\S]*?)```/g;
+const CLAW_INLINE_REGEX = /@claw:(\w+)\s+(.+)/g;
+
+/**
+ * Parse @claw command blocks from text.
+ */
+export function parseClawCommands(text: string): ClawCommand[] {
+    const commands: ClawCommand[] = [];
+
+    // Parse fenced code block format
+    let match;
+    while ((match = CLAW_BLOCK_REGEX.exec(text)) !== null) {
+        const raw = match[0];
+        const body = match[1].trim();
+        const params: Record<string, string> = {};
+        let action = '';
+
+        for (const line of body.split('\n')) {
+            const colonIdx = line.indexOf(':');
+            if (colonIdx === -1) continue;
+            const key = line.slice(0, colonIdx).trim().toLowerCase();
+            const value = line.slice(colonIdx + 1).trim();
+            if (key === 'action') {
+                action = value;
+            } else {
+                params[key] = value;
+            }
+        }
+
+        if (action) {
+            commands.push({ action, params, raw });
+        }
+    }
+
+    // Parse inline format: @claw:action key="value" key="value"
+    CLAW_INLINE_REGEX.lastIndex = 0;
+    while ((match = CLAW_INLINE_REGEX.exec(text)) !== null) {
+        const raw = match[0];
+        const action = match[1];
+        const paramsStr = match[2];
+        const params: Record<string, string> = {};
+
+        // Parse key="value" or key=value pairs
+        const paramRegex = /(\w+)=(?:"([^"]*)"|'([^']*)'|(\S+))/g;
+        let paramMatch;
+        while ((paramMatch = paramRegex.exec(paramsStr)) !== null) {
+            const key = paramMatch[1].toLowerCase();
+            const value = paramMatch[2] ?? paramMatch[3] ?? paramMatch[4];
+            params[key] = value;
+        }
+
+        commands.push({ action, params, raw });
+    }
+
+    return commands;
+}
+
+/**
+ * Check if text contains any @claw commands.
+ */
+export function hasClawCommands(text: string): boolean {
+    return /```@claw\s*\n|@claw:\w+/.test(text);
+}
+
+/**
+ * ClawCommandInterceptor — scans Antigravity's AI responses for @claw
+ * directives and automatically executes them.
+ *
+ * This enables Antigravity to self-invoke ClawGravity features like
+ * scheduled tasks by outputting structured @claw blocks in its response.
+ */
+export class ClawCommandInterceptor {
+    private scheduleService: ScheduleService;
+    private jobCallback: JobCallback;
+    private clawWorkspacePath: string;
+
+    constructor(opts: {
+        scheduleService: ScheduleService;
+        jobCallback: JobCallback;
+        clawWorkspacePath: string;
+    }) {
+        this.scheduleService = opts.scheduleService;
+        this.jobCallback = opts.jobCallback;
+        this.clawWorkspacePath = opts.clawWorkspacePath;
+    }
+
+    /**
+     * Scan response text for @claw commands and execute them.
+     * Returns array of results (empty if no commands found).
+     */
+    async execute(responseText: string): Promise<ClawCommandResult[]> {
+        if (!hasClawCommands(responseText)) return [];
+
+        const commands = parseClawCommands(responseText);
+        if (commands.length === 0) return [];
+
+        logger.info(`[ClawInterceptor] Found ${commands.length} @claw command(s) in AI response`);
+
+        const results: ClawCommandResult[] = [];
+        for (const cmd of commands) {
+            const result = await this.executeCommand(cmd);
+            results.push(result);
+        }
+        return results;
+    }
+
+    private async executeCommand(cmd: ClawCommand): Promise<ClawCommandResult> {
+        try {
+            switch (cmd.action) {
+                case 'schedule_add':
+                    return this.handleScheduleAdd(cmd);
+                case 'schedule_list':
+                    return this.handleScheduleList(cmd);
+                case 'schedule_remove':
+                    return this.handleScheduleRemove(cmd);
+                default:
+                    return {
+                        command: cmd,
+                        success: false,
+                        message: `Unknown @claw action: ${cmd.action}`,
+                    };
+            }
+        } catch (err: any) {
+            logger.error(`[ClawInterceptor] Error executing @claw:${cmd.action}:`, err?.message || err);
+            return {
+                command: cmd,
+                success: false,
+                message: `Error: ${err?.message || String(err)}`,
+            };
+        }
+    }
+
+    private handleScheduleAdd(cmd: ClawCommand): ClawCommandResult {
+        const cron = cmd.params.cron;
+        const prompt = cmd.params.prompt;
+
+        if (!cron || !prompt) {
+            return {
+                command: cmd,
+                success: false,
+                message: 'Missing required params: cron and prompt',
+            };
+        }
+
+        const record = this.scheduleService.addSchedule(
+            cron,
+            prompt,
+            this.clawWorkspacePath,
+            this.jobCallback,
+        );
+
+        logger.done(`[ClawInterceptor] Schedule #${record.id} created: "${cron}" → "${prompt.slice(0, 60)}..."`);
+        return {
+            command: cmd,
+            success: true,
+            message: `Schedule #${record.id} created (${cron})`,
+        };
+    }
+
+    private handleScheduleList(cmd: ClawCommand): ClawCommandResult {
+        const schedules = this.scheduleService.listSchedules();
+        const list = schedules
+            .map((s: ScheduleRecord) => `#${s.id}: [${s.cronExpression}] ${s.prompt.slice(0, 50)}`)
+            .join('\n');
+
+        return {
+            command: cmd,
+            success: true,
+            message: schedules.length > 0 ? `Active schedules:\n${list}` : 'No active schedules',
+        };
+    }
+
+    private handleScheduleRemove(cmd: ClawCommand): ClawCommandResult {
+        const id = parseInt(cmd.params.id, 10);
+        if (isNaN(id)) {
+            return {
+                command: cmd,
+                success: false,
+                message: 'Missing or invalid param: id (must be a number)',
+            };
+        }
+
+        const removed = this.scheduleService.removeSchedule(id);
+        return {
+            command: cmd,
+            success: removed,
+            message: removed ? `Schedule #${id} removed` : `Schedule #${id} not found`,
+        };
+    }
+}

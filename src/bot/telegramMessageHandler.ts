@@ -32,6 +32,7 @@ import type { ExtractionMode } from '../utils/config';
 import type { ChatSessionService } from '../services/chatSessionService';
 import type { ScheduleService } from '../services/scheduleService';
 import type { ScheduleRecord } from '../database/scheduleRepository';
+import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
 
 export interface TelegramMessageHandlerDeps {
@@ -56,6 +57,8 @@ export interface TelegramMessageHandlerDeps {
     readonly scheduleService?: ScheduleService;
     /** Callback invoked when a schedule fires to execute a prompt */
     readonly scheduleJobCallback?: (schedule: ScheduleRecord) => void;
+    /** Interceptor that scans AI responses for @claw commands */
+    readonly clawInterceptor?: ClawCommandInterceptor;
 }
 
 /**
@@ -352,6 +355,15 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                 console.info(finalOutputText);
                             }
                             logger.divider();
+
+                            // Intercept @claw commands from AI response
+                            if (deps.clawInterceptor && finalOutputText) {
+                                const clawResults = await deps.clawInterceptor.execute(finalOutputText);
+                                for (const r of clawResults) {
+                                    const icon = r.success ? '✅' : '❌';
+                                    await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
+                                }
+                            }
 
                             // Merge the final response into the existing status message when possible.
                             if (finalOutputText && finalOutputText.trim().length > 0) {

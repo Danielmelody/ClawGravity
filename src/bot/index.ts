@@ -51,6 +51,7 @@ import { isSessionSelectId } from '../ui/sessionPickerUi';
 import { CdpService } from '../services/cdpService';
 import { ChatSessionService } from '../services/chatSessionService';
 import { ResponseMonitor, RESPONSE_SELECTORS } from '../services/responseMonitor';
+import { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import { ensureAntigravityRunning } from '../services/antigravityLauncher';
 import { getAntigravityCdpHint } from '../utils/pathUtils';
 import { AutoAcceptService } from '../services/autoAcceptService';
@@ -1067,6 +1068,114 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         logger.info(`[Claw] Created agent workspace: ${clawWorkspacePath}`);
     }
 
+    // Auto-generate GEMINI.md — Antigravity reads this to learn about @claw commands.
+    // Regenerated on every boot to keep instructions up-to-date.
+    const geminiMdPath = path.join(clawWorkspacePath, 'GEMINI.md');
+    const geminiMdContent = [
+        '# 🦞 ClawGravity Agent Instructions',
+        '',
+        '> This workspace is your dedicated home for autonomous operations.',
+        '> You can invoke ClawGravity features and manage your own scheduled tasks.',
+        '',
+        '## Heartbeat System',
+        '',
+        '`HEARTBEAT.md` is your periodic task checklist. When a heartbeat cron fires,',
+        'you will be asked to read and execute this checklist. The checklist is yours to edit.',
+        '',
+        'Example HEARTBEAT.md:',
+        '```markdown',
+        '- [ ] Check CLAW.md for pending tasks',
+        '- [ ] Review any new files in this workspace',
+        '- [ ] If nothing needs attention, reply with HEARTBEAT_OK',
+        '```',
+        '',
+        'You can update HEARTBEAT.md at any time to change what your heartbeat checks for.',
+        '',
+        '## @claw Command Protocol',
+        '',
+        'To invoke ClawGravity features, include a `@claw` code block in your response.',
+        'ClawGravity intercepts these blocks and executes them automatically.',
+        '',
+        '### Schedule a recurring task',
+        '',
+        '````',
+        '```@claw',
+        'action: schedule_add',
+        'cron: */5 * * * *',
+        'prompt: Read HEARTBEAT.md and execute the checklist. Update CLAW.md with results.',
+        '```',
+        '````',
+        '',
+        '- `cron`: Standard cron expression (minute hour day-of-month month day-of-week)',
+        '- `prompt`: The message sent to you in a NEW session when the cron fires',
+        '',
+        '### List active schedules',
+        '',
+        '````',
+        '```@claw',
+        'action: schedule_list',
+        '```',
+        '````',
+        '',
+        '### Remove a schedule',
+        '',
+        '````',
+        '```@claw',
+        'action: schedule_remove',
+        'id: 1',
+        '```',
+        '````',
+        '',
+        '## Persistent Memory',
+        '',
+        '**CLAW.md** — your persistent memory file. Read/write freely.',
+        'Each scheduled task runs in a new chat session with NO previous context.',
+        'CLAW.md is your ONLY way to persist state across sessions.',
+        '',
+        '## Important Rules',
+        '',
+        '- Each scheduled task opens a **new session** — no conversation history carries over',
+        '- Always read CLAW.md at the start of a scheduled task to restore context',
+        '- Write important state back to CLAW.md before your response ends',
+        '- This workspace is separate from the user\'s coding projects',
+        '',
+    ].join('\n');
+    fs.writeFileSync(geminiMdPath, geminiMdContent, 'utf-8');
+    logger.debug(`[Claw] GEMINI.md written to ${geminiMdPath}`);
+
+    // Ensure HEARTBEAT.md exists — the agent's periodic task checklist
+    const heartbeatPath = path.join(clawWorkspacePath, 'HEARTBEAT.md');
+    if (!fs.existsSync(heartbeatPath)) {
+        fs.writeFileSync(heartbeatPath, [
+            '# 🦞 Heartbeat Checklist',
+            '',
+            '> This checklist runs on each heartbeat. Edit it to customize your periodic tasks.',
+            '',
+            '- [ ] Read CLAW.md for any pending tasks or reminders',
+            '- [ ] Check if there are any new files or changes in this workspace',
+            '- [ ] If nothing needs attention, reply with HEARTBEAT_OK',
+            '',
+        ].join('\n'), 'utf-8');
+        logger.info(`[Claw] Created heartbeat checklist: ${heartbeatPath}`);
+    }
+
+    // Also ensure CLAW.md memory file exists
+    const clawMemoryPath = path.join(clawWorkspacePath, 'CLAW.md');
+    if (!fs.existsSync(clawMemoryPath)) {
+        fs.writeFileSync(clawMemoryPath, [
+            '# 🦞 Claw Agent Memory',
+            '',
+            '> Persistent memory across scheduled tasks and sessions.',
+            '> Write here to remember things between tasks.',
+            '',
+            '## Notes',
+            '',
+            '_No entries yet._',
+            '',
+        ].join('\n'), 'utf-8');
+        logger.info(`[Claw] Created memory file: ${clawMemoryPath}`);
+    }
+
     /**
      * Schedule job callback: dispatches the prompt to Antigravity via CDP.
      * This runs when a cron-scheduled task fires.
@@ -1131,6 +1240,15 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     if (restoredCount > 0) {
         logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s) → workspace: ${clawWorkspacePath}`);
     }
+
+    // ClawCommandInterceptor — scans AI output for @claw directives and auto-executes them.
+    // This allows Antigravity to self-invoke ClawGravity features (e.g. schedule tasks).
+    const clawInterceptor = new ClawCommandInterceptor({
+        scheduleService,
+        jobCallback: scheduleJobCallback,
+        clawWorkspacePath,
+    });
+    logger.info(`[Claw] Command interceptor ready — @claw directives in AI responses will auto-execute`);
 
     // Discord platform — only initialise the Discord client when the platform is enabled
     if (config.platforms.includes('discord')) {
@@ -1423,6 +1541,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 sessionStateStore: telegramSessionStateStore,
                 scheduleService,
                 scheduleJobCallback,
+                clawInterceptor,
             });
 
             // Compose select handlers: project select + mode select
