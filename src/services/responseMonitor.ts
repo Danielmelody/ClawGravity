@@ -5,6 +5,8 @@ import {
     extractAssistantSegmentsPayloadScript,
     classifyAssistantSegments,
 } from './assistantDomExtractor';
+import { DomMutationMonitor } from './domMutationMonitor';
+import type { DomMutationEvent } from './domMutationMonitor';
 
 /** Lean DOM selectors for response extraction */
 export const RESPONSE_SELECTORS = {
@@ -467,15 +469,26 @@ export interface ResponseMonitorOptions {
     onPhaseChange?: (phase: ResponsePhase, text: string | null) => void;
     /** Process log update callback (activity messages + tool output) */
     onProcessLog?: (text: string) => void;
+    /**
+     * Enable event-driven DOM monitoring (Phase 4).
+     * When true, a MutationObserver is injected into the page and push events
+     * trigger immediate polls. The base poll interval is extended as a safety net.
+     * Default: true
+     */
+    enablePushMonitoring?: boolean;
 }
 
 /**
  * Lean AI response monitor.
  *
+ * Hybrid polling+push architecture (Phase 4):
+ *   - MutationObserver push events trigger immediate extraction
+ *   - Polling runs at an extended interval as a safety net
+ *   - Falls back to polling-only when push installation fails
+ *
  * Each poll makes exactly 3 CDP calls: stop button, quota, text extraction.
  * Completion: stop button gone N consecutive times -> complete.
  * Simple baseline suppression via string comparison.
- * NO network event subscription.
  */
 export class ResponseMonitor {
     private readonly cdpService: CdpService;
@@ -509,6 +522,13 @@ export class ResponseMonitor {
     // Activity-based timeout (#49)
     private lastActivityTime: number = 0;
 
+    // Event-driven DOM monitoring (Phase 4)
+    private readonly enablePushMonitoring: boolean;
+    private domMutationMonitor: DomMutationMonitor | null = null;
+    private pushActive: boolean = false;
+    private pushPollInFlight: boolean = false;
+    private onMutationEvent: ((event: DomMutationEvent) => void) | null = null;
+
     constructor(options: ResponseMonitorOptions) {
         this.cdpService = options.cdpService;
         this.pollIntervalMs = options.pollIntervalMs ?? 2000;
@@ -520,6 +540,7 @@ export class ResponseMonitor {
         this.onTimeout = options.onTimeout;
         this.onPhaseChange = options.onPhaseChange;
         this.onProcessLog = options.onProcessLog;
+        this.enablePushMonitoring = options.enablePushMonitoring ?? true;
     }
 
     /** Start monitoring */
@@ -612,9 +633,13 @@ export class ResponseMonitor {
         // Register CDP connection event listeners (#48)
         this.registerCdpConnectionListeners();
 
+        // Phase 4: Install event-driven DOM monitoring
+        await this.installPushMonitoring();
+
+        const effectivePollMs = this.getEffectivePollInterval();
         const mode = passive ? 'Passive monitoring' : 'Monitoring';
         logger.debug(
-            `── ${mode} started | poll=${this.pollIntervalMs}ms inactivityTimeout=${this.maxDurationMs / 1000}s baseline=${this.baselineText?.length ?? 0}ch`,
+            `── ${mode} started | poll=${effectivePollMs}ms (push=${this.pushActive ? 'ON' : 'OFF'}) inactivityTimeout=${this.maxDurationMs / 1000}s baseline=${this.baselineText?.length ?? 0}ch`,
         );
 
         this.schedulePoll();
@@ -625,6 +650,7 @@ export class ResponseMonitor {
         this.isRunning = false;
         this.isPaused = false;
         this.unregisterCdpConnectionListeners();
+        await this.uninstallPushMonitoring();
         if (this.pollTimer) {
             clearTimeout(this.pollTimer);
             this.pollTimer = null;
@@ -755,14 +781,107 @@ export class ResponseMonitor {
         }
     }
 
+    /** Get effective poll interval: extended when push is active */
+    private getEffectivePollInterval(): number {
+        // When push monitoring is active, extend poll to 5s (safety net only)
+        // Otherwise use the configured interval (default 2s)
+        return this.pushActive ? Math.max(this.pollIntervalMs, 5000) : this.pollIntervalMs;
+    }
+
     private schedulePoll(): void {
         if (!this.isRunning || this.isPaused) return;
+        const intervalMs = this.getEffectivePollInterval();
         this.pollTimer = setTimeout(async () => {
             await this.poll();
             if (this.isRunning) {
                 this.schedulePoll();
             }
-        }, this.pollIntervalMs);
+        }, intervalMs);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 4: Event-driven DOM monitoring (push) integration
+    // -----------------------------------------------------------------------
+
+    /**
+     * Install DomMutationMonitor and wire up push → immediate poll.
+     */
+    private async installPushMonitoring(): Promise<void> {
+        if (!this.enablePushMonitoring) return;
+
+        try {
+            this.domMutationMonitor = new DomMutationMonitor({
+                cdpService: this.cdpService,
+                debounceMs: 150,
+            });
+
+            const installed = await this.domMutationMonitor.install();
+            if (!installed) {
+                logger.warn('[ResponseMonitor] Push monitoring installation failed — polling-only mode');
+                this.domMutationMonitor = null;
+                return;
+            }
+
+            this.pushActive = true;
+
+            // Wire mutation events to trigger immediate polls
+            this.onMutationEvent = (event: DomMutationEvent) => {
+                if (!this.isRunning || this.isPaused) return;
+
+                // Track activity for timeout
+                this.lastActivityTime = Date.now();
+
+                // Trigger an immediate poll (deduplicated: skip if one is already in-flight)
+                if (!this.pushPollInFlight) {
+                    this.pushPollInFlight = true;
+
+                    // Cancel the scheduled poll timer and do an immediate poll instead
+                    if (this.pollTimer) {
+                        clearTimeout(this.pollTimer);
+                        this.pollTimer = null;
+                    }
+
+                    // Small delay to batch rapid successive events
+                    setTimeout(async () => {
+                        this.pushPollInFlight = false;
+                        if (!this.isRunning || this.isPaused) return;
+                        await this.poll();
+                        if (this.isRunning) {
+                            this.schedulePoll();
+                        }
+                    }, 50);
+                }
+            };
+
+            this.domMutationMonitor.on('mutation', this.onMutationEvent);
+            logger.info('[ResponseMonitor] Push monitoring active — hybrid mode enabled');
+        } catch (err: any) {
+            logger.warn('[ResponseMonitor] Failed to install push monitoring:', err?.message || err);
+            this.pushActive = false;
+            this.domMutationMonitor = null;
+        }
+    }
+
+    /**
+     * Uninstall push monitoring and clean up.
+     */
+    private async uninstallPushMonitoring(): Promise<void> {
+        if (this.onMutationEvent && this.domMutationMonitor) {
+            this.domMutationMonitor.removeListener('mutation', this.onMutationEvent);
+            this.onMutationEvent = null;
+        }
+
+        if (this.domMutationMonitor) {
+            try {
+                await this.domMutationMonitor.uninstall();
+            } catch {
+                // best-effort
+            }
+            this.domMutationMonitor = null;
+        }
+
+        this.pushActive = false;
+        this.pushPollInFlight = false;
     }
 
     private buildEvaluateParams(expression: string): Record<string, unknown> {

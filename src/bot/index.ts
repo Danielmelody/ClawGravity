@@ -25,6 +25,8 @@ import { applyDefaultModel } from '../services/defaultModelApplicator';
 import { TemplateRepository } from '../database/templateRepository';
 import { WorkspaceBindingRepository } from '../database/workspaceBindingRepository';
 import { ChatSessionRepository } from '../database/chatSessionRepository';
+import { ScheduleRepository } from '../database/scheduleRepository';
+import type { ScheduleRecord } from '../database/scheduleRepository';
 import { WorkspaceService } from '../services/workspaceService';
 import {
     WorkspaceCommandHandler,
@@ -51,6 +53,7 @@ import { ensureAntigravityRunning } from '../services/antigravityLauncher';
 import { getAntigravityCdpHint } from '../utils/pathUtils';
 import { AutoAcceptService } from '../services/autoAcceptService';
 import { PromptDispatcher } from '../services/promptDispatcher';
+import { ScheduleService } from '../services/scheduleService';
 import {
     buildApprovalCustomId,
     CdpBridge,
@@ -1010,6 +1013,38 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
     const slashCommandHandler = new SlashCommandHandler(templateRepo);
 
+    // Initialize ScheduleService
+    const scheduleRepo = new ScheduleRepository(db);
+    const scheduleService = new ScheduleService(scheduleRepo);
+
+    /**
+     * Schedule job callback: dispatches the prompt to Antigravity via CDP.
+     * This runs when a cron-scheduled task fires.
+     */
+    const scheduleJobCallback = async (schedule: ScheduleRecord) => {
+        logger.info(`[ScheduleJob] Firing schedule #${schedule.id}: "${schedule.prompt.slice(0, 80)}..." → workspace=${schedule.workspacePath}`);
+        try {
+            const cdp = await bridge.pool.getOrConnect(schedule.workspacePath);
+            const projectName = bridge.pool.extractProjectName(schedule.workspacePath);
+            bridge.lastActiveWorkspace = projectName;
+
+            const injectResult = await cdp.injectMessage(schedule.prompt);
+            if (injectResult.ok) {
+                logger.done(`[ScheduleJob] Schedule #${schedule.id} executed successfully`);
+            } else {
+                logger.error(`[ScheduleJob] Schedule #${schedule.id} inject failed: ${injectResult.error}`);
+            }
+        } catch (err: any) {
+            logger.error(`[ScheduleJob] Schedule #${schedule.id} failed:`, err?.message || err);
+        }
+    };
+
+    // Restore persisted schedules on startup
+    const restoredCount = scheduleService.restoreAll(scheduleJobCallback);
+    if (restoredCount > 0) {
+        logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s)`);
+    }
+
     // Discord platform — only initialise the Discord client when the platform is enabled
     if (config.platforms.includes('discord')) {
 
@@ -1144,6 +1179,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     templateRepo,
                     joinHandler,
                     userPrefRepo,
+                    scheduleService,
+                    scheduleJobCallback,
                 ),
                 handleTemplateUse: async (interaction, templateId) => {
                     const template = templateRepo.findById(templateId);
@@ -1297,6 +1334,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 botApi: telegramBot.api as any,
                 chatSessionService,
                 sessionStateStore: telegramSessionStateStore,
+                scheduleService,
+                scheduleJobCallback,
             });
 
             // Compose select handlers: project select + mode select
@@ -1372,6 +1411,9 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 { command: 'project_create', description: 'Create a new workspace' },
                 { command: 'new', description: 'Start a new chat session' },
                 { command: 'history', description: 'View a history session' },
+                { command: 'schedule', description: 'List scheduled tasks' },
+                { command: 'schedule_add', description: 'Add a scheduled task' },
+                { command: 'schedule_remove', description: 'Remove a scheduled task' },
                 { command: 'logs', description: 'Show recent log entries' },
                 { command: 'stop', description: 'Interrupt active LLM generation' },
                 { command: 'help', description: 'Show available commands' },
@@ -1489,6 +1531,8 @@ async function handleSlashInteraction(
     templateRepo: TemplateRepository,
     joinHandler?: JoinCommandHandler,
     userPrefRepo?: UserPreferenceRepository,
+    scheduleService?: ScheduleService,
+    scheduleJobCallback?: (schedule: ScheduleRecord) => void,
 ): Promise<void> {
     const commandName = interaction.commandName;
 
@@ -1537,6 +1581,7 @@ async function handleSlashInteraction(
                     name: '🔧 System', value: [
                         '`/status` — Display overall bot status',
                         '`/autoaccept` — Toggle auto-approve mode for approval dialogs via buttons',
+                        '`/schedule` — Manage scheduled tasks (add/list/remove)',
                         '`/logs [lines] [level]` — View recent bot logs',
                         '`/cleanup [days]` — Clean up unused channels/categories',
                         '`/help` — Show this help',
@@ -1838,6 +1883,78 @@ async function handleSlashInteraction(
                 : `\`\`\`\n${formatted.slice(0, MAX_CONTENT)}\n\`\`\`\n(truncated — showing ${MAX_CONTENT} chars of ${formatted.length})`;
 
             await interaction.editReply({ content: codeBlock });
+            break;
+        }
+
+        case 'schedule': {
+            if (!scheduleService || !scheduleJobCallback) {
+                await interaction.editReply({ content: '⚠️ Schedule service not available.' });
+                break;
+            }
+
+            const scheduleSub = interaction.options.getSubcommand();
+
+            if (scheduleSub === 'add') {
+                const cronExpr = interaction.options.getString('cron', true);
+                const prompt = interaction.options.getString('prompt', true);
+
+                // Resolve workspace for this channel
+                const workspacePath = wsHandler.getWorkspaceForChannel(interaction.channelId);
+                if (!workspacePath) {
+                    await interaction.editReply({ content: '⚠️ No workspace bound to this channel. Use `/project` first.' });
+                    break;
+                }
+
+                try {
+                    const record = scheduleService.addSchedule(
+                        cronExpr,
+                        prompt,
+                        workspacePath,
+                        scheduleJobCallback,
+                    );
+                    const embed = new EmbedBuilder()
+                        .setTitle('📅 Schedule Created')
+                        .setColor(0x57F287)
+                        .addFields(
+                            { name: 'ID', value: `#${record.id}`, inline: true },
+                            { name: 'Cron', value: `\`${cronExpr}\``, inline: true },
+                            { name: 'Prompt', value: prompt.slice(0, 200), inline: false },
+                        )
+                        .setTimestamp();
+                    await interaction.editReply({ embeds: [embed] });
+                } catch (err: any) {
+                    await interaction.editReply({ content: `❌ Failed to create schedule: ${err?.message || 'unknown error'}` });
+                }
+            } else if (scheduleSub === 'remove') {
+                const scheduleId = interaction.options.getInteger('id', true);
+                const removed = scheduleService.removeSchedule(scheduleId);
+                if (removed) {
+                    await interaction.editReply({ content: `🗑️ Schedule #${scheduleId} removed.` });
+                } else {
+                    await interaction.editReply({ content: `⚠️ Schedule #${scheduleId} not found.` });
+                }
+            } else {
+                // 'list' or default
+                const schedules = scheduleService.listSchedules();
+                if (schedules.length === 0) {
+                    await interaction.editReply({ content: '📅 No scheduled tasks. Use `/schedule add` to create one.' });
+                    break;
+                }
+
+                const lines = schedules.map((s: ScheduleRecord) => {
+                    const status = s.enabled ? '✅' : '⏸️';
+                    const workspace = s.workspacePath.split(/[\\/]/).pop() || s.workspacePath;
+                    return `${status} **#${s.id}** \`${s.cronExpression}\` → ${s.prompt.slice(0, 80)}${s.prompt.length > 80 ? '...' : ''} (📁 ${workspace})`;
+                });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('📅 Scheduled Tasks')
+                    .setColor(0x5865F2)
+                    .setDescription(lines.join('\n'))
+                    .setFooter({ text: 'Use /schedule remove <id> to delete' })
+                    .setTimestamp();
+                await interaction.editReply({ embeds: [embed] });
+            }
             break;
         }
 

@@ -282,7 +282,7 @@ Antigravity renders code blocks in a non-standard way.
 
 Terminal command execution confirmation dialog (Run/Reject).
 
-> **Last verified**: 2026-03 (DOM provided by user in [#81](https://github.com/tokyoweb3/LazyGravity/issues/81))
+> **Last verified**: 2026-03 (DOM provided by user in [#81](https://github.com/Danielmelody/ClawGravity/issues/81))
 
 ### Verified DOM Structure
 

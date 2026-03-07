@@ -30,6 +30,8 @@ import { cleanupInboundImageAttachments } from '../utils/imageHandler';
 import type { InboundImageAttachment } from '../utils/imageHandler';
 import type { ExtractionMode } from '../utils/config';
 import type { ChatSessionService } from '../services/chatSessionService';
+import type { ScheduleService } from '../services/scheduleService';
+import type { ScheduleRecord } from '../database/scheduleRepository';
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
 
 export interface TelegramMessageHandlerDeps {
@@ -50,6 +52,10 @@ export interface TelegramMessageHandlerDeps {
     readonly botApi?: import('../platform/telegram/wrappers').TelegramBotLike['api'];
     readonly chatSessionService?: ChatSessionService;
     readonly sessionStateStore?: TelegramSessionStateStore;
+    /** Schedule service for managing cron-based tasks */
+    readonly scheduleService?: ScheduleService;
+    /** Callback invoked when a schedule fires to execute a prompt */
+    readonly scheduleJobCallback?: (schedule: ScheduleRecord) => void;
 }
 
 /**
@@ -103,6 +109,8 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     activeMonitors: deps.activeMonitors,
                     chatSessionService: deps.chatSessionService,
                     sessionStateStore: deps.sessionStateStore,
+                    scheduleService: deps.scheduleService,
+                    scheduleJobCallback: deps.scheduleJobCallback,
                 },
                 message,
                 cmd,

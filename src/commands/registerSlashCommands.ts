@@ -161,6 +161,44 @@ const outputCommand = new SlashCommandBuilder()
             .setRequired(false)
     );
 
+/** /schedule command definition */
+const scheduleCommand = new SlashCommandBuilder()
+    .setName('schedule')
+    .setDescription(t('Manage scheduled tasks — add, list, or remove cron-based prompts'))
+    .addSubcommand((sub) =>
+        sub
+            .setName('add')
+            .setDescription(t('Add a new scheduled task'))
+            .addStringOption((option) =>
+                option
+                    .setName('cron')
+                    .setDescription(t('Cron expression (e.g. "0 9 * * *" for 9 AM daily)'))
+                    .setRequired(true)
+            )
+            .addStringOption((option) =>
+                option
+                    .setName('prompt')
+                    .setDescription(t('Prompt to execute on schedule'))
+                    .setRequired(true)
+            )
+    )
+    .addSubcommand((sub) =>
+        sub
+            .setName('list')
+            .setDescription(t('List all scheduled tasks'))
+    )
+    .addSubcommand((sub) =>
+        sub
+            .setName('remove')
+            .setDescription(t('Remove a scheduled task'))
+            .addIntegerOption((option) =>
+                option
+                    .setName('id')
+                    .setDescription(t('ID of the schedule to remove'))
+                    .setRequired(true)
+            )
+    );
+
 
 /** /logs command definition */
 const logsCommand = new SlashCommandBuilder()
@@ -209,6 +247,7 @@ export const slashCommands = [
     historyCommand,
     mirrorCommand,
     outputCommand,
+    scheduleCommand,
     pingCommand,
     logsCommand,
 ];

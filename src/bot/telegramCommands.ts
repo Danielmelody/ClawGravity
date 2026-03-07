@@ -28,6 +28,8 @@ import type { ModelService } from '../services/modelService';
 import type { TelegramBindingRepository } from '../database/telegramBindingRepository';
 import type { TemplateRepository } from '../database/templateRepository';
 import type { ChatSessionService } from '../services/chatSessionService';
+import type { ScheduleService } from '../services/scheduleService';
+import type { ScheduleRecord } from '../database/scheduleRepository';
 import { buildModePayload } from '../ui/modeUi';
 import { buildModelsPayload } from '../ui/modelsUi';
 import { buildAutoAcceptPayload } from '../ui/autoAcceptUi';
@@ -43,7 +45,7 @@ import { handleTelegramJoinCommand } from './telegramJoinCommand';
 // Known commands (used by both parser and /help output)
 // ---------------------------------------------------------------------------
 
-const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'history'] as const;
+const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'history', 'schedule', 'schedule_add', 'schedule_remove'] as const;
 type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
@@ -98,6 +100,10 @@ export interface TelegramCommandDeps {
      *  Used by /stop to halt monitoring and prevent stale re-sends. */
     readonly activeMonitors?: Map<string, ResponseMonitor>;
     readonly sessionStateStore?: TelegramSessionStateStore;
+    /** Schedule service for managing cron-based tasks */
+    readonly scheduleService?: ScheduleService;
+    /** Callback invoked when a schedule fires to execute a prompt */
+    readonly scheduleJobCallback?: (schedule: ScheduleRecord) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +171,15 @@ export async function handleTelegramCommand(
         case 'history':
             await handleHistory(deps, message);
             break;
+        case 'schedule':
+            await handleScheduleList(deps, message);
+            break;
+        case 'schedule_add':
+            await handleScheduleAdd(deps, message, parsed.args);
+            break;
+        case 'schedule_remove':
+            await handleScheduleRemove(deps, message, parsed.args);
+            break;
         default:
             // Should not happen — parser filters unknowns
             break;
@@ -207,6 +222,9 @@ async function handleHelp(message: PlatformMessage): Promise<void> {
         '/project_create — Create a new workspace',
         '/new — Start a new chat session',
         '/history — View a history session',
+        '/schedule — List scheduled tasks',
+        '/schedule_add — Add a scheduled task',
+        '/schedule_remove — Remove a scheduled task',
         '/logs — Show recent log entries',
         '/stop — Interrupt active LLM generation',
         '/ping — Check bot latency',
@@ -555,6 +573,119 @@ async function handleHistory(deps: TelegramCommandDeps, message: PlatformMessage
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Schedule command handlers
+// ---------------------------------------------------------------------------
+
+async function handleScheduleList(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
+    if (!deps.scheduleService) {
+        await message.reply({ text: 'Schedule service not available.' }).catch(logger.error);
+        return;
+    }
+
+    const schedules = deps.scheduleService.listSchedules();
+    if (schedules.length === 0) {
+        await message.reply({ text: '📅 No scheduled tasks. Use /schedule_add to create one.' }).catch(logger.error);
+        return;
+    }
+
+    const lines = [
+        '<b>📅 Scheduled Tasks</b>',
+        '',
+        ...schedules.map((s) => {
+            const status = s.enabled ? '✅' : '⏸️';
+            const workspace = s.workspacePath.split(/[\\/]/).pop() || s.workspacePath;
+            return `${status} <b>#${s.id}</b> <code>${escapeHtml(s.cronExpression)}</code>\n   ${escapeHtml(s.prompt.slice(0, 100))}${s.prompt.length > 100 ? '...' : ''}\n   📁 ${escapeHtml(workspace)}`;
+        }),
+        '',
+        'Use /schedule_remove &lt;id&gt; to delete.',
+    ];
+
+    const text = lines.join('\n');
+    const truncated = text.length > 4096 ? text.slice(0, 4090) + '\n...' : text;
+    await message.reply({ text: truncated }).catch(logger.error);
+}
+
+async function handleScheduleAdd(deps: TelegramCommandDeps, message: PlatformMessage, args: string): Promise<void> {
+    if (!deps.scheduleService) {
+        await message.reply({ text: 'Schedule service not available.' }).catch(logger.error);
+        return;
+    }
+
+    // Parse: first 5 cron fields, then the rest is the prompt
+    // e.g. "0 9 * * * run the daily report"
+    const parts = args.trim().split(/\s+/);
+    if (parts.length < 6) {
+        await message.reply({
+            text: 'Usage: /schedule_add &lt;cron expression&gt; &lt;prompt&gt;\nExample: /schedule_add 0 9 * * * Run the daily standup report',
+        }).catch(logger.error);
+        return;
+    }
+
+    const cronExpression = parts.slice(0, 5).join(' ');
+    const prompt = parts.slice(5).join(' ');
+
+    // Resolve workspace binding for this chat
+    const chatId = message.channel.id;
+    const binding = deps.telegramBindingRepo?.findByChatId(chatId);
+    if (!binding) {
+        await message.reply({
+            text: 'No project is linked to this chat. Use /project to bind a workspace first.',
+        }).catch(logger.error);
+        return;
+    }
+
+    const workspacePath = deps.workspaceService
+        ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
+        : binding.workspacePath;
+
+    try {
+        const jobCallback = deps.scheduleJobCallback;
+        if (!jobCallback) {
+            await message.reply({ text: 'Schedule execution callback not configured.' }).catch(logger.error);
+            return;
+        }
+
+        const record = deps.scheduleService.addSchedule(
+            cronExpression,
+            prompt,
+            workspacePath,
+            jobCallback,
+        );
+
+        await message.reply({
+            text: `✅ Schedule #${record.id} created.\n<code>${escapeHtml(cronExpression)}</code> → ${escapeHtml(prompt.slice(0, 100))}`,
+        }).catch(logger.error);
+    } catch (err: any) {
+        logger.error('[TelegramCommand:schedule_add]', err?.message || err);
+        await message.reply({
+            text: `Failed to add schedule: ${escapeHtml(err?.message || 'unknown error')}`,
+        }).catch(logger.error);
+    }
+}
+
+async function handleScheduleRemove(deps: TelegramCommandDeps, message: PlatformMessage, args: string): Promise<void> {
+    if (!deps.scheduleService) {
+        await message.reply({ text: 'Schedule service not available.' }).catch(logger.error);
+        return;
+    }
+
+    const id = parseInt(args.trim(), 10);
+    if (isNaN(id)) {
+        await message.reply({
+            text: 'Usage: /schedule_remove &lt;id&gt;\nUse /schedule to see available schedule IDs.',
+        }).catch(logger.error);
+        return;
+    }
+
+    const removed = deps.scheduleService.removeSchedule(id);
+    if (removed) {
+        await message.reply({ text: `🗑️ Schedule #${id} removed.` }).catch(logger.error);
+    } else {
+        await message.reply({ text: `Schedule #${id} not found.` }).catch(logger.error);
+    }
+}
 
 /**
  * Send a MessagePayload that contains file attachments.
