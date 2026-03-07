@@ -363,16 +363,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             }
                             logger.divider();
 
-                            // Intercept @claw commands from AI response
-                            if (deps.clawInterceptor && finalOutputText) {
-                                const clawResults = await deps.clawInterceptor.execute(finalOutputText);
-                                for (const r of clawResults) {
-                                    const icon = r.success ? '✅' : '❌';
-                                    await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
-                                }
-                            }
-
-                            // Merge the final response into the existing status message when possible.
+                            // Deliver the initial response to Telegram first
                             if (finalOutputText && finalOutputText.trim().length > 0) {
                                 await deliverFinalTelegramText(statusMsg, channel, finalOutputText);
                             } else if (finalText && finalText.trim().length > 0) {
@@ -382,6 +373,60 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                     await statusMsg.delete().catch(() => { });
                                 }
                                 await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
+                            }
+
+                            // Intercept @claw commands and handle follow-up chain
+                            if (deps.clawInterceptor && finalOutputText) {
+                                const MAX_CLAW_DEPTH = 3;
+                                let currentText = finalOutputText;
+                                let clawDepth = 0;
+
+                                while (clawDepth < MAX_CLAW_DEPTH) {
+                                    const clawResults = await deps.clawInterceptor.execute(currentText);
+                                    if (clawResults.length === 0) break;
+
+                                    for (const r of clawResults) {
+                                        const icon = r.success ? '✅' : '❌';
+                                        await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
+                                    }
+
+                                    // Inject results back into Antigravity for AI continuation
+                                    const resultLines = clawResults.map(r =>
+                                        `@claw:${r.command.action} — ${r.success ? 'OK' : 'FAIL'}\n${r.message}`
+                                    );
+                                    const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
+
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    const injectResult = await cdp.injectMessage(feedback);
+                                    if (!injectResult.ok) {
+                                        logger.error(`[TelegramHandler] Failed to inject @claw results: ${injectResult.error}`);
+                                        break;
+                                    }
+
+                                    logger.done(`[TelegramHandler] @claw results injected — awaiting follow-up (depth=${clawDepth + 1})...`);
+
+                                    currentText = await new Promise<string>((resolve) => {
+                                        const followUp = new ResponseMonitor({
+                                            cdpService: cdp,
+                                            pollIntervalMs: 2000,
+                                            maxDurationMs: 300_000,
+                                            stopGoneConfirmCount: 3,
+                                            extractionMode: deps.extractionMode,
+                                            onComplete: async (text) => resolve(text?.trim() || ''),
+                                            onTimeout: async () => {
+                                                logger.warn(`[TelegramHandler] @claw follow-up timed out (depth=${clawDepth + 1})`);
+                                                resolve('');
+                                            },
+                                        });
+                                        followUp.start();
+                                    });
+
+                                    clawDepth++;
+                                    if (!currentText) break;
+
+                                    // Deliver follow-up response to Telegram
+                                    await sendTextChunked(channel, currentText);
+                                }
                             }
                         } finally {
                             settle();
@@ -529,13 +574,14 @@ export async function handlePassiveUserMessage(
     info: { text: string },
     activeMonitors?: Map<string, ResponseMonitor>,
     extractionMode?: ExtractionMode,
+    clawInterceptor?: ClawCommandInterceptor,
 ): Promise<void> {
     // Forward the user message
     const preview = info.text.length > 200 ? info.text.slice(0, 200) + '…' : info.text;
     await channel.send({ text: `🖥️ ${preview}` }).catch(logger.error);
 
     // Start passive ResponseMonitor to capture AI response
-    startPassiveResponseMonitor(channel, cdp, projectName, activeMonitors, extractionMode);
+    startPassiveResponseMonitor(channel, cdp, projectName, activeMonitors, extractionMode, clawInterceptor);
 }
 
 /**
@@ -549,6 +595,7 @@ function startPassiveResponseMonitor(
     projectName: string,
     activeMonitors?: Map<string, ResponseMonitor>,
     extractionMode?: ExtractionMode,
+    clawInterceptor?: ClawCommandInterceptor,
 ): void {
     // Stop previous passive monitor if still running
     const prev = passiveResponseMonitors.get(projectName);
@@ -615,8 +662,69 @@ function startPassiveResponseMonitor(
             // Deliver final text — merge into status message or send new
             if (statusMsg) {
                 await deliverFinalTelegramText(statusMsg, channel, finalText);
+                statusMsg = null;
             } else {
                 await sendTextChunked(channel, finalText);
+            }
+
+            // Handle @claw commands if interceptor is available
+            if (!clawInterceptor) return;
+
+            let currentText = finalText;
+            let clawDepth = 0;
+            const MAX_CLAW_DEPTH = 3;
+
+            while (clawDepth < MAX_CLAW_DEPTH) {
+                const clawResults = await clawInterceptor.execute(currentText);
+                if (clawResults.length === 0) break;
+
+                clawDepth++;
+                logger.info(`[TelegramPassive] Found @claw command(s) in AI response. Executing (Depth ${clawDepth})...`);
+
+                const resultLines = clawResults.map(r =>
+                    `@claw:${r.command.action} — ${r.success ? 'OK' : 'FAIL'}\n${r.message}`
+                );
+                const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
+
+                for (const r of clawResults) {
+                    const icon = r.success ? '✅' : '❌';
+                    await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
+                }
+
+                await cdp.injectMessage(feedback);
+                logger.debug(`[TelegramPassive] Injected @claw results back to Antigravity (length: ${feedback.length})`);
+
+                const followUpPromise = new Promise<string>((resolve) => {
+                    const followUpMonitor = new ResponseMonitor({
+                        cdpService: cdp,
+                        extractionMode,
+                        onComplete: (followUpText) => resolve(followUpText),
+                        onTimeout: (lastText) => resolve(lastText || ''),
+                    });
+
+                    passiveResponseMonitors.set(projectName, followUpMonitor);
+                    activeMonitors?.set(`passive:${projectName}`, followUpMonitor);
+
+                    followUpMonitor.start().catch((err: any) => {
+                        logger.error('[TelegramPassive] Failed to start follow-up monitor:', err?.message || err);
+                        resolve('');
+                    });
+                });
+
+                const nextText = await followUpPromise;
+                passiveResponseMonitors.delete(projectName);
+                activeMonitors?.delete(`passive:${projectName}`);
+
+                if (!nextText || nextText.trim().length === 0) break;
+
+                await sendTextChunked(channel, nextText);
+                currentText = nextText;
+
+                if (clawDepth >= MAX_CLAW_DEPTH) {
+                    logger.warn(`[TelegramPassive] Reached MAX_CLAW_DEPTH (${MAX_CLAW_DEPTH}). Stopping @claw command execution.`);
+                    await sendTextChunked(channel, `⚠️ Reached max @claw execution depth (${MAX_CLAW_DEPTH}). Stopping auto-execution.`);
+                    break;
+                }
             }
         },
         onTimeout: () => {

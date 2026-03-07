@@ -839,6 +839,14 @@ export class CdpService extends EventEmitter {
         return this.isConnectedFlag;
     }
 
+    /**
+     * Return the WebSocket debugger URL currently connected to.
+     * Used to detect when two CdpService instances point to the same Antigravity window.
+     */
+    getTargetUrl(): string | null {
+        return this.targetUrl;
+    }
+
     getContexts(): CdpContext[] {
         return [...this.contexts];
     }

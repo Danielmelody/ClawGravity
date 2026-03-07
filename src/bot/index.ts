@@ -1076,7 +1076,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         logger.info(`[Claw] Created agent workspace: ${clawWorkspacePath}`);
     }
 
-    // Auto-launch Antigravity with __claw__ workspace if not already open.
+    // Auto-launch Antigravity with the agent workspace if not already open.
     // This ensures scheduled tasks always have a dedicated CDP endpoint.
     (async () => {
         const http = await import('http');
@@ -1084,8 +1084,10 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         const { CDP_PORTS } = await import('../utils/cdpPorts');
         const clawProjectName = path.basename(clawWorkspacePath);
 
-        // Check if __claw__ is already open in an Antigravity instance
-        const checkPort = (port: number): Promise<string[]> => {
+        // Check if the agent workspace is already open in a DEDICATED Antigravity instance.
+        // A port is "dedicated" if it only contains the agent workbench pages,
+        // i.e. not shared with the user's active projects.
+        const checkPort = (port: number): Promise<{ titles: string[]; hasClaw: boolean }> => {
             return new Promise((resolve) => {
                 const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
                     let data = '';
@@ -1094,22 +1096,35 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         try {
                             const tabs = JSON.parse(data);
                             const titles = tabs
-                                .filter((t: any) => t.type === 'page')
+                                .filter((t: any) => t.type === 'page' && t.url?.includes('workbench'))
                                 .map((t: any) => t.title || '');
-                            resolve(titles);
-                        } catch { resolve([]); }
+                            const hasClaw = titles.some((t: string) => t.includes(clawProjectName));
+                            resolve({ titles, hasClaw });
+                        } catch { resolve({ titles: [], hasClaw: false }); }
                     });
                 });
-                req.on('error', () => resolve([]));
-                req.setTimeout(2000, () => { req.destroy(); resolve([]); });
+                req.on('error', () => resolve({ titles: [], hasClaw: false }));
+                req.setTimeout(2000, () => { req.destroy(); resolve({ titles: [], hasClaw: false }); });
             });
         };
 
         for (const port of CDP_PORTS) {
-            const titles = await checkPort(port);
-            if (titles.some(t => t.includes(clawProjectName))) {
-                logger.info(`[Claw] __claw__ workspace already open on CDP port ${port}`);
-                return;
+            const { titles, hasClaw } = await checkPort(port);
+            if (hasClaw) {
+                // Check if this port is dedicated to the agent workspace only
+                const nonClawTitles = titles.filter(t => !t.includes(clawProjectName));
+                if (nonClawTitles.length === 0) {
+                    // Only the agent workspace on this port — it's a dedicated instance
+                    logger.info(`[Claw] "${clawProjectName}" workspace already open on DEDICATED CDP port ${port}`);
+                    return;
+                } else {
+                    // Shared port — agent workspace is open in the user's window, need a separate one
+                    logger.warn(
+                        `[Claw] "${clawProjectName}" found on CDP port ${port} but shared with: ${nonClawTitles.join(', ')}. ` +
+                        `Launching a dedicated instance...`
+                    );
+                    // Don't return — fall through to launch a new window
+                }
             }
         }
 
@@ -1133,11 +1148,11 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         }
 
         if (!freePort) {
-            logger.warn(`[Claw] No free CDP port available to auto-launch __claw__ workspace. Scheduled tasks may fail.`);
+            logger.warn(`[Claw] No free CDP port available to auto-launch "${clawProjectName}" workspace. Scheduled tasks may fail.`);
             return;
         }
 
-        logger.info(`[Claw] Launching Antigravity for __claw__ workspace on CDP port ${freePort}...`);
+        logger.info(`[Claw] Launching Antigravity for "${clawProjectName}" workspace on CDP port ${freePort}...`);
         try {
             const platform = (await import('os')).platform();
             if (platform === 'win32') {
@@ -1151,7 +1166,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 });
                 child.unref();
             }
-            logger.info(`[Claw] Antigravity launched for __claw__ workspace (port ${freePort})`);
+            logger.info(`[Claw] Antigravity launched for "${clawProjectName}" workspace (port ${freePort})`);
         } catch (err: any) {
             logger.warn(`[Claw] Failed to auto-launch Antigravity: ${err?.message || err}`);
         }
@@ -1311,12 +1326,12 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
      * This runs when a cron-scheduled task fires.
      *
      * Execution flow:
-     *   1. Connect CDP to the dedicated __claw__ workspace (separate Antigravity instance)
+     *   1. Connect CDP to the dedicated agent workspace (separate Antigravity instance)
      *   2. Wait for any previous task to finish (busy detection)
      *   3. Open a new chat session (isolation)
      *   4. Inject the scheduled prompt
      *
-     * IMPORTANT: The __claw__ workspace must be opened in a SEPARATE Antigravity
+     * IMPORTANT: The agent workspace must be opened in a SEPARATE Antigravity
      * window for scheduled tasks to work without interfering with the user.
      */
     const scheduleJobCallback = async (schedule: ScheduleRecord) => {
@@ -1451,7 +1466,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         } catch (err: any) {
             const msg = err?.message || String(err);
             if (msg.includes('No matching') || msg.includes('ECONNREFUSED') || msg.includes('not found')) {
-                logger.error(`[ScheduleJob] Schedule #${schedule.id}: Cannot connect to __claw__ workspace. Please open "${clawWorkspacePath}" in a separate Antigravity window.`);
+                logger.error(`[ScheduleJob] Schedule #${schedule.id}: Cannot connect to "${path.basename(clawWorkspacePath)}" workspace. Please open "${clawWorkspacePath}" in a separate Antigravity window.`);
             } else {
                 logger.error(`[ScheduleJob] Schedule #${schedule.id} failed:`, msg);
             }

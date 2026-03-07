@@ -253,16 +253,45 @@ async function handleStatus(deps: TelegramCommandDeps, message: PlatformMessage)
         ? deps.modeService.getCurrentMode()
         : 'unknown';
 
+    const currentModel = deps.modelService?.getDefaultModel() ?? 'unknown';
+
     const lines = [
         '<b>Bot Status</b>',
         '',
         `<b>This chat:</b>`,
         `  Project: ${escapeHtml(boundProject)}`,
-        `  CDP: ${projectConnected ? 'Connected' : 'Not connected'}`,
+        `  CDP: ${projectConnected ? '✅ Connected' : '❌ Not connected'}`,
         '',
         `Mode: ${escapeHtml(mode)}`,
+        `Model: ${escapeHtml(currentModel)}`,
         `Active connections: ${activeWorkspaces.length > 0 ? activeWorkspaces.map(escapeHtml).join(', ') : 'none'}`,
     ];
+
+    // Fetch and display quota info
+    if (deps.fetchQuota) {
+        try {
+            const quotaData = await deps.fetchQuota();
+            if (quotaData.length > 0) {
+                lines.push('');
+                lines.push('<b>Model Quota:</b>');
+                for (const m of quotaData) {
+                    const label = m.label || m.model || 'Unknown';
+                    if (m.quotaInfo) {
+                        const pct = Math.round(m.quotaInfo.remainingFraction * 100);
+                        const barLen = 10;
+                        const filled = Math.round(pct / barLen);
+                        const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
+                        lines.push(`  ${escapeHtml(label)}: ${bar} ${pct}%`);
+                    } else {
+                        lines.push(`  ${escapeHtml(label)}: N/A`);
+                    }
+                }
+            }
+        } catch (err: any) {
+            lines.push('');
+            lines.push(`<i>Quota fetch failed: ${escapeHtml(err?.message || 'unknown')}</i>`);
+        }
+    }
 
     await message.reply({ text: lines.join('\n') }).catch(logger.error);
 }
