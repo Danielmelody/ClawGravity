@@ -1056,15 +1056,15 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     // TODO: Future enhancement — notify bound channels when scheduled tasks execute.
     // Requires mapping workspace paths back to Discord channels or Telegram chats.
 
-    // Resolve scheduler workspace — dedicated directory for cron-based tasks.
+    // Resolve Claw workspace — dedicated directory for the agent's tasks and memory.
     // This keeps scheduled work isolated from the user's active conversations.
-    const scheduleWorkspacePath = config.scheduleWorkspace
-        ?? path.join(config.workspaceBaseDir, '__claw-schedule__');
+    const clawWorkspacePath = config.clawWorkspace
+        ?? path.join(config.workspaceBaseDir, '__claw__');
 
-    // Ensure the scheduler workspace directory exists
-    if (!fs.existsSync(scheduleWorkspacePath)) {
-        fs.mkdirSync(scheduleWorkspacePath, { recursive: true });
-        logger.info(`[Schedule] Created schedule workspace: ${scheduleWorkspacePath}`);
+    // Ensure the Claw workspace directory exists
+    if (!fs.existsSync(clawWorkspacePath)) {
+        fs.mkdirSync(clawWorkspacePath, { recursive: true });
+        logger.info(`[Claw] Created agent workspace: ${clawWorkspacePath}`);
     }
 
     /**
@@ -1081,11 +1081,11 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
      * the user's current conversation in their regular workspace.
      */
     const scheduleJobCallback = async (schedule: ScheduleRecord) => {
-        logger.info(`[ScheduleJob] Firing schedule #${schedule.id}: "${schedule.prompt.slice(0, 80)}..." → schedule-workspace=${scheduleWorkspacePath}`);
+        logger.info(`[ScheduleJob] Firing schedule #${schedule.id}: "${schedule.prompt.slice(0, 80)}..." → schedule-workspace=${clawWorkspacePath}`);
         try {
             // Always use the dedicated schedule workspace, not the user's workspace
-            const cdp = await bridge.pool.getOrConnect(scheduleWorkspacePath);
-            const projectName = bridge.pool.extractProjectName(scheduleWorkspacePath);
+            const cdp = await bridge.pool.getOrConnect(clawWorkspacePath);
+            const projectName = bridge.pool.extractProjectName(clawWorkspacePath);
 
             // Safety check: is the schedule workspace currently generating?
             const busy = await isAntigravityBusy(cdp);
@@ -1129,7 +1129,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     // Restore persisted schedules on startup
     const restoredCount = scheduleService.restoreAll(scheduleJobCallback);
     if (restoredCount > 0) {
-        logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s) → workspace: ${scheduleWorkspacePath}`);
+        logger.info(`[Schedule] Restored ${restoredCount} scheduled task(s) → workspace: ${clawWorkspacePath}`);
     }
 
     // Discord platform — only initialise the Discord client when the platform is enabled

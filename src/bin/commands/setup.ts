@@ -249,6 +249,12 @@ function workspaceLabel(p: PersistedConfig): string {
     return p.workspaceBaseDir ?? (path.join(os.homedir(), 'Code') + ' (default)');
 }
 
+function clawWorkspaceLabel(p: PersistedConfig): string {
+    if (p.clawWorkspace) return p.clawWorkspace;
+    const base = p.workspaceBaseDir ?? path.join(os.homedir(), 'Code');
+    return path.join(base, '__claw__') + ' (default)';
+}
+
 function isValidTelegramTokenFormat(token: string): boolean {
     return /^\d+:[A-Za-z0-9_-]+$/.test(token);
 }
@@ -515,6 +521,62 @@ async function runWorkspaceSetup(rl: readline.Interface): Promise<void> {
     console.log(`  ${C.green}Workspace saved!${C.reset}\n`);
 }
 
+async function runClawWorkspaceSetup(rl: readline.Interface): Promise<void> {
+    sectionHeader('🦞 Claw Agent Workspace');
+    hint('This is the dedicated directory for ClawGravity\'s autonomous operations.');
+    hint('The Claw agent uses this workspace for:');
+    hintBlank();
+    hint(`  ${C.cyan}• Scheduled tasks${C.dim}   — cron jobs run here in isolated sessions`);
+    hint(`  ${C.cyan}• Agent memory${C.dim}      — persistent context between tasks`);
+    hint(`  ${C.cyan}• Autonomous ops${C.dim}    — self-initiated agent work`);
+    hintBlank();
+    hint('This keeps the agent\'s work completely separate from your coding projects.');
+    hint('Antigravity must have this folder open as a workspace for cron tasks to work.');
+    hintBlank();
+
+    const config = ConfigLoader.readPersisted();
+    const baseDir = config.workspaceBaseDir ?? path.join(os.homedir(), 'Code');
+    const defaultClawDir = path.join(baseDir, '__claw__');
+
+    while (true) {
+        const raw = await ask(rl, `  ${C.yellow}>${C.reset} [${C.dim}${defaultClawDir}${C.reset}] `);
+        const dir = expandTilde(raw.trim().length > 0 ? raw.trim() : defaultClawDir);
+        const resolved = path.resolve(dir);
+
+        if (!fs.existsSync(resolved)) {
+            const answer = await ask(rl, `  ${C.yellow}"${resolved}" does not exist. Create it? (y/n):${C.reset} `);
+            if (answer.trim().toLowerCase() === 'y') {
+                fs.mkdirSync(resolved, { recursive: true });
+            } else {
+                errMsg('Please enter a valid directory.');
+                continue;
+            }
+        }
+
+        // Create a CLAW.md memory file if it doesn't exist
+        const memoryFile = path.join(resolved, 'CLAW.md');
+        if (!fs.existsSync(memoryFile)) {
+            fs.writeFileSync(memoryFile, [
+                '# 🦞 Claw Agent Memory',
+                '',
+                '> This file is the persistent memory for the ClawGravity agent.',
+                '> Scheduled tasks and autonomous operations can read/write here.',
+                '',
+                '## Notes',
+                '',
+                '_No entries yet._',
+                '',
+            ].join('\n'), 'utf-8');
+        }
+
+        console.log('');
+        ConfigLoader.save({ clawWorkspace: resolved });
+        console.log(`  ${C.green}Claw workspace saved!${C.reset} 🦞`);
+        console.log(`  ${C.dim}Memory file: ${memoryFile}${C.reset}\n`);
+        return;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public action
 // ---------------------------------------------------------------------------
@@ -530,6 +592,7 @@ export async function setupAction(): Promise<void> {
             const discordSt = platformStatus(isDiscordConfigured(config), config.platforms, 'discord');
             const telegramSt = platformStatus(isTelegramConfigured(config), config.platforms, 'telegram');
             const wsLabel = `${C.dim}${workspaceLabel(config)}${C.reset}`;
+            const clawLabel = `${C.dim}${clawWorkspaceLabel(config)}${C.reset}`;
 
             const select = await getSelect();
             rl.pause();
@@ -539,6 +602,7 @@ export async function setupAction(): Promise<void> {
                     { name: `Discord                ${statusBadge(discordSt)}`, value: 'discord' as const },
                     { name: `Telegram               ${statusBadge(telegramSt)}`, value: 'telegram' as const },
                     { name: `Workspace Directory    ${wsLabel}`, value: 'workspace' as const },
+                    { name: `🦞 Claw Workspace       ${clawLabel}`, value: 'claw' as const },
                     { name: `Done — save & exit`, value: 'done' as const },
                 ],
             });
@@ -591,6 +655,9 @@ export async function setupAction(): Promise<void> {
                     break;
                 case 'workspace':
                     await runWorkspaceSetup(rl);
+                    break;
+                case 'claw':
+                    await runClawWorkspaceSetup(rl);
                     break;
                 case 'done': {
                     const finalConfig = ConfigLoader.readPersisted();

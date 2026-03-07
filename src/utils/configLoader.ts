@@ -30,7 +30,7 @@ export interface PersistedConfig {
     telegramToken?: string;
     telegramAllowedUserIds?: string[];
     platforms?: PlatformType[];
-    scheduleWorkspace?: string;
+    clawWorkspace?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,10 +127,10 @@ function mergeConfig(persisted: PersistedConfig): AppConfig {
         );
     }
 
-    // Schedule workspace — dedicated directory for cron tasks
-    const scheduleWorkspace = process.env.SCHEDULE_WORKSPACE
-        ?? persisted.scheduleWorkspace
-        ?? path.join(workspaceBaseDir, '__claw-schedule__');
+    // Claw workspace — dedicated directory for agent tasks, memory, and cron jobs
+    const clawWorkspace = process.env.CLAW_WORKSPACE
+        ?? persisted.clawWorkspace
+        ?? path.join(workspaceBaseDir, '__claw__');
 
     return {
         discordToken,
@@ -144,7 +144,7 @@ function mergeConfig(persisted: PersistedConfig): AppConfig {
         telegramToken,
         telegramAllowedUserIds,
         platforms,
-        scheduleWorkspace,
+        clawWorkspace,
     };
 }
 
