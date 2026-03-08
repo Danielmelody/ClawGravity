@@ -145,10 +145,10 @@ const helpCommand = new SlashCommandBuilder()
     .setName('help')
     .setDescription(t('Display list of available commands'));
 
-/** /history command definition */
-const historyCommand = new SlashCommandBuilder()
-    .setName('history')
-    .setDescription(t('Open an existing Antigravity session history (shows up to 20 recent sessions)'));
+/** /session command definition (formerly /history, renamed to session) */
+const sessionCommand = new SlashCommandBuilder()
+    .setName('session')
+    .setDescription(t('Open an existing Antigravity session (shows up to 20 recent sessions)'));
 
 /** /mirror command definition */
 const mirrorCommand = new SlashCommandBuilder()
@@ -255,7 +255,7 @@ export const slashCommands = [
     clearCommand,
     chatCommand,
     cleanupCommand,
-    historyCommand,
+    sessionCommand,
     mirrorCommand,
     outputCommand,
     scheduleCommand,

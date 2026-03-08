@@ -49,7 +49,7 @@ import type { TelegramMessageTracker } from '../services/telegramMessageTracker'
 // Known commands (used by both parser and /help output)
 // ---------------------------------------------------------------------------
 
-const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'history', 'schedule', 'schedule_add', 'schedule_remove'] as const;
+const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'session', 'schedule', 'schedule_add', 'schedule_remove'] as const;
 type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
@@ -182,8 +182,8 @@ export async function handleTelegramCommand(
         case 'clear':
             await handleClear(deps, message);
             break;
-        case 'history':
-            await handleHistory(deps, message);
+        case 'session':
+            await handleSession(deps, message);
             break;
         case 'schedule':
             await handleScheduleList(deps, message);
@@ -236,7 +236,7 @@ async function handleHelp(message: PlatformMessage): Promise<void> {
         '/project_create — Create a new workspace',
         '/new — Start a new chat session',
         '/clear — Clear conversation history',
-        '/history — View a history session',
+        '/session — Switch to an existing session',
         '/schedule — List scheduled tasks',
         '/schedule_add — Add a scheduled task',
         '/schedule_remove — Remove a scheduled task',
@@ -665,7 +665,7 @@ async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage):
     }
 }
 
-async function handleHistory(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
+async function handleSession(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
     if (!deps.chatSessionService || !deps.telegramBindingRepo || !deps.sessionStateStore) {
         await message.reply({ text: 'History session picker is not available.' }).catch(logger.error);
         return;

@@ -177,7 +177,7 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                 return;
             }
 
-            const slashOnlyCommands = ['help', 'stop', 'model', 'mode', 'project', 'chat', 'new', 'clear', 'cleanup', 'history', 'mirror', 'output'];
+            const slashOnlyCommands = ['help', 'stop', 'model', 'mode', 'project', 'chat', 'new', 'clear', 'cleanup', 'session', 'mirror', 'output'];
             if (slashOnlyCommands.includes(parsed.commandName)) {
                 await message.reply({
                     content: `💡 Please use \`/${parsed.commandName}\` as a slash command.\nType \`/${parsed.commandName}\` in the Discord input field to see suggestions.`,

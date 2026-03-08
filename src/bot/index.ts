@@ -1985,7 +1985,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 { command: 'project_create', description: 'Create a new workspace' },
                 { command: 'new', description: 'Start a new chat session' },
                 { command: 'clear', description: 'Clear conversation history' },
-                { command: 'history', description: 'View a history session' },
+                { command: 'session', description: 'Switch to an existing session' },
                 { command: 'schedule', description: 'List scheduled tasks' },
                 { command: 'schedule_add', description: 'Add a scheduled task' },
                 { command: 'schedule_remove', description: 'Remove a scheduled task' },
@@ -2173,7 +2173,7 @@ async function handleSlashInteraction(
                 },
                 {
                     name: '🔗 Session', value: [
-                        '`/history` — View an existing Antigravity session history',
+                        '`/session` — Switch to an existing session',
                         '`/mirror` — Toggle PC→Discord mirroring ON/OFF',
                     ].join('\n')
                 },
@@ -2457,7 +2457,7 @@ async function handleSlashInteraction(
             break;
         }
 
-        case 'history': {
+        case 'session': {
             if (joinHandler) {
                 await joinHandler.handleJoin(interaction, bridge);
             } else {
