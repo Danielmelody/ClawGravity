@@ -342,20 +342,38 @@ export class ApprovalDetector {
     }
 
     /**
-     * Click the approve button with the specified text via CDP.
-     * @param buttonText Text of the button to click (default: detected approveText or "Allow")
-     * @returns true if click succeeded
+     * Approve the current agent step via VS Code command.
+     * Uses `antigravity.agent.acceptAgentStep` from the verified SDK.
+     * Falls back to DOM click if command fails.
      */
     async approveButton(buttonText?: string): Promise<boolean> {
+        try {
+            const result = await this.cdpService.executeVscodeCommand('antigravity.agent.acceptAgentStep');
+            if (result?.ok) {
+                logger.debug('[ApprovalDetector] Approved via VS Code command');
+                return true;
+            }
+        } catch { /* fallback to DOM */ }
+        // DOM fallback
         const text = buttonText ?? this.lastDetectedInfo?.approveText ?? 'Allow';
         return this.clickButton(text);
     }
 
     /**
      * Select "Allow This Conversation / Always Allow".
-     * If the button is not directly visible, expand the Allow Once dropdown and select it.
+     * Tries VS Code command first, DOM fallback if needed.
      */
     async alwaysAllowButton(): Promise<boolean> {
+        // Try command-based approach first
+        try {
+            const result = await this.cdpService.executeVscodeCommand('antigravity.agent.acceptAgentStep');
+            if (result?.ok) {
+                logger.debug('[ApprovalDetector] Always-allow via VS Code command');
+                return true;
+            }
+        } catch { /* fallback to DOM */ }
+
+        // DOM fallback: expand dropdown and click
         const directCandidates = [
             this.lastDetectedInfo?.alwaysAllowText,
             'Allow This Conversation',
@@ -385,11 +403,18 @@ export class ApprovalDetector {
     }
 
     /**
-     * Click the deny button with the specified text via CDP.
-     * @param buttonText Text of the button to click (default: detected denyText or "Deny")
-     * @returns true if click succeeded
+     * Reject the current agent step via VS Code command.
+     * Uses `antigravity.agent.rejectAgentStep` from the verified SDK.
+     * Falls back to DOM click if command fails.
      */
     async denyButton(buttonText?: string): Promise<boolean> {
+        try {
+            const result = await this.cdpService.executeVscodeCommand('antigravity.agent.rejectAgentStep');
+            if (result?.ok) {
+                logger.debug('[ApprovalDetector] Denied via VS Code command');
+                return true;
+            }
+        } catch { /* fallback to DOM */ }
         const text = buttonText ?? this.lastDetectedInfo?.denyText ?? 'Deny';
         return this.clickButton(text);
     }

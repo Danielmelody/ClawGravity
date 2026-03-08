@@ -119,6 +119,12 @@ describe('CdpService - Message Injection (Step 5)', () => {
 
         evaluateResponder = (req) => {
             const contextId = req.params.contextId;
+            const expr = req.params.expression || '';
+            // Lexical probe calls (new strategy 1) — simulate no Lexical editor
+            if (expr.includes('__lexicalEditor')) {
+                return { ok: false, error: 'No Lexical editor instance' };
+            }
+            // Legacy focus calls (strategy 2 fallback)
             if (contextId === 2) return { ok: true, method: 'focus' };
             return { ok: false, error: 'No editor found' };
         };
@@ -138,6 +144,11 @@ describe('CdpService - Message Injection (Step 5)', () => {
 
         evaluateResponder = (req) => {
             const contextId = req.params.contextId;
+            const expr = req.params.expression || '';
+            // Lexical probe — no Lexical available
+            if (expr.includes('__lexicalEditor')) {
+                return { ok: false, error: 'No Lexical editor instance' };
+            }
             if (contextId === 3) return { ok: true, method: 'focus' };
             return { ok: false, error: 'No editor found' };
         };
@@ -154,7 +165,13 @@ describe('CdpService - Message Injection (Step 5)', () => {
         await service.connect();
         await new Promise(r => setTimeout(r, 100));
 
-        evaluateResponder = () => ({ ok: false, error: 'No editor found' });
+        evaluateResponder = (req) => {
+            const expr = req.params.expression || '';
+            if (expr.includes('__lexicalEditor')) {
+                return { ok: false, error: 'No Lexical editor instance' };
+            }
+            return { ok: false, error: 'No editor found' };
+        };
 
         const result = await service.injectMessage('失敗するメッセージ');
         expect(result.ok).toBe(false);
@@ -172,20 +189,27 @@ describe('CdpService - Message Injection (Step 5)', () => {
         const targetText = '注入テキスト<script>alert("xss")</script>';
         evaluateResponder = (req) => {
             const contextId = req.params.contextId;
+            const expr = req.params.expression || '';
+            // Lexical probe — no Lexical available, triggers fallback
+            if (expr.includes('__lexicalEditor')) {
+                return { ok: false, error: 'No Lexical editor instance' };
+            }
             if (contextId === 2) return { ok: true, method: 'focus' };
             return { ok: false, error: 'No editor found' };
         };
 
         await service.injectMessage(targetText);
 
-        // Verify that Runtime.evaluate for focus was called
         const evaluateCalls = receivedMessages.filter(m => m.method === 'Runtime.evaluate');
         expect(evaluateCalls.length).toBeGreaterThan(0);
 
-        // Verify that the focusScript was executed
-        const firstCall = evaluateCalls[0];
-        expect(firstCall.params.expression).toContain('editor.focus()');
-        expect(firstCall.params.returnByValue).toBe(true);
+        // First calls should be Lexical probes (strategy 1)
+        const lexicalCalls = evaluateCalls.filter(c => c.params.expression.includes('__lexicalEditor'));
+        expect(lexicalCalls.length).toBeGreaterThan(0);
+
+        // Then fallback focus calls (strategy 2)
+        const focusCalls = evaluateCalls.filter(c => c.params.expression.includes('editor.focus()'));
+        expect(focusCalls.length).toBeGreaterThan(0);
 
         // Verify that text is sent via Input.insertText
         const insertTextCalls = receivedMessages.filter(m => m.method === 'Input.insertText');
@@ -209,6 +233,34 @@ describe('CdpService - Message Injection (Step 5)', () => {
         expect(keyCalls[4].params.type).toBe('keyDown');
         expect(keyCalls[5].params.key).toBe('Enter');
         expect(keyCalls[5].params.type).toBe('keyUp');
+    });
+
+    // ---------------------------------------------------------
+    // Test 6: Lexical API success path (no Input API fallback)
+    // ---------------------------------------------------------
+    it('uses Lexical hybrid injection when __lexicalEditor is available', async () => {
+        await service.connect();
+        await new Promise(r => setTimeout(r, 100));
+        receivedMessages = []; // Reset
+
+        evaluateResponder = (req) => {
+            const expr = req.params.expression || '';
+            // Simulate Lexical editor available
+            if (expr.includes('__lexicalEditor')) {
+                return { ok: true, needsInputApi: true };
+            }
+            return { ok: true };
+        };
+
+        const result = await service.injectMessage('Lexical test');
+        expect(result.ok).toBe(true);
+        expect(result.method).toBe('lexical-hybrid');
+
+        // Should NOT call focusChatInput (no 'editor.focus()' script)
+        const focusCalls = receivedMessages.filter(
+            m => m.method === 'Runtime.evaluate' && m.params.expression.includes('editor.focus()')
+        );
+        expect(focusCalls).toHaveLength(0);
     });
 
     // ---------------------------------------------------------

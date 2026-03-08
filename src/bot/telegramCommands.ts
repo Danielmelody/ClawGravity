@@ -323,7 +323,17 @@ async function handleStop(deps: TelegramCommandDeps, message: PlatformMessage): 
     }
 
     try {
-        logger.info('[TelegramCommand:stop] Clicking stop button via direct CDP...');
+        logger.info('[TelegramCommand:stop] Stopping via VS Code command...');
+        // Try VS Code command first
+        const cmdResult = await cdp.executeVscodeCommand('antigravity.cancelCascadeInvocation');
+        if (cmdResult?.ok) {
+            logger.done(`[TelegramCommand:stop] Stopped via VS Code command`);
+            await message.reply({ text: 'Generation stopped.' }).catch(logger.error);
+            return;
+        }
+
+        // DOM fallback
+        logger.info('[TelegramCommand:stop] VS Code command failed, trying DOM fallback...');
         const { RESPONSE_SELECTORS } = await import('../services/responseMonitor');
         const result = await cdp.call(
             'Runtime.evaluate',

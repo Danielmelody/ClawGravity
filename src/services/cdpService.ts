@@ -51,14 +51,8 @@ export interface UiSyncResult {
     error?: string;
 }
 
-/** Antigravity UI DOM selector constants */
+/** Antigravity UI DOM selector constants (kept minimal for CDP probe) */
 const SELECTORS = {
-    /** Chat input box: textbox excluding xterm */
-    CHAT_INPUT: 'div[role="textbox"]:not(.xterm-helper-textarea)',
-    /** Submit button search target tag */
-    SUBMIT_BUTTON_CONTAINER: 'button',
-    /** Submit icon SVG class candidates */
-    SUBMIT_BUTTON_SVG_CLASSES: ['lucide-arrow-right', 'lucide-arrow-up', 'lucide-send'],
     /** Keyword to identify message injection target context */
     CONTEXT_URL_KEYWORD: 'cascade-panel',
 };
@@ -863,24 +857,15 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Wait by polling until cascade-panel context becomes available.
-     * Right after Antigravity launch, contexts are created asynchronously even after Runtime.enable,
-     * so use this method to confirm readiness before DOM operations.
-     *
-     * @param timeoutMs Maximum wait time (ms). Default: 10000
-     * @param pollIntervalMs Polling interval (ms). Default: 500
-     * @returns true if cascade-panel context was found
+     * Wait for gRPC client readiness (replaces DOM cascade-panel wait).
+     * @returns true if gRPC client is ready
      */
-    async waitForCascadePanelReady(timeoutMs = 10000, pollIntervalMs = 500): Promise<boolean> {
+    async waitForCascadePanelReady(timeoutMs = 10000, _pollIntervalMs = 500): Promise<boolean> {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
-            const cascadeCtx = this.contexts.find(
-                c => c.url && c.url.includes(SELECTORS.CONTEXT_URL_KEYWORD),
-            );
-            if (cascadeCtx) {
-                return true;
-            }
-            await new Promise(r => setTimeout(r, pollIntervalMs));
+            const client = await this.ensureGrpcClient();
+            if (client?.isReady()) return true;
+            await new Promise(r => setTimeout(r, 500));
         }
         return false;
     }
@@ -911,97 +896,8 @@ export class CdpService extends EventEmitter {
         return this.contexts.length > 0 ? this.contexts[0].id : null;
     }
 
-    /**
-     * Focus the chat input field.
-     */
-    private async focusChatInput(): Promise<{ ok: boolean; contextId?: number; error?: string }> {
-        const focusScript = `(() => {
-            const editors = Array.from(document.querySelectorAll('${SELECTORS.CHAT_INPUT}'));
-            const visible = editors.filter(el => el.offsetParent !== null);
-            const editor = visible[visible.length - 1];
-            if (!editor) return { ok: false, error: 'No editor found' };
-            editor.focus();
-            return { ok: true };
-        })()`;
-
-        for (const ctx of this.contexts) {
-            try {
-                const res = await this.call('Runtime.evaluate', {
-                    expression: focusScript,
-                    returnByValue: true,
-                    contextId: ctx.id,
-                });
-                if (res?.result?.value?.ok) {
-                    return { ok: true, contextId: ctx.id };
-                }
-            } catch {
-                // Try next context
-            }
-        }
-
-        return { ok: false, error: 'Chat input field not found' };
-    }
-
-    /**
-     * Select all text in the focused input and delete it to ensure a clean state.
-     * Uses Meta+A (select all) then Backspace (delete) via CDP key events.
-     */
-    private async clearInputField(): Promise<void> {
-        // Meta+A to select all content
-        await this.call('Input.dispatchKeyEvent', {
-            type: 'keyDown',
-            key: 'a',
-            code: 'KeyA',
-            modifiers: 4, // Meta (Cmd on macOS)
-            windowsVirtualKeyCode: 65,
-            nativeVirtualKeyCode: 65,
-        });
-        await this.call('Input.dispatchKeyEvent', {
-            type: 'keyUp',
-            key: 'a',
-            code: 'KeyA',
-            modifiers: 4,
-            windowsVirtualKeyCode: 65,
-            nativeVirtualKeyCode: 65,
-        });
-        // Backspace to delete selected content
-        await this.call('Input.dispatchKeyEvent', {
-            type: 'keyDown',
-            key: 'Backspace',
-            code: 'Backspace',
-            windowsVirtualKeyCode: 8,
-            nativeVirtualKeyCode: 8,
-        });
-        await this.call('Input.dispatchKeyEvent', {
-            type: 'keyUp',
-            key: 'Backspace',
-            code: 'Backspace',
-            windowsVirtualKeyCode: 8,
-            nativeVirtualKeyCode: 8,
-        });
-        // Wait for DOM to settle
-        await new Promise(r => setTimeout(r, 50));
-    }
-
-    /**
-     * Send Enter key to submit the message.
-     */
-    private async pressEnterToSend(): Promise<void> {
-        await this.call('Input.dispatchKeyEvent', {
-            type: 'keyDown',
-            key: 'Enter',
-            code: 'Enter',
-            windowsVirtualKeyCode: 13,
-            nativeVirtualKeyCode: 13,
-        });
-        await this.call('Input.dispatchKeyEvent', {
-            type: 'keyUp',
-            key: 'Enter',
-            code: 'Enter',
-            windowsVirtualKeyCode: 13,
-            nativeVirtualKeyCode: 13,
-        });
-    }
+    // DOM methods removed: focusChatInput, clearInputField, pressEnterToSend
+    // All injection now goes through gRPC.
 
     /**
      * Detect file input in the UI and attach the specified files.
@@ -1123,102 +1019,7 @@ export class CdpService extends EventEmitter {
         return { ok: true };
     }
 
-    /**
-     * Inject text into Antigravity's Lexical editor directly via Runtime.evaluate.
-     *
-     * Advantages over Input API:
-     *   - No DOM focus required — works in background tabs
-     *   - No keyboard event routing — bypasses focus state entirely
-     *   - Cross-platform — no Meta vs Ctrl differences
-     *   - Direct state manipulation — more reliable than simulated input
-     *
-     * @returns InjectResult with method='lexical' on success, or null if Lexical API unavailable
-     */
-    private async injectViaLexicalApi(text: string): Promise<InjectResult | null> {
-        // Escape the text for embedding in JavaScript string literal
-        const safeText = JSON.stringify(text);
-
-        const lexicalScript = `(async () => {
-            const editors = Array.from(document.querySelectorAll('div[role="textbox"]:not(.xterm-helper-textarea)'));
-            const visible = editors.filter(el => el.offsetParent !== null);
-            const tb = visible[visible.length - 1];
-            if (!tb) return { ok: false, error: 'No textbox found' };
-
-            const editor = tb.__lexicalEditor;
-            if (!editor) return { ok: false, error: 'No Lexical editor instance' };
-            if (!editor.update || !editor.dispatchCommand) return { ok: false, error: 'Incomplete Lexical API' };
-
-            try {
-                // Use Lexical's internal update mechanism to set text content.
-                // The $-prefixed functions are module-scoped but accessible within editor.update().
-                editor.update(() => {
-                    // Access Lexical internals via the editor's registered nodes and commands
-                    const editorState = editor.getEditorState();
-                    const root = editorState._nodeMap.get('root');
-                    if (!root) throw new Error('No root node');
-
-                    // Clear existing content and insert new text
-                    // Use the editor's internal selection and node APIs
-                    const selection = root.select(0, root.getChildrenSize());
-                    selection.removeText();
-                });
-
-                // Brief pause for state update
-                await new Promise(r => setTimeout(r, 50));
-
-                // Insert the text via the editor's insertText command
-                editor.update(() => {
-                    const root = editor.getEditorState()._nodeMap.get('root');
-                    if (!root) return;
-                    root.select(0, root.getChildrenSize());
-                });
-
-                // Use Input.insertText within the Lexical editor context
-                // This is more reliable than constructing text nodes manually
-                // because it triggers all Lexical listeners and transforms
-                tb.focus();
-                return { ok: true, needsInputApi: true };
-            } catch (e) {
-                return { ok: false, error: 'Lexical update failed: ' + (e.message || e) };
-            }
-        })()`;
-
-        // Try in each execution context
-        for (const ctx of this.contexts) {
-            try {
-                const res = await this.call('Runtime.evaluate', {
-                    expression: lexicalScript,
-                    returnByValue: true,
-                    awaitPromise: true,
-                    contextId: ctx.id,
-                });
-                const value = res?.result?.value;
-                if (value?.ok) {
-                    if (value.needsInputApi) {
-                        // Lexical editor found and focused — use hybrid approach:
-                        // Lexical handles the focus (works in background), then Input API types text
-                        await this.clearInputField();
-                        await this.call('Input.insertText', { text });
-                        await new Promise(r => setTimeout(r, 200));
-                        await this.pressEnterToSend();
-                        return { ok: true, method: 'lexical-hybrid', contextId: ctx.id };
-                    }
-                    return { ok: true, method: 'lexical', contextId: ctx.id };
-                }
-                // If error is about missing Lexical, try next context
-                if (value?.error?.includes('No Lexical') || value?.error?.includes('No textbox')) {
-                    continue;
-                }
-                // Other Lexical errors — log but try next context
-                logger.debug(`[CdpService] Lexical inject attempt in ctx ${ctx.id}: ${value?.error}`);
-            } catch {
-                // Try next context
-            }
-        }
-
-        // Lexical API not available in any context
-        return null;
-    }
+    // injectViaLexicalApi removed — all injection now goes through gRPC.
 
     /**
      * Lazy-initialize the gRPC client by discovering the LS process.
@@ -1276,783 +1077,328 @@ export class CdpService extends EventEmitter {
         const client = await this.ensureGrpcClient();
         if (!client) return null;
 
-        // Get the cascade ID
+        // If we have an explicit cascade ID (e.g. from a previous createCascade), try to reuse it
         let cascadeId = overrideCascadeId || this.cachedCascadeId;
-        if (!cascadeId) {
-            cascadeId = await this.getActiveCascadeId();
-            if (cascadeId) {
-                this.cachedCascadeId = cascadeId;
+
+        if (cascadeId) {
+            // Send to existing cascade
+            logger.warn(`[CdpService] injectViaGrpc: sending to existing cascade=${cascadeId.slice(0, 16)}... text="${text.slice(0, 50)}"`);
+            const result = await client.sendMessage(cascadeId, text);
+            if (result.ok) {
+                logger.warn(`[CdpService] sendMessage OK, response: ${JSON.stringify(result.data)?.slice(0, 200)}`);
+                return { ok: true, method: 'grpc' };
             }
+            // If existing cascade failed, fall through to create a new one
+            logger.warn(`[CdpService] sendMessage to existing cascade failed: ${result.error}, creating new cascade`);
+            this.cachedCascadeId = null;
         }
 
-        if (!cascadeId) {
-            logger.debug('[CdpService] No cascadeId available for gRPC injection');
-            return null;
-        }
-
-        const result = await client.sendMessage(cascadeId, text);
-        if (result.ok) {
+        // Create a new Antigravity cascade and send the message
+        logger.warn(`[CdpService] injectViaGrpc: creating new cascade with text="${text.slice(0, 50)}"`);
+        const newCascadeId = await client.createCascade(text);
+        if (newCascadeId) {
+            this.cachedCascadeId = newCascadeId;
+            logger.warn(`[CdpService] New cascade created: ${newCascadeId.slice(0, 16)}...`);
             return { ok: true, method: 'grpc' };
         }
 
-        logger.debug(`[CdpService] gRPC injection failed: ${result.error}`);
-        // If auth error, reset so next call re-discovers
-        if (result.error?.includes('401') || result.error?.includes('403')) {
-            this.grpcAuthAttempted = false;
-            this.grpcClient = null;
-        }
+        logger.error('[CdpService] createCascade returned null — cannot inject');
         return null;
     }
 
     /**
-     * Inject and send the specified text into Antigravity's chat input field.
+     * Inject and send the specified text into Antigravity.
      *
-     * Strategy (tiered, highest priority first):
-     *   0. gRPC direct API — zero DOM dependency, works across sessions
-     *   1. Lexical API — focus-free, background-safe
-     *   2. Legacy Input API — fallback with DOM focus
+     * Strategy: gRPC direct API only — zero DOM dependency.
      */
     async injectMessage(text: string, overrideCascadeId?: string): Promise<InjectResult> {
-        if (!this.isConnectedFlag || !this.ws) {
-            throw new Error('Not connected to CDP. Call connect() first.');
-        }
-
-        // Strategy 0: gRPC direct API (preferred — no DOM dependency at all)
+        // gRPC direct API (no DOM dependency at all)
         const grpcResult = await this.injectViaGrpc(text, overrideCascadeId);
         if (grpcResult?.ok) {
             return grpcResult;
         }
 
-        // Strategy 1: Lexical API (no focus dependency)
-        const lexicalResult = await this.injectViaLexicalApi(text);
-        if (lexicalResult) {
-            if (lexicalResult.ok) {
-                return lexicalResult;
-            }
-            logger.debug(`[CdpService] Lexical injection failed: ${lexicalResult.error}, falling back to Input API`);
-        }
-
-        // Strategy 2: Legacy Input API fallback
-        const focusResult = await this.focusChatInput();
-        if (!focusResult.ok) {
-            return { ok: false, error: focusResult.error || 'Chat input field not found' };
-        }
-
-        // Clear any existing text in the input field before injecting
-        await this.clearInputField();
-
-        // Input text via CDP Input.insertText
-        await this.call('Input.insertText', { text });
-        await new Promise(r => setTimeout(r, 200));
-
-        // Send via Enter key
-        await this.pressEnterToSend();
-
-        return { ok: true, method: 'enter', contextId: focusResult.contextId };
+        return { ok: false, error: grpcResult?.error || 'gRPC injection failed — no DOM fallback available' };
     }
 
     /**
-     * Attach image files to the UI and send the specified text.
+     * Inject a message with image files.
+     * NOTE: gRPC does not support image attachment yet — text is sent via gRPC,
+     * images are logged as unsupported.
      */
     async injectMessageWithImageFiles(text: string, imageFilePaths: string[]): Promise<InjectResult> {
-        if (!this.isConnectedFlag || !this.ws) {
-            throw new Error('Not connected to CDP. Call connect() first.');
+        if (imageFilePaths.length > 0) {
+            logger.warn(`[CdpService] Image attachment not supported via gRPC (${imageFilePaths.length} images ignored)`);
         }
-
-        const focusResult = await this.focusChatInput();
-        if (!focusResult.ok) {
-            return { ok: false, error: focusResult.error || 'Chat input field not found' };
-        }
-
-        // Clear any existing text in the input field before injecting
-        await this.clearInputField();
-
-        const attachResult = await this.attachImageFiles(imageFilePaths, focusResult.contextId);
-        if (!attachResult.ok) {
-            return { ok: false, error: attachResult.error || 'Failed to attach images' };
-        }
-
-        await this.call('Input.insertText', { text });
-        await new Promise(r => setTimeout(r, 200));
-        await this.pressEnterToSend();
-
-        return { ok: true, method: 'enter', contextId: focusResult.contextId };
+        // Send text-only via gRPC
+        return this.injectMessage(text);
     }
 
     /**
      * Extract images from the latest AI response.
+     * NOTE: No gRPC equivalent — image extraction not available in headless mode.
+     * @returns Always returns empty array
      */
-    async extractLatestResponseImages(maxImages: number = 4): Promise<ExtractedResponseImage[]> {
-        if (!this.isConnectedFlag || !this.ws) {
-            return [];
-        }
-
-        const safeMaxImages = Math.max(1, Math.min(8, Math.floor(maxImages)));
-        const expression = `(async () => {
-            const maxImages = ${safeMaxImages};
-            const panel = document.querySelector('.antigravity-agent-side-panel');
-            const scope = panel || document;
-
-            const candidateSelectors = [
-                '.rendered-markdown',
-                '.leading-relaxed.select-text',
-                '.flex.flex-col.gap-y-3',
-                '[data-message-author-role="assistant"]',
-                '[data-message-role="assistant"]',
-                '[class*="assistant-message"]',
-                '[class*="message-content"]',
-                '[class*="markdown-body"]',
-                '.prose',
-            ];
-
-            const responseNodes = [];
-            const seenNodes = new Set();
-            for (const selector of candidateSelectors) {
-                const nodes = scope.querySelectorAll(selector);
-                for (const node of nodes) {
-                    if (!node || seenNodes.has(node)) continue;
-                    seenNodes.add(node);
-                    responseNodes.push(node);
-                }
-            }
-
-            // Skip image extraction when no response nodes found (prevent UI icon false positives)
-            if (responseNodes.length === 0) return [];
-
-            const normalize = (value) => (value || '').toLowerCase();
-            const isLikelyUiImage = (img) => {
-                if (!img) return true;
-                const src = normalize(img.currentSrc || img.src || img.getAttribute('src') || '');
-                const alt = normalize(img.getAttribute('alt') || '');
-                const title = normalize(img.getAttribute('title') || '');
-                const cls = normalize(img.getAttribute('class') || '');
-                const blob = [src, alt, title, cls].join(' ');
-
-                if (blob.includes('icon') || blob.includes('avatar') || blob.includes('emoji')) return true;
-                if (blob.includes('thumb') || blob.includes('good') || blob.includes('bad')) return true;
-                if (src.startsWith('data:image/svg+xml')) return true;
-                if (img.closest('button, [role="button"], nav, header, footer, [class*="toolbar"], [class*="reaction"]')) return true;
-
-                const rect = typeof img.getBoundingClientRect === 'function' ? img.getBoundingClientRect() : null;
-                const w = Number(img.naturalWidth || img.width || rect?.width || 0);
-                const h = Number(img.naturalHeight || img.height || rect?.height || 0);
-                if (w < 96 || h < 96) return true;
-                if ((w * h) < 12000) return true;
-
-                return false;
-            };
-
-            const dedup = new Set();
-            const images = [];
-            for (let i = responseNodes.length - 1; i >= 0; i--) {
-                const node = responseNodes[i];
-                const nodeImages = Array.from(node.querySelectorAll('img'));
-                for (const img of nodeImages) {
-                    if (isLikelyUiImage(img)) continue;
-                    const key = (img.currentSrc || img.src || img.getAttribute('src') || '') + '|' + (img.getAttribute('alt') || '');
-                    if (!key || dedup.has(key)) continue;
-                    dedup.add(key);
-                    images.push(img);
-                }
-                if (images.length >= maxImages) break;
-            }
-
-            if (images.length === 0) return [];
-            const picked = images.slice(-maxImages);
-
-            const normalizeFileName = (value, idx) => {
-                const raw = (value || '').trim();
-                const safe = raw.replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
-                return safe || ('generated-image-' + (idx + 1));
-            };
-
-            const guessMimeType = (src) => {
-                if (!src) return 'image/png';
-                if (src.startsWith('data:')) {
-                    const match = src.match(/^data:([^;]+);/);
-                    return (match && match[1]) || 'image/png';
-                }
-                const lower = src.toLowerCase();
-                if (lower.includes('.jpg') || lower.includes('.jpeg')) return 'image/jpeg';
-                if (lower.includes('.webp')) return 'image/webp';
-                if (lower.includes('.gif')) return 'image/gif';
-                return 'image/png';
-            };
-
-            const blobToBase64 = (blob) => new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => {
-                    const value = typeof reader.result === 'string' ? reader.result : '';
-                    const commaIndex = value.indexOf(',');
-                    resolve(commaIndex >= 0 ? value.slice(commaIndex + 1) : value);
-                };
-                reader.onerror = () => reject(reader.error || new Error('read failed'));
-                reader.readAsDataURL(blob);
-            });
-
-            const result = [];
-            for (let i = 0; i < picked.length; i++) {
-                const img = picked[i];
-                const src = img.currentSrc || img.src || img.getAttribute('src') || '';
-                if (!src) continue;
-
-                const baseName = normalizeFileName(img.getAttribute('alt') || img.getAttribute('title'), i);
-                const mimeType = guessMimeType(src);
-                const extensionMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
-                const ext = extensionMap[mimeType] || 'png';
-                const name = baseName.includes('.') ? baseName : (baseName + '.' + ext);
-
-                if (src.startsWith('data:')) {
-                    const commaIndex = src.indexOf(',');
-                    if (commaIndex > 0) {
-                        result.push({
-                            name,
-                            mimeType,
-                            base64Data: src.slice(commaIndex + 1),
-                        });
-                    }
-                    continue;
-                }
-
-                try {
-                    const response = await fetch(src);
-                    if (!response.ok) throw new Error('fetch failed');
-                    const blob = await response.blob();
-                    const base64Data = await blobToBase64(blob);
-                    result.push({
-                        name,
-                        mimeType: blob.type || mimeType,
-                        base64Data,
-                    });
-                } catch {
-                    result.push({
-                        name,
-                        mimeType,
-                        url: src,
-                    });
-                }
-            }
-
-            return result;
-        })()`;
-
-        try {
-            const contextId = this.getPrimaryContextId();
-            const callParams: Record<string, unknown> = {
-                expression,
-                returnByValue: true,
-                awaitPromise: true,
-            };
-            if (contextId !== null) {
-                callParams.contextId = contextId;
-            }
-
-            const response = await this.call('Runtime.evaluate', callParams);
-            const value = response?.result?.value;
-            if (!Array.isArray(value)) return [];
-
-            return value
-                .filter((item) => item && typeof item === 'object' && typeof item.name === 'string')
-                .map((item) => ({
-                    name: item.name,
-                    mimeType: typeof item.mimeType === 'string' ? item.mimeType : 'image/png',
-                    base64Data: typeof item.base64Data === 'string' ? item.base64Data : undefined,
-                    url: typeof item.url === 'string' ? item.url : undefined,
-                }));
-        } catch {
-            return [];
-        }
-
+    async extractLatestResponseImages(_maxImages: number = 4): Promise<ExtractedResponseImage[]> {
+        logger.debug('[CdpService] extractLatestResponseImages: not available via gRPC, returning []');
+        return [];
     }
 
+    // ─── Mode / Model (gRPC-based, no DOM) ─────────────────────────────
+
+    /** Cached mode name: 'fast' (conversational) or 'plan' (normal) */
+    private cachedModeName: string = 'fast';
+    /** Cached model label (human-readable, e.g. 'Claude Sonnet 4.6 (Thinking)') */
+    private cachedModelLabel: string | null = null;
+    /** Cached model configs from GetUserStatus */
+    private cachedModelConfigs: Array<{ label: string; model: string; supportsImages?: boolean }> = [];
+
     /**
-     * Get the currently selected mode from the Antigravity UI.
-     * Reads the mode toggle button text and maps it back to internal mode name.
-     *
-     * @returns Internal mode name (e.g., 'fast', 'plan') or null if not found
+     * Get the current mode name.
+     * Returns the cached mode — mode is set per-message via plannerConfig.
      */
     async getCurrentMode(): Promise<string | null> {
-        if (!this.isConnectedFlag || !this.ws) {
-            return null;
-        }
-        const expression = '(() => {'
-            + ' const uiNameMap = { fast: "Fast", plan: "Planning" };'
-            + ' const knownModes = Object.values(uiNameMap).map(n => n.toLowerCase());'
-            + ' const reverseMap = {};'
-            + ' Object.entries(uiNameMap).forEach(([k, v]) => { reverseMap[v.toLowerCase()] = k; });'
-            + ' const allBtns = Array.from(document.querySelectorAll("button"));'
-            + ' const visibleBtns = allBtns.filter(b => b.offsetParent !== null);'
-            + ' const modeToggleBtn = visibleBtns.find(b => {'
-            + '   const text = (b.textContent || "").trim().toLowerCase();'
-            + '   const hasChevron = b.querySelector("svg[class*=\\"chevron\\"]");'
-            + '   return knownModes.some(m => text === m) && hasChevron;'
-            + ' });'
-            + ' if (!modeToggleBtn) return null;'
-            + ' const currentModeText = (modeToggleBtn.textContent || "").trim().toLowerCase();'
-            + ' return reverseMap[currentModeText] || null;'
-            + '})()';
-        try {
-            const contextId = this.getPrimaryContextId();
-            const callParams: any = {
-                expression,
-                returnByValue: true,
-                awaitPromise: false,
-            };
-            if (contextId !== null) callParams.contextId = contextId;
-            const res = await this.call('Runtime.evaluate', callParams);
-            return res?.result?.value || null;
-        } catch {
-            return null;
-        }
+        return this.cachedModeName;
     }
 
     /**
-     * Operate Antigravity UI mode dropdown to switch to the specified mode.
-     * Two-step approach:
-     *   Step 1: Click mode toggle button ("Fast"/"Plan" + chevron icon) to open dropdown
-     *   Step 2: Select the target mode option from dropdown
+     * Set the mode for subsequent messages.
+     * Mode is applied per-message via the plannerConfig field in SendUserCascadeMessage.
+     *   - 'fast' → conversational: {}
+     *   - 'plan' → normal: {}
      *
-     * @param modeName Mode name to set (e.g., 'fast', 'plan')
+     * @param modeName Mode name: 'fast' or 'plan'
      */
     async setUiMode(modeName: string): Promise<UiSyncResult> {
-        if (!this.isConnectedFlag || !this.ws) {
-            await this.reconnectOnDemand();
+        const normalized = modeName.toLowerCase();
+        if (normalized !== 'fast' && normalized !== 'plan') {
+            return { ok: false, error: `Unknown mode: ${modeName}. Use 'fast' or 'plan'.` };
         }
-
-        const safeMode = JSON.stringify(modeName);
-
-        // Internal mode name -> Antigravity UI display name mapping
-        const uiNameMap = JSON.stringify({ fast: 'Fast', plan: 'Planning' });
-
-        // Build DOM manipulation script avoiding backticks in template literals
-        const expression = '(async () => {'
-            + ' const targetMode = ' + safeMode + ';'
-            + ' const targetModeLower = targetMode.toLowerCase();'
-            + ' const uiNameMap = ' + uiNameMap + ';'
-            + ' const targetUiName = uiNameMap[targetModeLower] || targetMode;'
-            + ' const targetUiNameLower = targetUiName.toLowerCase();'
-            + ' const allBtns = Array.from(document.querySelectorAll("button"));'
-            + ' const visibleBtns = allBtns.filter(b => b.offsetParent !== null);'
-            // Step 1: Search for mode toggle button ("Fast"/"Planning" + chevron icon)
-            + ' const knownModes = Object.values(uiNameMap).map(n => n.toLowerCase());'
-            + ' const modeToggleBtn = visibleBtns.find(b => {'
-            + '   const text = (b.textContent || "").trim().toLowerCase();'
-            + '   const hasChevron = b.querySelector("svg[class*=\\"chevron\\"]");'
-            + '   return knownModes.some(m => text === m) && hasChevron;'
-            + ' });'
-            + ' if (!modeToggleBtn) {'
-            + '   return { ok: false, error: "Mode toggle button not found" };'
-            + ' }'
-            + ' const currentModeText = (modeToggleBtn.textContent || "").trim().toLowerCase();'
-            // Do nothing if already on the target mode
-            + ' if (currentModeText === targetUiNameLower) {'
-            + '   return { ok: true, mode: targetUiName, alreadySelected: true };'
-            + ' }'
-            // Open dropdown
-            + ' modeToggleBtn.click();'
-            + ' await new Promise(r => setTimeout(r, 500));'
-            // Step 2: Search for option by .font-medium text inside role="dialog"
-            + ' const dialogs = Array.from(document.querySelectorAll("[role=\\"dialog\\"]"));'
-            + ' const visibleDialog = dialogs.find(d => {'
-            + '   const style = window.getComputedStyle(d);'
-            + '   return style.visibility !== "hidden" && style.display !== "none";'
-            + ' });'
-            + ' let modeOption = null;'
-            + ' if (visibleDialog) {'
-            + '   const fontMediumEls = Array.from(visibleDialog.querySelectorAll(".font-medium"));'
-            + '   const matchEl = fontMediumEls.find(el => {'
-            + '     const text = (el.textContent || "").trim().toLowerCase();'
-            + '     return text === targetUiNameLower;'
-            + '   });'
-            + '   if (matchEl) {'
-            // Target the parent element of .font-medium (div with cursor-pointer) for clicking
-            + '     modeOption = matchEl.closest("div.cursor-pointer") || matchEl.parentElement;'
-            + '   }'
-            + ' }'
-            // Fallback when dialog not found: legacy selectors
-            + ' if (!modeOption) {'
-            + '   const fallbackEls = Array.from(document.querySelectorAll('
-            + '     "div[class*=\\"cursor-pointer\\"]"'
-            + '   )).filter(el => el.offsetParent !== null);'
-            + '   modeOption = fallbackEls.find(el => {'
-            + '     if (el === modeToggleBtn) return false;'
-            + '     const fm = el.querySelector(".font-medium");'
-            + '     if (fm) {'
-            + '       const text = (fm.textContent || "").trim().toLowerCase();'
-            + '       return text === targetUiNameLower;'
-            + '     }'
-            + '     return false;'
-            + '   });'
-            + ' }'
-            + ' if (modeOption) {'
-            + '   modeOption.click();'
-            + '   await new Promise(r => setTimeout(r, 500));'
-            // Verify: check if mode button text has changed
-            + '   const updBtn = Array.from(document.querySelectorAll("button"))'
-            + '     .filter(b => b.offsetParent !== null)'
-            + '     .find(b => b.querySelector("svg[class*=\\"chevron\\"]") && knownModes.some(m => (b.textContent || "").trim().toLowerCase() === m));'
-            + '   const newMode = updBtn ? (updBtn.textContent || "").trim() : "unknown";'
-            + '   return { ok: true, mode: newMode };'
-            + ' }'
-            // Failed -> close dropdown
-            + ' document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));'
-            + ' await new Promise(r => setTimeout(r, 200));'
-            + ' return { ok: false, error: "Mode option " + targetUiName + " not found in dropdown" };'
-            + '})()';
-
-        try {
-            const contextId = this.getPrimaryContextId();
-            const callParams: any = {
-                expression,
-                returnByValue: true,
-                awaitPromise: true,
-            };
-            if (contextId !== null) callParams.contextId = contextId;
-
-            const res = await this.call('Runtime.evaluate', callParams);
-            const value = res?.result?.value;
-            if (value?.ok) {
-                return { ok: true, mode: value.mode };
-            }
-            return { ok: false, error: value?.error || 'UI operation failed (setUiMode)' };
-        } catch (error: any) {
-            return { ok: false, error: error?.message || String(error) };
-        }
+        this.cachedModeName = normalized;
+        logger.info(`[CdpService] Mode set to '${normalized}' (will apply on next message)`);
+        return { ok: true, mode: normalized };
     }
 
     /**
-     * Dynamically retrieve the list of available models from the Antigravity UI.
+     * Retrieve available models from gRPC GetUserStatus.
+     * Uses cascadeModelConfigData.clientModelConfigs from the LS API.
      */
     async getUiModels(): Promise<string[]> {
-        if (!this.isConnectedFlag || !this.ws) {
-            throw new Error('Not connected to CDP.');
-        }
-
-        const expression = `(async () => {
-            const MODEL_RE = /(gemini|claude|gpt|opus|sonnet|flash|thinking)/i;
-            const normalize = (value) => (value || '').replace(/\\s+/g, ' ').replace(/\\bNew\\b/g, '').trim();
-
-            const extractItemLabel = (el) => {
-                const labeled = el.querySelector('.font-medium');
-                return normalize((labeled && labeled.textContent) || el.textContent || '');
-            };
-
-            const findModelTrigger = () => {
-                const triggers = Array.from(document.querySelectorAll('[role="button"][aria-haspopup="dialog"]'));
-                return triggers.find((el) => MODEL_RE.test(normalize(el.textContent || '')));
-            };
-
-            const findModelDialog = (trigger) => {
-                const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
-                const dialogCandidates = dialogs.filter((dialog) => {
-                    const text = normalize(dialog.textContent || '');
-                    return text.includes('Model') && MODEL_RE.test(text);
-                });
-
-                const visible = dialogCandidates.find((dialog) => {
-                    const style = window.getComputedStyle(dialog);
-                    return style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none';
-                });
-                if (visible) return visible;
-
-                if (trigger && trigger.parentElement) {
-                    const sibling = Array.from(trigger.parentElement.querySelectorAll('[role="dialog"]')).find((dialog) => {
-                        const text = normalize(dialog.textContent || '');
-                        return text.includes('Model') && MODEL_RE.test(text);
-                    });
-                    if (sibling) return sibling;
-                }
-
-                return dialogCandidates[0] || null;
-            };
-
-            const trigger = findModelTrigger();
-            const dialog = findModelDialog(trigger);
-            if (!dialog) return [];
-
-            const items = Array.from(dialog.querySelectorAll('div.cursor-pointer'))
-                .map(extractItemLabel)
-                .filter((label) => label.length > 0 && MODEL_RE.test(label));
-
-            return Array.from(new Set(items));
-        })()`;
-
         try {
-            const contextId = this.getPrimaryContextId();
-            const callParams: any = {
-                expression,
-                returnByValue: true,
-                awaitPromise: true,
-            };
-            if (contextId !== null) callParams.contextId = contextId;
+            const client = await this.ensureGrpcClient();
+            if (!client) return [];
 
-            const res = await this.call('Runtime.evaluate', callParams);
-            const value = res?.result?.value;
-            if (Array.isArray(value) && value.length > 0) {
-                // remove duplicates
-                return Array.from(new Set(value));
-            }
-            return [];
-        } catch (error: any) {
-            logger.error('Failed to get UI models:', error);
+            const status = await client.getUserStatus();
+            const configs = status?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
+            this.cachedModelConfigs = configs.map((cfg: any) => ({
+                label: cfg.label || 'Unknown',
+                model: cfg.modelOrAlias?.model || 'unknown',
+                supportsImages: cfg.supportsImages,
+            }));
+            return this.cachedModelConfigs.map(c => c.label);
+        } catch (err: any) {
+            logger.error('[CdpService] getUiModels via gRPC failed:', err.message);
             return [];
         }
     }
 
     /**
-     * Get the currently selected model from the Antigravity UI.
+     * Get the currently selected model label.
+     * If no model has been explicitly set, fetches from gRPC and returns the first recommended model.
      */
     async getCurrentModel(): Promise<string | null> {
-        if (!this.isConnectedFlag || !this.ws) {
-            return null;
-        }
-        const expression = `(() => {
-            const MODEL_RE = /(gemini|claude|gpt|opus|sonnet|flash|thinking)/i;
-            const normalize = (value) => (value || '').replace(/\\s+/g, ' ').replace(/\\bNew\\b/g, '').trim();
+        if (this.cachedModelLabel) return this.cachedModelLabel;
 
-            const trigger = Array.from(document.querySelectorAll('[role="button"][aria-haspopup="dialog"]'))
-                .find((el) => MODEL_RE.test(normalize(el.textContent || '')));
-            if (trigger) {
-                const triggerText = normalize(trigger.textContent || '');
-                if (triggerText) return triggerText;
-            }
-
-            const selectedItem = Array.from(document.querySelectorAll('div.cursor-pointer'))
-                .find((e) => e.className.includes('px-2 py-1 flex items-center justify-between') && e.className.includes('bg-gray-500/20'));
-            return normalize(selectedItem?.textContent || '') || null;
-        })()`;
+        // Try to fetch from gRPC
         try {
-            const contextId = this.getPrimaryContextId();
-            const res = await this.call('Runtime.evaluate', {
-                expression, returnByValue: true, awaitPromise: true,
-                contextId: contextId || undefined
-            });
-            return res?.result?.value || null;
-        } catch (e: any) {
-            return null;
+            const client = await this.ensureGrpcClient();
+            if (!client) return null;
+
+            const status = await client.getUserStatus();
+            const configs = status?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
+            if (configs.length > 0) {
+                // Find first recommended model, or fall back to first
+                const recommended = configs.find((c: any) => c.isRecommended);
+                this.cachedModelLabel = (recommended || configs[0]).label || null;
+                // Cache all configs
+                this.cachedModelConfigs = configs.map((cfg: any) => ({
+                    label: cfg.label || 'Unknown',
+                    model: cfg.modelOrAlias?.model || 'unknown',
+                    supportsImages: cfg.supportsImages,
+                }));
+                return this.cachedModelLabel;
+            }
+        } catch (err: any) {
+            logger.debug(`[CdpService] getCurrentModel via gRPC failed: ${err.message}`);
         }
+        return null;
     }
 
     /**
-     * Operate Antigravity UI model dropdown to switch to the specified model.
-     * (Step 9: Model/mode switching UI sync)
+     * Set the model for subsequent messages.
+     * Model is applied per-message via the planModel field in SendUserCascadeMessage.
      *
-     * @param modelName Model name to set (e.g., 'gpt-4o', 'claude-3-opus')
+     * @param modelName Model label (e.g. 'Claude Sonnet 4.6 (Thinking)') or model enum string
      */
     async setUiModel(modelName: string): Promise<UiSyncResult> {
-        if (!this.isConnectedFlag || !this.ws) {
-            await this.reconnectOnDemand();
+        // Ensure we have the model list
+        if (this.cachedModelConfigs.length === 0) {
+            await this.getUiModels();
         }
 
-        const safeModel = JSON.stringify(modelName);
-        const expression = `(async () => {
-            const targetModel = ${safeModel};
-            const MODEL_RE = /(gemini|claude|gpt|opus|sonnet|flash|thinking)/i;
-            const normalize = (value) => (value || '').replace(/\\s+/g, ' ').replace(/\\bNew\\b/g, '').trim();
-            const equalsModel = (value) => normalize(value).toLowerCase() === normalize(targetModel).toLowerCase();
+        // Find by label (case-insensitive)
+        const normalized = modelName.toLowerCase().trim();
+        const found = this.cachedModelConfigs.find(
+            c => c.label.toLowerCase().trim() === normalized,
+        );
 
-            const findModelTrigger = () => {
-                const triggers = Array.from(document.querySelectorAll('[role="button"][aria-haspopup="dialog"]'));
-                return triggers.find((el) => MODEL_RE.test(normalize(el.textContent || ''))) || null;
-            };
+        if (found) {
+            this.cachedModelLabel = found.label;
+            logger.info(`[CdpService] Model set to '${found.label}' (${found.model})`);
+            return { ok: true, model: found.label };
+        }
 
-            const findModelDialog = (trigger) => {
-                const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
-                const candidates = dialogs.filter((dialog) => {
-                    const text = normalize(dialog.textContent || '');
-                    return text.includes('Model') && MODEL_RE.test(text);
-                });
+        // Try partial match
+        const partial = this.cachedModelConfigs.find(
+            c => c.label.toLowerCase().includes(normalized) || normalized.includes(c.label.toLowerCase()),
+        );
+        if (partial) {
+            this.cachedModelLabel = partial.label;
+            logger.info(`[CdpService] Model set to '${partial.label}' (partial match for '${modelName}')`);
+            return { ok: true, model: partial.label };
+        }
 
-                const visible = candidates.find((dialog) => {
-                    const style = window.getComputedStyle(dialog);
-                    return style.visibility !== 'hidden' && style.display !== 'none' && style.pointerEvents !== 'none';
-                });
-                if (visible) return visible;
+        const available = this.cachedModelConfigs.map(c => c.label).join(', ');
+        return { ok: false, error: `Model "${modelName}" not found. Available: ${available}` };
+    }
 
-                if (trigger && trigger.parentElement) {
-                    const sibling = Array.from(trigger.parentElement.querySelectorAll('[role="dialog"]')).find((dialog) => {
-                        const text = normalize(dialog.textContent || '');
-                        return text.includes('Model') && MODEL_RE.test(text);
-                    });
-                    if (sibling) return sibling;
+    /**
+     * Get the model enum value for the currently selected model.
+     * Used internally when building SendUserCascadeMessage payloads.
+     */
+    getSelectedModelEnum(): string | null {
+        if (!this.cachedModelLabel) return null;
+        const found = this.cachedModelConfigs.find(
+            c => c.label === this.cachedModelLabel,
+        );
+        return found?.model || null;
+    }
+
+    /**
+     * Get the planner type config for the current mode.
+     * Used internally when building SendUserCascadeMessage payloads.
+     */
+    getPlannerTypeForCurrentMode(): string {
+        return this.cachedModeName === 'plan' ? 'normal' : 'conversational';
+    }
+
+    // ─── VS Code Command Execution (via CDP) ───────────────────────────
+
+    /**
+     * Execute a VS Code command via CDP Runtime.evaluate.
+     * This calls the extension host's command API through the renderer process,
+     * enabling step control (accept/reject), panel operations, etc.
+     *
+     * Based on antigravity-sdk CommandBridge pattern.
+     *
+     * @param command Full command ID (e.g. 'antigravity.agent.acceptAgentStep')
+     * @param args Optional arguments to pass to the command
+     */
+    async executeVscodeCommand(command: string, ...args: any[]): Promise<any> {
+        const safeCommand = JSON.stringify(command);
+        const safeArgs = JSON.stringify(args);
+
+        // acquireVsCodeApi() is available in webview contexts
+        // For extension host commands, we use the __vscode API
+        const script = `(async () => {
+            try {
+                // Try the global acquireVsCodeApi bridge
+                if (typeof acquireVsCodeApi !== 'undefined') {
+                    const vscode = acquireVsCodeApi();
+                    vscode.postMessage({ type: 'executeCommand', command: ${safeCommand}, args: ${safeArgs} });
+                    return { ok: true, method: 'vscodeApi' };
                 }
-
-                return candidates[0] || null;
-            };
-
-            const getDialogItems = (dialog) => Array.from(dialog.querySelectorAll('div.cursor-pointer'))
-                .map((el) => ({
-                    el,
-                    label: normalize((el.querySelector('.font-medium') && el.querySelector('.font-medium').textContent) || el.textContent || ''),
-                }))
-                .filter((item) => item.label.length > 0 && MODEL_RE.test(item.label));
-
-            const trigger = findModelTrigger();
-            if (!trigger) {
-                return { ok: false, error: 'Model selector button not found.' };
+                return { ok: false, error: 'No VS Code API available' };
+            } catch (e) {
+                return { ok: false, error: e.message || String(e) };
             }
-
-            const currentLabel = normalize(trigger.textContent || '');
-            if (equalsModel(currentLabel)) {
-                return { ok: true, model: currentLabel, alreadySelected: true };
-            }
-
-            trigger.click();
-            await new Promise(r => setTimeout(r, 500));
-
-            const dialog = findModelDialog(trigger);
-            if (!dialog) {
-                return { ok: false, error: 'Model list not found after opening the dropdown.' };
-            }
-
-            const modelItems = getDialogItems(dialog);
-            if (modelItems.length === 0) {
-                return { ok: false, error: 'Model list not found after opening the dropdown.' };
-            }
-
-            const targetItem = modelItems.find((item) => equalsModel(item.label));
-            if (!targetItem) {
-                const available = modelItems.map(item => item.label).join(', ');
-                return { ok: false, error: 'Model "' + targetModel + '" not found. Available: ' + available };
-            }
-
-            const isSelected = targetItem.el.className.includes('bg-gray-500/20') && !targetItem.el.className.includes('hover:bg-gray-500/20');
-            if (isSelected) {
-                return { ok: true, model: targetItem.label, alreadySelected: true };
-            }
-
-            targetItem.el.click();
-            await new Promise(r => setTimeout(r, 500));
-
-            const updatedTrigger = findModelTrigger();
-            const updatedLabel = normalize(updatedTrigger ? updatedTrigger.textContent || '' : '');
-            if (equalsModel(updatedLabel)) {
-                return { ok: true, model: updatedLabel, verified: true };
-            }
-
-            return { ok: true, model: targetItem.label, verified: false };
         })()`;
 
-        try {
-            const contextId = this.getPrimaryContextId();
-            const callParams: any = {
-                expression,
-                returnByValue: true,
-                awaitPromise: true,
-            };
-            if (contextId !== null) callParams.contextId = contextId;
-
-            const res = await this.call('Runtime.evaluate', callParams);
-            const value = res?.result?.value;
-            if (value?.ok) {
-                return { ok: true, model: value.model };
+        for (const ctx of this.contexts) {
+            try {
+                const res = await this.call('Runtime.evaluate', {
+                    expression: script,
+                    returnByValue: true,
+                    awaitPromise: true,
+                    contextId: ctx.id,
+                });
+                const value = res?.result?.value;
+                if (value?.ok) return value;
+            } catch {
+                // Try next context
             }
-            return { ok: false, error: value?.error || 'UI operation failed (setUiModel)' };
-        } catch (error: any) {
-            return { ok: false, error: error?.message || String(error) };
         }
+        return { ok: false, error: 'Command execution failed in all contexts' };
     }
+
+    // ─── Cascade ID (gRPC-based) ───────────────────────────────────────
 
     /**
      * Get the currently active cascade (conversation) ID.
-     * Tries multiple strategies:
-     *   1. Intercepted gRPC log (if fetch interceptor was installed)
-     *   2. Performance log (extract from recent gRPC URLs)
-     *   3. Preact component tree inspection
+     * Uses gRPC GetAllCascadeTrajectories to find the most recent cascade.
      *
      * @returns The active cascade ID string, or null if not found
      */
     async getActiveCascadeId(): Promise<string | null> {
-        const script = `(async () => {
-            // Strategy 1: Get from intercepted gRPC calls
-            const log = window.__grpcInterceptLog || [];
-            const sendMsg = log.filter(e => e.url?.includes('SendUserCascadeMessage')).pop();
-            if (sendMsg?.requestBody) {
-                try {
-                    const bodyStr = new TextDecoder().decode(new Uint8Array(sendMsg.requestBody));
-                    const parsed = JSON.parse(bodyStr);
-                    if (parsed.cascadeId) return parsed.cascadeId;
-                } catch {}
-            }
-
-            // Strategy 2: Get from workbenchServiceProvider via Preact tree
-            const panel = document.querySelector('.antigravity-agent-side-panel');
-            if (panel && panel.__k) {
-                const findNode = (node, depth, predicate) => {
-                    if (!node || depth > 20) return null;
-                    const result = predicate(node);
-                    if (result) return result;
-                    if (node.__k) {
-                        const children = Array.isArray(node.__k) ? node.__k : [node.__k];
-                        for (const child of children) {
-                            if (!child) continue;
-                            const found = findNode(child, depth + 1, predicate);
-                            if (found) return found;
-                        }
-                    }
-                    return null;
-                };
-
-                // Try component state/props for cascadeId
-                const cascadeId = findNode(panel.__k, 0, (node) => {
-                    // Check memoizedProps or props
-                    const props = node.props || {};
-                    if (props.cascadeId && typeof props.cascadeId === 'string') return props.cascadeId;
-                    if (props.conversationId && typeof props.conversationId === 'string') return props.conversationId;
-                    // Check component instance state
-                    if (node.__c?.state) {
-                        const s = node.__c.state;
-                        if (s.cascadeId && typeof s.cascadeId === 'string') return s.cascadeId;
-                        if (s.conversationId && typeof s.conversationId === 'string') return s.conversationId;
-                        if (s.activeCascadeId && typeof s.activeCascadeId === 'string') return s.activeCascadeId;
-                    }
-                    return null;
-                });
-                if (cascadeId) return cascadeId;
-            }
-
-            // Strategy 3: Install a one-shot interceptor and wait for next gRPC call
-            if (!window.__grpcInterceptInstalled) {
-                let captured = null;
-                const origFetch = window.fetch;
-                window.fetch = async function(...args) {
-                    const [url, opts] = args;
-                    const urlStr = typeof url === 'string' ? url : '';
-                    if (urlStr.includes('SendUserCascadeMessage') && !captured && opts?.body) {
-                        try {
-                            const bodyStr = typeof opts.body === 'string' ? opts.body : null;
-                            if (bodyStr) {
-                                captured = JSON.parse(bodyStr).cascadeId || null;
-                            }
-                        } catch {}
-                    }
-                    return origFetch.apply(this, args);
-                };
-                // Don't wait — just return null, the next call will pick it up
-                setTimeout(() => { window.fetch = origFetch; }, 30000);
-            }
-
-            return null;
-        })()`;
+        // Return cached if available
+        if (this.cachedCascadeId) return this.cachedCascadeId;
 
         try {
-            for (const ctx of this.contexts) {
-                try {
-                    const res = await this.call('Runtime.evaluate', {
-                        expression: script,
-                        returnByValue: true,
-                        awaitPromise: true,
-                        contextId: ctx.id,
-                    });
-                    const value = res?.result?.value;
-                    if (value && typeof value === 'string') return value;
-                } catch {
-                    // Try next context
+            const client = await this.ensureGrpcClient();
+            if (!client) return null;
+
+            const summaries = await client.listCascades();
+            if (!summaries || typeof summaries !== 'object') return null;
+
+            // Diagnostic: dump cascade IDs
+            const allIds = Object.keys(summaries);
+            logger.warn(`[CdpService] listCascades returned ${allIds.length} cascades: ${allIds.map(id => id.slice(0, 12) + '...').join(', ')}`);
+            for (const [id, s] of Object.entries(summaries).slice(0, 3)) {
+                const ss = s as any;
+                logger.warn(`[CdpService]   cascade=${id.slice(0, 16)} title=${ss.title?.slice(0, 40) || 'N/A'} mod=${ss.lastModifiedTimestamp || 'N/A'}`);
+            }
+
+            // Find the most recently modified cascade
+            let latestId: string | null = null;
+            let latestTime = 0;
+
+            for (const [id, summary] of Object.entries(summaries)) {
+                const s = summary as any;
+                const modTime = s.lastModifiedTimestamp
+                    ? new Date(s.lastModifiedTimestamp).getTime()
+                    : 0;
+                if (modTime > latestTime) {
+                    latestTime = modTime;
+                    latestId = id;
                 }
             }
-            return null;
-        } catch {
-            return null;
+
+            if (latestId) {
+                this.cachedCascadeId = latestId;
+                return latestId;
+            }
+
+            // Fallback: just take the first key
+            const ids = Object.keys(summaries);
+            if (ids.length > 0) {
+                this.cachedCascadeId = ids[0];
+                return ids[0];
+            }
+        } catch (err: any) {
+            logger.debug(`[CdpService] getActiveCascadeId via gRPC failed: ${err.message}`);
         }
+
+        return null;
     }
 }
+

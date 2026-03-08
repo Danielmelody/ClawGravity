@@ -28,11 +28,12 @@ jest.mock('../../src/services/cdpBridgeManager', () => ({
     getCurrentCdp: jest.fn().mockReturnValue(null),
 }));
 
-jest.mock('../../src/services/responseMonitor', () => ({
-    ResponseMonitor: jest.fn().mockImplementation((opts) => ({
+jest.mock('../../src/services/grpcResponseMonitor', () => ({
+    GrpcResponseMonitor: jest.fn().mockImplementation((opts) => ({
         start: jest.fn().mockImplementation(async () => {
             if (opts.onComplete) await opts.onComplete('Response text');
         }),
+        stop: jest.fn().mockResolvedValue(undefined),
     })),
 }));
 
@@ -100,6 +101,9 @@ function createMockCdp() {
     return {
         injectMessage: jest.fn().mockResolvedValue({ ok: true }),
         activateSessionByTitle: jest.fn(),
+        getGrpcClient: jest.fn().mockResolvedValue({ isReady: () => true }),
+        getActiveCascadeId: jest.fn().mockResolvedValue('test-cascade-id'),
+        getCurrentModel: jest.fn().mockResolvedValue('test-model'),
     };
 }
 
@@ -322,11 +326,12 @@ describe('createTelegramMessageHandler', () => {
     });
 
     it('sends "(Empty response from Antigravity)" when response is empty', async () => {
-        const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
-        ResponseMonitor.mockImplementationOnce((opts: any) => ({
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 if (opts.onComplete) await opts.onComplete('');
             }),
+            stop: jest.fn().mockResolvedValue(undefined),
         }));
 
         const mockCdp = createMockCdp();
@@ -350,11 +355,12 @@ describe('createTelegramMessageHandler', () => {
         // Build a response that exceeds 4096 characters
         const longText = 'A'.repeat(5000);
 
-        const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
-        ResponseMonitor.mockImplementationOnce((opts: any) => ({
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 if (opts.onComplete) await opts.onComplete(longText);
             }),
+            stop: jest.fn().mockResolvedValue(undefined),
         }));
 
         const mockCdp = createMockCdp();
@@ -376,10 +382,10 @@ describe('createTelegramMessageHandler', () => {
 
     it('queues messages for same workspace (serial execution)', async () => {
         const executionOrder: number[] = [];
-        const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
 
         let callCount = 0;
-        ResponseMonitor.mockImplementation((opts: any) => ({
+        GrpcResponseMonitor.mockImplementation((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 callCount++;
                 const current = callCount;
@@ -390,6 +396,7 @@ describe('createTelegramMessageHandler', () => {
                 executionOrder.push(current);
                 if (opts.onComplete) await opts.onComplete(`Response ${current}`);
             }),
+            stop: jest.fn().mockResolvedValue(undefined),
         }));
 
         const mockCdp = createMockCdp();
@@ -489,13 +496,14 @@ describe('createTelegramMessageHandler', () => {
     });
 
     it('edits status message with activity log from onProcessLog', async () => {
-        const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
-        ResponseMonitor.mockImplementationOnce((opts: any) => ({
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 // Simulate onProcessLog being called before onComplete
                 if (opts.onProcessLog) opts.onProcessLog('Reading file.ts');
                 if (opts.onComplete) await opts.onComplete('Done response');
             }),
+            stop: jest.fn().mockResolvedValue(undefined),
         }));
 
         const mockCdp = createMockCdp();
@@ -510,17 +518,19 @@ describe('createTelegramMessageHandler', () => {
 
         // Status message should have been edited with activity log
         expect(channel._statusMsg.edit).toHaveBeenCalled();
-        const editCall = channel._statusMsg.edit.mock.calls[0][0];
-        expect(editCall.text).toContain('Reading file.ts');
+        const editCalls = channel._statusMsg.edit.mock.calls;
+        const logCall = editCalls.find(([payload]: any[]) => payload.text.includes('Reading file.ts'));
+        expect(logCall).toBeDefined();
     });
 
     it('streams partial output into the status message before completion', async () => {
-        const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
-        ResponseMonitor.mockImplementationOnce((opts: any) => ({
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 if (opts.onProgress) opts.onProgress('Partial streamed answer');
                 if (opts.onComplete) await opts.onComplete('Final answer');
             }),
+            stop: jest.fn().mockResolvedValue(undefined),
         }));
 
         const mockCdp = createMockCdp();
@@ -543,13 +553,14 @@ describe('createTelegramMessageHandler', () => {
     });
 
     it('truncates oversized streaming previews to fit Telegram message limits', async () => {
-        const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         const longPreview = 'P'.repeat(5000);
-        ResponseMonitor.mockImplementationOnce((opts: any) => ({
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 if (opts.onProgress) opts.onProgress(longPreview);
                 if (opts.onComplete) await opts.onComplete('Done');
             }),
+            stop: jest.fn().mockResolvedValue(undefined),
         }));
 
         const mockCdp = createMockCdp();
@@ -573,12 +584,13 @@ describe('createTelegramMessageHandler', () => {
     it('calls logger.divider on completion with process log', async () => {
         const { logger: mockLogger } = jest.requireMock('../../src/utils/logger');
 
-        const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
-        ResponseMonitor.mockImplementationOnce((opts: any) => ({
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 if (opts.onProcessLog) opts.onProcessLog('Reading file.ts');
                 if (opts.onComplete) await opts.onComplete('Final output');
             }),
+            stop: jest.fn().mockResolvedValue(undefined),
         }));
 
         const mockCdp = createMockCdp();
@@ -592,8 +604,9 @@ describe('createTelegramMessageHandler', () => {
         await handler(message as any);
 
         // logger.divider should have been called for process log + output + final
-        expect(mockLogger.divider).toHaveBeenCalledWith('Process Log');
-        expect(mockLogger.divider).toHaveBeenCalledWith(expect.stringContaining('Output'));
+        const dividerCalls = mockLogger.divider.mock.calls.map((c: any[]) => c[0]);
+        expect(dividerCalls).toContain('Process Log');
+        expect(dividerCalls.some((c: string) => c.includes('Output'))).toBe(true);
     });
 
     it('does not intercept /project when workspaceService is not provided', async () => {
@@ -724,12 +737,13 @@ describe('createTelegramMessageHandler', () => {
 
     describe('activeMonitors registration', () => {
         it('registers monitor in activeMonitors map during response monitoring', async () => {
-            const { ResponseMonitor } = jest.requireMock('../../src/services/responseMonitor');
-            ResponseMonitor.mockImplementationOnce((opts: any) => {
+            const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+            GrpcResponseMonitor.mockImplementationOnce((opts: any) => {
                 const monitor = {
                     start: jest.fn().mockImplementation(async () => {
                         if (opts.onComplete) await opts.onComplete('Response');
                     }),
+                    stop: jest.fn().mockResolvedValue(undefined),
                 };
                 return monitor;
             });

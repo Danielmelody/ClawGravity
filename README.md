@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Danielmelody/ClawGravity/main/docs/assets/LazyGravityBanner.png" alt="ClawGravity Banner" width="100%" />
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/version-0.3.0-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/Antigravity-1.19.5-ff6b35?style=flat-square" alt="Antigravity" />
   <img src="https://img.shields.io/badge/node-18.x+-brightgreen?style=flat-square&logo=node.js" alt="Node.js" />
@@ -276,10 +272,6 @@ Run `claw-gravity doctor` to diagnose configuration and connectivity issues.
 ---
 
 ## How CDP Connection Works
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Danielmelody/ClawGravity/main/docs/images/architecture.svg" alt="ClawGravity Architecture" width="100%" />
-</p>
 
 1. The bot scans debug ports (default: 9222) and auto-detects the Antigravity target
 2. Connects via WebSocket to CDP (`Runtime.evaluate` for DOM operations)

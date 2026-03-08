@@ -116,4 +116,20 @@ describe('ProcessLogBuffer', () => {
         expect(result).toContain('🚀 Initiating Step A');
         expect(result).toContain('🧠 Thought for 6s');
     });
+
+    it('preserves entries that already include a leading emoji', () => {
+        const buffer = new ProcessLogBuffer({ maxChars: 1000 });
+
+        const result = buffer.append(
+            [
+                '📂 Found 3 files matching "*grpcResponseMonitor*" in repo',
+                '',
+                '❌ Search failed for "grpcResponseMonitor" in repo - internal error',
+            ].join('\n'),
+        );
+
+        expect(result).toContain('📂 Found 3 files matching "*grpcResponseMonitor*" in repo');
+        expect(result).not.toContain('• 📂 Found 3 files matching "*grpcResponseMonitor*" in repo');
+        expect(result).toContain('❌ Search failed for "grpcResponseMonitor" in repo - internal error');
+    });
 });

@@ -7,6 +7,7 @@ export interface ProcessLogBufferOptions {
 const DEFAULT_MAX_CHARS = 3500;
 const DEFAULT_MAX_ENTRIES = 120;
 const DEFAULT_MAX_ENTRY_LENGTH = 260;
+const LEADING_EMOJIS = ['🧠', '🚀', '🛠️', '📄', '🔍', '🔎', '📂', '🌐', '🖥️', '✏️', '🧪', '❌', '✅', '📁'];
 
 function collapseWhitespace(text: string): string {
     return (text || '').replace(/\r/g, '').replace(/\s+/g, ' ').trim();
@@ -16,8 +17,14 @@ function stripUiChromeSuffix(text: string): string {
     return collapseWhitespace(text).replace(/\s*show details\s*$/i, '').trim();
 }
 
+function hasLeadingEmoji(text: string): boolean {
+    const trimmed = (text || '').trim();
+    return LEADING_EMOJIS.some((emoji) => trimmed.startsWith(`${emoji} `) || trimmed === emoji);
+}
+
 /** Heuristic: does this line look like a standalone activity entry? */
 function looksLikeStandaloneEntry(line: string): boolean {
+    if (hasLeadingEmoji(line)) return true;
     // Known activity verb prefixes (present or past tense)
     if (/^(?:analy[sz]|read|writ|run|search|think|thought|process|execut|test|debug|fetch|connect|creat|updat|delet|install|build|compil|deploy|check|scan|pars|resolv|download|upload|work|load|initiat|start)/i.test(line)) return true;
     // Tool call signature: foo / bar
@@ -80,6 +87,7 @@ function parseBlocks(raw: string): string[] {
 }
 
 function pickEmoji(entry: string): string {
+    if (hasLeadingEmoji(entry)) return '';
     const lower = entry.toLowerCase();
     if (/^thought for\b/.test(lower) || /^thinking\b/.test(lower)) return '🧠';
     if (/^initiating\b/.test(lower) || /^starting\b/.test(lower)) return '🚀';
@@ -99,7 +107,8 @@ function toDisplayEntry(rawEntry: string, maxEntryLength: number): string {
         trimmed.length > maxEntryLength
             ? `${trimmed.slice(0, Math.max(0, maxEntryLength - 3))}...`
             : trimmed;
-    return `${pickEmoji(clipped)} ${clipped}`;
+    const emoji = pickEmoji(clipped);
+    return emoji ? `${emoji} ${clipped}` : clipped;
 }
 
 export class ProcessLogBuffer {

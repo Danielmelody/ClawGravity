@@ -229,6 +229,7 @@ export class ErrorPopupDetector {
 
     /**
      * Click the Dismiss button via CDP.
+     * No VS Code command equivalent — uses DOM click.
      * @returns true if click succeeded
      */
     async clickDismissButton(): Promise<boolean> {
@@ -237,6 +238,7 @@ export class ErrorPopupDetector {
 
     /**
      * Click the "Copy debug info" button via CDP.
+     * No VS Code command equivalent — uses DOM click.
      * @returns true if click succeeded
      */
     async clickCopyDebugInfoButton(): Promise<boolean> {
@@ -244,10 +246,18 @@ export class ErrorPopupDetector {
     }
 
     /**
-     * Click the Retry button via CDP.
+     * Click the Retry button.
+     * Tries VS Code command `antigravity.command.retry` first, DOM fallback if needed.
      * @returns true if click succeeded
      */
     async clickRetryButton(): Promise<boolean> {
+        try {
+            const result = await this.cdpService.executeVscodeCommand('antigravity.command.retry');
+            if (result?.ok) {
+                logger.debug('[ErrorPopupDetector] Retried via VS Code command');
+                return true;
+            }
+        } catch { /* fallback to DOM */ }
         return this.clickButton('Retry');
     }
 

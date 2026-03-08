@@ -149,7 +149,11 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
             mockWorkspace.getWorkspacePath.mockReturnValue('/base/Target');
             mockWorkspace.exists.mockReturnValue(true);
 
-            const mockCdp = { injectMessage: jest.fn().mockResolvedValue({ ok: true }) };
+            const mockCdp = {
+                injectMessage: jest.fn().mockResolvedValue({ ok: true }),
+                getGrpcClient: jest.fn().mockResolvedValue(null),
+                getActiveCascadeId: jest.fn().mockResolvedValue(null),
+            };
             mockPool.getOrConnect.mockResolvedValue(mockCdp as any);
             mockChatSession.startNewChat.mockResolvedValue({ ok: true });
 

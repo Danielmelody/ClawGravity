@@ -51,6 +51,7 @@ import { isSessionSelectId } from '../ui/sessionPickerUi';
 import { CdpService } from '../services/cdpService';
 import { ChatSessionService } from '../services/chatSessionService';
 import { ResponseMonitor, RESPONSE_SELECTORS } from '../services/responseMonitor';
+import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import { AgentRouter } from '../services/agentRouter';
 import { ensureAntigravityRunning } from '../services/antigravityLauncher';
@@ -1812,7 +1813,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             const telegramAdapter = new TelegramAdapter(telegramBot as any, String(botInfo.id));
             const telegramSessionStateStore = new TelegramSessionStateStore(telegramRecentMessageRepo);
 
-            const activeMonitors = new Map<string, ResponseMonitor>();
+            const activeMonitors = new Map<string, GrpcResponseMonitor>();
             const telegramHandler = createTelegramMessageHandler({
                 bridge,
                 telegramBindingRepo,
@@ -2327,20 +2328,9 @@ async function handleSlashInteraction(
             }
 
             try {
-                const contextId = cdp.getPrimaryContextId();
-                const callParams: Record<string, unknown> = {
-                    expression: RESPONSE_SELECTORS.CLICK_STOP_BUTTON,
-                    returnByValue: true,
-                    awaitPromise: false,
-                };
-                if (contextId !== null) {
-                    callParams.contextId = contextId;
-                }
-
-                const result = await cdp.call('Runtime.evaluate', callParams);
-                const value = result?.result?.value;
-
-                if (value?.ok) {
+                // Try VS Code command first
+                const cmdResult = await cdp.executeVscodeCommand('antigravity.cancelCascadeInvocation');
+                if (cmdResult?.ok) {
                     userStopRequestedChannels.add(interaction.channelId);
                     const embed = new EmbedBuilder()
                         .setTitle('⏹️ Generation Interrupted')
@@ -2349,12 +2339,36 @@ async function handleSlashInteraction(
                         .setTimestamp();
                     await interaction.editReply({ embeds: [embed] });
                 } else {
-                    const embed = new EmbedBuilder()
-                        .setTitle('⚠️ Could Not Stop')
-                        .setDescription(value?.error || 'Stop button not found. The LLM may not be running.')
-                        .setColor(0xF39C12)
-                        .setTimestamp();
-                    await interaction.editReply({ embeds: [embed] });
+                    // DOM fallback
+                    const contextId = cdp.getPrimaryContextId();
+                    const callParams: Record<string, unknown> = {
+                        expression: RESPONSE_SELECTORS.CLICK_STOP_BUTTON,
+                        returnByValue: true,
+                        awaitPromise: false,
+                    };
+                    if (contextId !== null) {
+                        callParams.contextId = contextId;
+                    }
+
+                    const result = await cdp.call('Runtime.evaluate', callParams);
+                    const value = result?.result?.value;
+
+                    if (value?.ok) {
+                        userStopRequestedChannels.add(interaction.channelId);
+                        const embed = new EmbedBuilder()
+                            .setTitle('⏹️ Generation Interrupted')
+                            .setDescription('AI response generation was safely stopped.')
+                            .setColor(0xE74C3C)
+                            .setTimestamp();
+                        await interaction.editReply({ embeds: [embed] });
+                    } else {
+                        const embed = new EmbedBuilder()
+                            .setTitle('⚠️ Could Not Stop')
+                            .setDescription(value?.error || 'Stop button not found. The LLM may not be running.')
+                            .setColor(0xF39C12)
+                            .setTimestamp();
+                        await interaction.editReply({ embeds: [embed] });
+                    }
                 }
             } catch (e: any) {
                 await interaction.editReply({ content: `❌ Error during stop processing: ${e.message}` });

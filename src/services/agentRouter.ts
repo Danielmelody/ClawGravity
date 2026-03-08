@@ -6,6 +6,7 @@ import { CdpConnectionPool } from './cdpConnectionPool';
 import { CdpService } from './cdpService';
 import { ChatSessionService } from './chatSessionService';
 import { ResponseMonitor } from './responseMonitor';
+import { GrpcResponseMonitor } from './grpcResponseMonitor';
 import { WorkspaceService } from './workspaceService';
 
 /**
@@ -253,22 +254,34 @@ export class AgentRouter {
     /**
      * Wait for the sub-agent to complete its response.
      */
-    private waitForResponse(cdp: CdpService): Promise<string | null> {
+    private async waitForResponse(cdp: CdpService): Promise<string | null> {
+        const grpcClient = await cdp.getGrpcClient();
+        const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
+
         return new Promise((resolve, reject) => {
-            const monitor = new ResponseMonitor({
-                cdpService: cdp,
-                pollIntervalMs: 2000,
-                maxDurationMs: this.responseTimeoutMs,
-                stopGoneConfirmCount: 3,
-                extractionMode: this.extractionMode,
-                onComplete: (finalText) => {
-                    resolve(finalText?.trim() || null);
-                },
-                onTimeout: (lastText) => {
+            const monitorConfig = {
+                onComplete: (finalText: string) => resolve(finalText?.trim() || null),
+                onTimeout: (lastText: string) => {
                     logger.warn(`[AgentRouter] Sub-agent response timed out`);
                     resolve(lastText?.trim() || null);
                 },
-            });
+            };
+
+            const monitor = (grpcClient && cascadeId)
+                ? new GrpcResponseMonitor({
+                    grpcClient,
+                    cascadeId,
+                    maxDurationMs: this.responseTimeoutMs,
+                    ...monitorConfig
+                })
+                : new ResponseMonitor({
+                    cdpService: cdp,
+                    pollIntervalMs: 2000,
+                    maxDurationMs: this.responseTimeoutMs,
+                    stopGoneConfirmCount: 3,
+                    extractionMode: this.extractionMode,
+                    ...monitorConfig
+                });
 
             try {
                 monitor.start();

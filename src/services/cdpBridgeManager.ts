@@ -65,6 +65,34 @@ const GET_CURRENT_CHAT_TITLE_SCRIPT = `(() => {
 })()`;
 
 export async function getCurrentChatTitle(cdp: CdpService): Promise<string | null> {
+    // Try gRPC first: get the most recently modified cascade's title
+    try {
+        const client = await cdp.getGrpcClient();
+        if (client) {
+            const summaries = await client.listCascades();
+            if (summaries && typeof summaries === 'object') {
+                let latestTitle: string | null = null;
+                let latestTime = 0;
+
+                for (const [, summary] of Object.entries(summaries)) {
+                    const s = summary as any;
+                    const modTime = s.lastModifiedTimestamp
+                        ? new Date(s.lastModifiedTimestamp).getTime()
+                        : 0;
+                    if (modTime > latestTime) {
+                        latestTime = modTime;
+                        latestTitle = s.name || s.title || null;
+                    }
+                }
+
+                if (latestTitle) return latestTitle;
+            }
+        }
+    } catch {
+        // Fall through to DOM fallback
+    }
+
+    // DOM fallback
     const contexts = cdp.getContexts();
     for (const ctx of contexts) {
         try {
@@ -83,6 +111,7 @@ export async function getCurrentChatTitle(cdp: CdpService): Promise<string | nul
     }
     return null;
 }
+
 
 export function registerApprovalWorkspaceChannel(
     bridge: CdpBridge,
