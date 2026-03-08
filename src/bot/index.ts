@@ -101,6 +101,7 @@ import { Bot, InputFile } from 'grammy';
 import { TelegramAdapter } from '../platform/telegram/telegramAdapter';
 import { TelegramBindingRepository } from '../database/telegramBindingRepository';
 import { TelegramRecentMessageRepository } from '../database/telegramRecentMessageRepository';
+import { TelegramMessageTracker } from '../services/telegramMessageTracker';
 import { createTelegramMessageHandler, handlePassiveUserMessage } from './telegramMessageHandler';
 import { wrapTelegramChannel } from '../platform/telegram/wrappers';
 import { createTelegramSelectHandler } from './telegramProjectCommand';
@@ -1870,6 +1871,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             const telegramAdapter = new TelegramAdapter(telegramBot as any, String(botInfo.id));
             const telegramSessionStateStore = new TelegramSessionStateStore(telegramRecentMessageRepo);
 
+            const telegramMessageTracker = new TelegramMessageTracker();
+
             const activeMonitors = new Map<string, GrpcResponseMonitor>();
             const telegramHandler = createTelegramMessageHandler({
                 bridge,
@@ -1888,6 +1891,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 scheduleService,
                 scheduleJobCallback,
                 clawInterceptor,
+                messageTracker: telegramMessageTracker,
             });
 
             // Wire up the telegramNotify function so scheduled tasks can broadcast to Telegram

@@ -20,6 +20,7 @@
 
 import fs from 'fs';
 import type { PlatformMessage, MessagePayload } from '../platform/types';
+import type { TelegramBotLike } from '../platform/telegram/wrappers';
 import type { CdpBridge } from '../services/cdpBridgeManager';
 import type { WorkspaceService } from '../services/workspaceService';
 import { getCurrentCdp } from '../services/cdpBridgeManager';
@@ -42,6 +43,7 @@ import { logger } from '../utils/logger';
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
 import { handleTelegramJoinCommand } from './telegramJoinCommand';
 import { restartCurrentProcess } from '../services/processRestartService';
+import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
 
 // ---------------------------------------------------------------------------
 // Known commands (used by both parser and /help output)
@@ -106,6 +108,10 @@ export interface TelegramCommandDeps {
     readonly scheduleService?: ScheduleService;
     /** Callback invoked when a schedule fires to execute a prompt */
     readonly scheduleJobCallback?: (schedule: ScheduleRecord) => void;
+    /** Bot API for direct Telegram API calls (e.g. deleteMessage). */
+    readonly botApi?: TelegramBotLike['api'];
+    /** Message tracker for clearing chat messages. */
+    readonly messageTracker?: TelegramMessageTracker;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,12 +636,23 @@ async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage):
         return;
     }
 
-    // Start a new chat session (effectively clearing the history)
+    // Start a new chat session (effectively clearing the backend history)
     try {
         const result = await deps.chatSessionService.startNewChat(cdp);
         if (result.ok) {
-            deps.sessionStateStore?.clearSelectedSession(message.channel.id);
-            await message.reply({ text: '🗑️ Conversation history cleared. Starting fresh.' }).catch(logger.error);
+            deps.sessionStateStore?.clearSelectedSession(chatId);
+
+            // Delete tracked bot messages from the Telegram chat (visual clear)
+            if (deps.messageTracker && deps.botApi) {
+                const userMsgId = Number(message.id);
+                await deps.messageTracker.clearChat(
+                    chatId,
+                    deps.botApi,
+                    isNaN(userMsgId) ? undefined : userMsgId,
+                );
+            }
+
+            await message.channel.send({ text: '\u{1F5D1}\uFE0F Conversation history cleared. Starting fresh.' }).catch(logger.error);
         } else {
             logger.warn('[TelegramCommand:clear] startNewChat failed:', result.error);
             await message.reply({

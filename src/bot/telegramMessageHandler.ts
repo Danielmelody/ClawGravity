@@ -35,6 +35,7 @@ import type { ScheduleService } from '../services/scheduleService';
 import type { ScheduleRecord } from '../database/scheduleRepository';
 import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
+import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
 
 export interface TelegramMessageHandlerDeps {
     readonly bridge: CdpBridge;
@@ -60,6 +61,8 @@ export interface TelegramMessageHandlerDeps {
     readonly scheduleJobCallback?: (schedule: ScheduleRecord) => void;
     /** Interceptor that scans AI responses for @claw commands */
     readonly clawInterceptor?: ClawCommandInterceptor;
+    /** Message tracker for /clear to delete bot messages from chat. */
+    readonly messageTracker?: TelegramMessageTracker;
 }
 
 /**
@@ -115,6 +118,8 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     sessionStateStore: deps.sessionStateStore,
                     scheduleService: deps.scheduleService,
                     scheduleJobCallback: deps.scheduleJobCallback,
+                    botApi: deps.botApi,
+                    messageTracker: deps.messageTracker,
                 },
                 message,
                 cmd,
@@ -156,6 +161,17 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             : binding.workspacePath;
 
         await enqueueForWorkspace(workspacePath, async () => {
+            // Track all bot-sent message IDs so /clear can delete them
+            const tracker = deps.messageTracker;
+            const trackedChannel = tracker
+                ? wrapChannelWithTracking(message.channel, tracker)
+                : message.channel;
+            // Also track the user's own message
+            const userMsgIdNum = Number(message.id);
+            if (tracker && !isNaN(userMsgIdNum)) {
+                tracker.track(chatId, userMsgIdNum);
+            }
+
             const cdpStartTime = Date.now();
             logger.debug(`[TelegramHandler] getOrConnect start (elapsed=${cdpStartTime - handlerEntryTime}ms)`);
             let cdp: CdpService;
@@ -287,7 +303,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             }
 
             // Monitor the response
-            const channel = message.channel;
+            const channel = trackedChannel;
             const startTime = Date.now();
             const processLogBuffer = new ProcessLogBuffer({ maxChars: 3500, maxEntries: 120, maxEntryLength: 220 });
             let lastActivityLogText = '';
@@ -864,4 +880,30 @@ async function startPassiveResponseMonitor(
         passiveResponseMonitors.delete(projectName);
         activeMonitors?.delete(`passive:${projectName}`);
     });
+}
+
+// ---------------------------------------------------------------------------
+// Channel tracking wrapper
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a PlatformChannel so that every message sent through it is
+ * automatically recorded in the TelegramMessageTracker.
+ * This enables /clear to delete all bot-sent messages from the chat.
+ */
+function wrapChannelWithTracking(
+    channel: PlatformChannel,
+    tracker: TelegramMessageTracker,
+): PlatformChannel {
+    return {
+        ...channel,
+        async send(payload) {
+            const sent = await channel.send(payload);
+            const msgIdNum = Number(sent.id);
+            if (!isNaN(msgIdNum)) {
+                tracker.track(channel.id, msgIdNum);
+            }
+            return sent;
+        },
+    };
 }
