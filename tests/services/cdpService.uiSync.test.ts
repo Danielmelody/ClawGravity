@@ -164,109 +164,27 @@ describe('CdpService - UI sync (Step 9)', () => {
 
     describe('setUiModel - UI model dropdown operation', () => {
 
-        it('throws an error when not connected and no workspace path', async () => {
-            // When disconnected with no workspace path, reconnectOnDemand throws
-            await expect(cdpService.setUiModel('gpt-4o')).rejects.toThrow(
-                'WebSocket is not connected'
-            );
-        });
-
-        it('executes a UI manipulation script via CDP when connected', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            callSpy.mockResolvedValue({
-                result: { value: { ok: true, model: 'gpt-4o' } }
-            });
-
-            const result = await cdpService.setUiModel('gpt-4o');
-
-            expect(callSpy).toHaveBeenCalledWith(
-                'Runtime.evaluate',
-                expect.objectContaining({
-                    expression: expect.stringContaining('gpt-4o'),
-                    returnByValue: true,
-                    awaitPromise: true,
-                })
-            );
-            expect(result.ok).toBe(true);
-        });
-
-        it('uses dialog-based model trigger selectors in the expression', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            callSpy.mockResolvedValue({
-                result: { value: { ok: true, model: 'gpt-4o' } }
-            });
-
-            await cdpService.setUiModel('gpt-4o');
-
-            const callArgs = callSpy.mock.calls[0][1];
-            expect(callArgs.expression).toContain('aria-haspopup="dialog"');
-            expect(callArgs.expression).toContain('findModelDialog');
-            expect(callArgs.expression).toContain('Model list not found after opening the dropdown.');
-        });
-
-        it('returns the model name on successful UI operation', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            callSpy.mockResolvedValue({
-                result: { value: { ok: true, model: 'claude-3-opus' } }
-            });
-
-            const result = await cdpService.setUiModel('claude-3-opus');
-
-            expect(result.ok).toBe(true);
-            expect(result.model).toBe('claude-3-opus');
-        });
-
-        it('returns ok: false when DOM elements are not found', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            callSpy.mockResolvedValue({
-                result: { value: { ok: false, error: 'モデルセレクターが見つかりませんでした' } }
-            });
-
-            const result = await cdpService.setUiModel('gpt-4o');
-
-            expect(result.ok).toBe(false);
-            expect(result.error).toBeDefined();
-        });
-
-        it('returns ok: false without crashing when a CDP error occurs', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            callSpy.mockRejectedValue(new Error('タイムアウト'));
-
-            const result = await cdpService.setUiModel('gpt-4o');
-
-            expect(result.ok).toBe(false);
-            expect(result.error).toContain('タイムアウト');
-        });
-
-        it('uses the primary context ID when a context exists', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-            (cdpService as any).contexts = [
-                { id: 42, name: 'cascade-panel', url: 'vscode-webview://cascade-panel' }
+        it('returns ok: false when model is not found', async () => {
+            (cdpService as any).cachedModelConfigs = [
+                { label: 'Claude 3 Opus', model: 'claude-3-opus' }
             ];
 
-            callSpy.mockResolvedValue({
-                result: { value: { ok: true, model: 'gemini-1.5-pro' } }
-            });
+            const result = await cdpService.setUiModel('gpt-4o');
 
-            await cdpService.setUiModel('gemini-1.5-pro');
+            expect(result.ok).toBe(false);
+            expect(result.error).toContain('gpt-4o');
+        });
 
-            expect(callSpy).toHaveBeenCalledWith(
-                'Runtime.evaluate',
-                expect.objectContaining({
-                    contextId: 42,
-                })
-            );
+        it('returns the model name on successful operation', async () => {
+            (cdpService as any).cachedModelConfigs = [
+                { label: 'Claude 3 Opus', model: 'claude-3-opus' }
+            ];
+
+            const result = await cdpService.setUiModel('Claude 3 Opus');
+
+            expect(result.ok).toBe(true);
+            expect(result.model).toBe('Claude 3 Opus');
+            expect((cdpService as any).cachedModelLabel).toBe('Claude 3 Opus');
         });
 
         it('prefers the default context for the current target frame when no cascade panel exists', () => {
