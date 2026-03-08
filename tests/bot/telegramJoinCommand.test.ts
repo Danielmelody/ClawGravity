@@ -87,6 +87,16 @@ describe('TelegramSessionStateStore', () => {
         expect(store.getSelectedSession('chat-1')).toBeNull();
     });
 
+    it('tracks the current cascade id per chat', () => {
+        const store = new TelegramSessionStateStore();
+        store.setSelectedSession('chat-1', 'Session A', 'cascade-a');
+        expect(store.getCurrentCascadeId('chat-1')).toBe('cascade-a');
+
+        store.setCurrentCascadeId('chat-1', 'cascade-b');
+        expect(store.getSelectedSession('chat-1')).toEqual({ title: 'Session A', id: 'cascade-b' });
+        expect(store.getCurrentCascadeId('chat-1')).toBe('cascade-b');
+    });
+
     it('loads recent messages from SQLite persistence after restart', () => {
         const db = new Database(':memory:');
         const repo = new TelegramRecentMessageRepository(db);

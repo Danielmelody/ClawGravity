@@ -198,6 +198,23 @@ describe('createTelegramMessageHandler', () => {
         expect(mockCdp.injectMessage).toHaveBeenCalledWith('test prompt');
     });
 
+    it('passes the current prompt as the monitor anchor', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message } = createMockMessage({ content: 'test prompt' });
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        expect(GrpcResponseMonitor).toHaveBeenCalled();
+        const monitorOptions = GrpcResponseMonitor.mock.calls[0][0];
+        expect(monitorOptions.expectedUserMessage).toBe('test prompt');
+    });
+
     it('sets previously joined cascade ID before sending prompt', async () => {
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
@@ -212,7 +229,31 @@ describe('createTelegramMessageHandler', () => {
         await handler(message as any);
 
         expect(mockCdp.setCachedCascadeId).toHaveBeenCalledWith('cascade-123');
-        expect(mockCdp.injectMessage).toHaveBeenCalledWith('test prompt');
+        expect(mockCdp.injectMessage).toHaveBeenCalledWith('test prompt', 'cascade-123');
+    });
+
+    it('reuses the last cascade id for the next message in the same chat', async () => {
+        const mockCdp = createMockCdp();
+        mockCdp.injectMessage
+            .mockResolvedValueOnce({ ok: true, cascadeId: 'cascade-new' })
+            .mockResolvedValueOnce({ ok: true, cascadeId: 'cascade-new' });
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const sessionStateStore = new TelegramSessionStateStore();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo, sessionStateStore });
+
+        const { message: firstMessage } = createMockMessage({ content: 'first prompt' });
+        const { message: secondMessage } = createMockMessage({ content: 'second prompt' });
+
+        await handler(firstMessage as any);
+        await handler(secondMessage as any);
+
+        expect(sessionStateStore.getCurrentCascadeId('chat-123')).toBe('cascade-new');
+        expect(mockCdp.injectMessage).toHaveBeenNthCalledWith(1, 'first prompt');
+        expect(mockCdp.injectMessage).toHaveBeenNthCalledWith(2, 'second prompt', 'cascade-new');
     });
 
     it('calls message.react() after successful CDP connection', async () => {

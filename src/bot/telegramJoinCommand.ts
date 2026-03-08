@@ -24,6 +24,20 @@ export class TelegramSessionStateStore {
         return this.selectedSessionByChat.get(chatId) ?? null;
     }
 
+    getCurrentCascadeId(chatId: string): string | null {
+        const session = this.selectedSessionByChat.get(chatId);
+        return session?.id || null;
+    }
+
+    setCurrentCascadeId(chatId: string, cascadeId: string): void {
+        if (!cascadeId) return;
+        const existing = this.selectedSessionByChat.get(chatId);
+        this.selectedSessionByChat.set(chatId, {
+            title: existing?.title || '',
+            id: cascadeId,
+        });
+    }
+
     clearSelectedSession(chatId: string): void {
         this.selectedSessionByChat.delete(chatId);
     }

@@ -339,6 +339,278 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await monitor.stop();
     });
 
+    it('uses the top-level trajectory status when cascadeRunStatus is absent', async () => {
+        const client = new FakeGrpcClient();
+        client.rawRPC
+            .mockResolvedValueOnce({
+                status: 'CASCADE_RUN_STATUS_RUNNING',
+                trajectory: {
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                response: '让我看看当前项目的结构！',
+                                toolCalls: [{ id: 'tool-1', name: 'list_dir' }],
+                            },
+                        },
+                    ],
+                },
+            })
+            .mockResolvedValueOnce({
+                status: 'CASCADE_RUN_STATUS_IDLE',
+                trajectory: {
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                response: '让我看看当前项目的结构！',
+                                toolCalls: [{ id: 'tool-1', name: 'list_dir' }],
+                            },
+                        },
+                        { type: 'CORTEX_STEP_TYPE_LIST_DIRECTORY', listDirectory: {} },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                response: '完整回复',
+                            },
+                        },
+                    ],
+                },
+            });
+
+        const onProgress = jest.fn();
+        const onComplete = jest.fn();
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-top-status',
+            expectedUserMessage: 'commit',
+            onProgress,
+            onComplete,
+        });
+
+        await monitor.start();
+        client.emit('error', new Error('HTTP 415: unsupported media type'));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！');
+        expect(onComplete).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(750);
+
+        expect(onProgress).toHaveBeenCalledWith('完整回复');
+        expect(onComplete).toHaveBeenCalledWith('完整回复');
+
+        await monitor.stop();
+    });
+
+    it('waits for a stable terminal assistant step when trajectory status is missing', async () => {
+        const client = new FakeGrpcClient();
+        client.rawRPC
+            .mockResolvedValueOnce({
+                trajectory: {
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                response: '让我看看当前项目的结构！',
+                                toolCalls: [{ id: 'tool-1', name: 'list_dir' }],
+                            },
+                        },
+                    ],
+                },
+            })
+            .mockResolvedValueOnce({
+                trajectory: {
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                response: '让我看看当前项目的结构！',
+                                toolCalls: [{ id: 'tool-1', name: 'list_dir' }],
+                            },
+                        },
+                        { type: 'CORTEX_STEP_TYPE_LIST_DIRECTORY', listDirectory: {} },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                response: '完整回复',
+                            },
+                        },
+                    ],
+                },
+            })
+            .mockResolvedValueOnce({
+                trajectory: {
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                response: '让我看看当前项目的结构！',
+                                toolCalls: [{ id: 'tool-1', name: 'list_dir' }],
+                            },
+                        },
+                        { type: 'CORTEX_STEP_TYPE_LIST_DIRECTORY', listDirectory: {} },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                response: '完整回复',
+                            },
+                        },
+                    ],
+                },
+            });
+
+        const onComplete = jest.fn();
+        const onProgress = jest.fn();
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-missing-status',
+            expectedUserMessage: 'commit',
+            onProgress,
+            onComplete,
+        });
+
+        await monitor.start();
+        client.emit('error', new Error('HTTP 415: unsupported media type'));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！');
+        expect(onComplete).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(750);
+
+        expect(onProgress).toHaveBeenCalledWith('完整回复');
+        expect(onComplete).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(750);
+
+        expect(onComplete).toHaveBeenCalledWith('完整回复');
+
+        await monitor.stop();
+    });
+
+    it('does not finalize on an empty assistant placeholder for the anchored user turn', async () => {
+        const client = new FakeGrpcClient();
+        client.rawRPC
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'hi' } },
+                        { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Previous reply' } },
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                        { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: '' } },
+                    ],
+                },
+            })
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'hi' } },
+                        { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Previous reply' } },
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                        { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Commit reply' } },
+                    ],
+                },
+            });
+
+        const onComplete = jest.fn();
+        const onTimeout = jest.fn();
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-empty-placeholder',
+            expectedUserMessage: 'commit',
+            onComplete,
+            onTimeout,
+        });
+
+        await monitor.start();
+        client.emit('error', new Error('HTTP 415: unsupported media type'));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(onComplete).not.toHaveBeenCalled();
+        expect(onTimeout).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(750);
+
+        expect(client.rawRPC).toHaveBeenCalledTimes(2);
+        expect(onComplete).toHaveBeenCalledWith('Commit reply');
+        expect(onTimeout).not.toHaveBeenCalled();
+
+        await monitor.stop();
+    });
+
+    it('waits for the anchored user turn instead of completing the previous response', async () => {
+        const client = new FakeGrpcClient();
+        client.rawRPC
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'hi' } },
+                        { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Previous reply' } },
+                    ],
+                },
+            })
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'hi' } },
+                        { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Previous reply' } },
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                    ],
+                },
+            })
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'hi' } },
+                        { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Previous reply' } },
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                        { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Commit reply' } },
+                    ],
+                },
+            });
+
+        const onComplete = jest.fn();
+        const onTimeout = jest.fn();
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-anchor-wait',
+            expectedUserMessage: 'commit',
+            onComplete,
+            onTimeout,
+        });
+
+        await monitor.start();
+        client.emit('error', new Error('HTTP 415: unsupported media type'));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(onComplete).not.toHaveBeenCalled();
+        expect(onTimeout).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(1500);
+
+        expect(client.rawRPC).toHaveBeenCalledTimes(3);
+        expect(onComplete).toHaveBeenCalledWith('Commit reply');
+        expect(onComplete).not.toHaveBeenCalledWith('Previous reply');
+        expect(onTimeout).not.toHaveBeenCalled();
+
+        await monitor.stop();
+    });
+
     it('keeps polling past the old recovery grace window before completing', async () => {
         const client = new FakeGrpcClient();
         let pollCount = 0;

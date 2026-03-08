@@ -264,6 +264,9 @@ export class GrpcCascadeClient extends EventEmitter {
             let rawBuffer = Buffer.alloc(0);
 
             res.on('data', (chunk: Buffer) => {
+                // Skip processing if stream was aborted — prevents stale events
+                // from bleeding into a new monitor's listeners on the same EventEmitter.
+                if (controller.signal.aborted) return;
                 totalBytesReceived += chunk.length;
                 // Diagnostic: log first chunk
                 if (totalBytesReceived === chunk.length) {
@@ -330,6 +333,8 @@ export class GrpcCascadeClient extends EventEmitter {
             });
 
             res.on('end', () => {
+                // Skip if aborted — prevents stale 'complete' from reaching a new monitor.
+                if (controller.signal.aborted) return;
                 // Try parsing any remaining buffer
                 if (rawBuffer.length > 0) {
                     const remaining = rawBuffer.toString('utf8').trim();
@@ -345,7 +350,10 @@ export class GrpcCascadeClient extends EventEmitter {
                 this.emit('complete');
             });
 
-            res.on('error', (err) => this.emit('error', err));
+            res.on('error', (err) => {
+                if (controller.signal.aborted) return;
+                this.emit('error', err);
+            });
         });
 
         req.on('error', (err) => {

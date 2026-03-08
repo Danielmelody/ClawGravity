@@ -157,7 +157,7 @@ export class AgentRouter {
 
         // 6. Wait for response, extract summary, save full output
         try {
-            const fullResponse = await this.waitForResponse(cdp);
+            const fullResponse = await this.waitForResponse(cdp, prompt);
             if (!fullResponse) {
                 return { ok: false, error: `Sub-agent "${targetAgent}" returned an empty response` };
             }
@@ -251,7 +251,7 @@ export class AgentRouter {
     /**
      * Wait for the sub-agent to complete its response.
      */
-    private async waitForResponse(cdp: CdpService): Promise<string | null> {
+    private async waitForResponse(cdp: CdpService, expectedUserMessage?: string): Promise<string | null> {
         const grpcClient = await cdp.getGrpcClient();
         const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
         if (!grpcClient || !cascadeId) {
@@ -271,6 +271,7 @@ export class AgentRouter {
                 grpcClient,
                 cascadeId,
                 maxDurationMs: this.responseTimeoutMs,
+                expectedUserMessage,
                 ...monitorConfig
             });
 

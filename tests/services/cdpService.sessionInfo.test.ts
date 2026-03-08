@@ -32,7 +32,7 @@ describe('CdpService session info', () => {
         });
     });
 
-    it('falls back to the newest cascade when the cached cascade is missing', async () => {
+    it('preserves a recently created cached cascade while summaries catch up', async () => {
         const service = new CdpService({ maxReconnectAttempts: 0 });
         const mockClient = {
             listCascades: jest.fn().mockResolvedValue({
@@ -50,7 +50,38 @@ describe('CdpService session info', () => {
         };
 
         jest.spyOn(service as any, 'ensureGrpcClient').mockResolvedValue(mockClient);
-        service.setCachedCascadeId('missing-cascade');
+        (service as any).cachedCascadeId = 'missing-cascade';
+        (service as any).recentCreatedCascadeId = 'missing-cascade';
+        (service as any).recentCreatedCascadeAt = Date.now();
+
+        await expect(service.getActiveSessionInfo()).resolves.toEqual({
+            id: 'missing-cascade',
+            title: 'Current Session',
+            summary: '',
+        });
+    });
+
+    it('falls back to the newest cascade when the cached cascade is stale and missing', async () => {
+        const service = new CdpService({ maxReconnectAttempts: 0 });
+        const mockClient = {
+            listCascades: jest.fn().mockResolvedValue({
+                'cascade-a': {
+                    title: 'Session A',
+                    summary: 'Session A',
+                    lastModifiedTime: '2026-03-08T09:00:00.000Z',
+                },
+                'cascade-b': {
+                    title: 'Session B',
+                    summary: 'Session B',
+                    lastModifiedTime: '2026-03-08T10:00:00.000Z',
+                },
+            }),
+        };
+
+        jest.spyOn(service as any, 'ensureGrpcClient').mockResolvedValue(mockClient);
+        (service as any).cachedCascadeId = 'missing-cascade';
+        (service as any).recentCreatedCascadeId = 'missing-cascade';
+        (service as any).recentCreatedCascadeAt = Date.now() - 60_000;
 
         await expect(service.getActiveSessionInfo()).resolves.toEqual({
             id: 'cascade-b',

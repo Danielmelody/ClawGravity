@@ -175,8 +175,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             registerApprovalWorkspaceChannel(deps.bridge, projectName, message.channel);
 
             const selectedSession = deps.sessionStateStore?.getSelectedSession(chatId);
-            if (selectedSession?.id) {
-                cdp.setCachedCascadeId(selectedSession.id);
+            const currentCascadeId = deps.sessionStateStore?.getCurrentCascadeId(chatId) || selectedSession?.id || undefined;
+            if (currentCascadeId) {
+                cdp.setCachedCascadeId(currentCascadeId);
             }
 
             // Always push ModeService's mode to Antigravity on CDP connect.
@@ -253,12 +254,20 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             let injectResult;
             try {
                 if (inboundImages.length > 0) {
-                    injectResult = await cdp.injectMessageWithImageFiles(
-                        effectivePrompt,
-                        inboundImages.map((img) => img.localPath),
-                    );
+                    injectResult = currentCascadeId
+                        ? await cdp.injectMessageWithImageFiles(
+                            effectivePrompt,
+                            inboundImages.map((img) => img.localPath),
+                            currentCascadeId,
+                        )
+                        : await cdp.injectMessageWithImageFiles(
+                            effectivePrompt,
+                            inboundImages.map((img) => img.localPath),
+                        );
                 } else {
-                    injectResult = await cdp.injectMessage(effectivePrompt);
+                    injectResult = currentCascadeId
+                        ? await cdp.injectMessage(effectivePrompt, currentCascadeId)
+                        : await cdp.injectMessage(effectivePrompt);
                 }
             } finally {
                 // Cleanup temp files regardless of outcome
@@ -272,6 +281,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     text: `Failed to send message: ${injectResult.error}`,
                 }).catch(logger.error);
                 return;
+            }
+            if (injectResult.cascadeId) {
+                deps.sessionStateStore?.setCurrentCascadeId(chatId, injectResult.cascadeId);
             }
 
             // Monitor the response
@@ -340,7 +352,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     settle();
                     return;
                 }
-                const cascadeId = injectResult.cascadeId || await cdp.getActiveCascadeId();
+                const cascadeId = injectResult.cascadeId || currentCascadeId || await cdp.getActiveCascadeId();
 
                 const monitorConfig = {
                     onProcessLog: (logText: string) => {
@@ -418,10 +430,16 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                     const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
 
                                     await new Promise(r => setTimeout(r, 2000));
-                                    const ir = await cdp.injectMessage(feedback);
+                                    const followUpCascadeId = deps.sessionStateStore?.getCurrentCascadeId(chatId) || cascadeId;
+                                    const ir = followUpCascadeId
+                                        ? await cdp.injectMessage(feedback, followUpCascadeId)
+                                        : await cdp.injectMessage(feedback);
                                     if (!ir.ok) {
                                         logger.error(`[TelegramHandler] Failed to inject @claw results: ${ir.error}`);
                                         break;
+                                    }
+                                    if (ir.cascadeId) {
+                                        deps.sessionStateStore?.setCurrentCascadeId(chatId, ir.cascadeId);
                                     }
 
                                     logger.done(`[TelegramHandler] @claw results injected — awaiting follow-up (depth=${clawDepth + 1})...`);
@@ -437,6 +455,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                             grpcClient: fuClient,
                                             cascadeId: fuCascadeId,
                                             maxDurationMs: 300_000,
+                                            expectedUserMessage: feedback,
                                             onComplete: async (text: string) => resolve(text?.trim() || ''),
                                             onTimeout: async () => {
                                                 logger.warn(`[TelegramHandler] @claw follow-up timed out (depth=${clawDepth + 1})`);
@@ -485,6 +504,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     grpcClient,
                     cascadeId,
                     maxDurationMs: TIMEOUT_MS,
+                    expectedUserMessage: effectivePrompt,
                     ...monitorConfig
                 });
 
@@ -790,6 +810,7 @@ async function startPassiveResponseMonitor(
                     const followUpMonitor = new GrpcResponseMonitor({
                         grpcClient: fuClient,
                         cascadeId: fuCascadeId,
+                        expectedUserMessage: feedback,
                         onComplete: (followUpText: string) => resolve(followUpText),
                         onTimeout: (lastText: string) => resolve(lastText || ''),
                     });
@@ -836,6 +857,7 @@ async function startPassiveResponseMonitor(
         grpcClient,
         cascadeId,
         maxDurationMs: 600_000,
+        expectedUserMessage: info.text,
         ...monitorConfig
     });
 

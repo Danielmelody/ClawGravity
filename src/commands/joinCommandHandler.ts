@@ -419,7 +419,7 @@ export class JoinCommandHandler {
         });
 
         // Start passive gRPC response monitor to capture the AI response
-        void this.startResponseMirror(cdp, projectName, sendable, chatTitle);
+        void this.startResponseMirror(cdp, projectName, sendable, chatTitle, info.text);
     }
 
     /**
@@ -431,6 +431,7 @@ export class JoinCommandHandler {
         projectName: string,
         channel: { send: (...args: any[]) => Promise<any> },
         chatTitle: string,
+        promptText: string,
     ): Promise<void> {
         // Stop previous monitor if still running
         const prev = this.activeResponseMonitors.get(projectName);
@@ -450,6 +451,7 @@ export class JoinCommandHandler {
             grpcClient,
             cascadeId,
             maxDurationMs: 300000,
+            expectedUserMessage: promptText,
             onComplete: (finalText: string) => {
                 this.activeResponseMonitors.delete(projectName);
                 if (!finalText || finalText.trim().length === 0) return;

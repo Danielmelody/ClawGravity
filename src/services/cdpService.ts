@@ -58,6 +58,8 @@ const SELECTORS = {
     CONTEXT_URL_KEYWORD: 'cascade-panel',
 };
 
+const RECENT_CASCADE_PROPAGATION_GRACE_MS = 15_000;
+
 export class CdpService extends EventEmitter {
     private ports: number[];
     private isConnectedFlag: boolean = false;
@@ -70,6 +72,10 @@ export class CdpService extends EventEmitter {
     private grpcAuthAttempted: boolean = false;
     /** Cached cascade ID for gRPC calls */
     private cachedCascadeId: string | null = null;
+    /** Newly created cascade ID awaiting visibility in listCascades() */
+    private recentCreatedCascadeId: string | null = null;
+    /** When recentCreatedCascadeId was set */
+    private recentCreatedCascadeAt = 0;
     private idCounter = 1;
     private cdpCallTimeout = 30000;
     private targetUrl: string | null = null;
@@ -285,6 +291,8 @@ export class CdpService extends EventEmitter {
         this.grpcClient = null;
         this.grpcAuthAttempted = false;
         this.cachedCascadeId = null;
+        this.recentCreatedCascadeId = null;
+        this.recentCreatedCascadeAt = 0;
         this.clearPendingCalls(new Error('disconnect() was called'));
     }
 
@@ -1067,6 +1075,10 @@ export class CdpService extends EventEmitter {
             // If existing cascade failed, fall through to create a new one
             logger.warn(`[CdpService] sendMessage to existing cascade failed: ${result.error}, creating new cascade`);
             this.cachedCascadeId = null;
+            if (this.recentCreatedCascadeId === cascadeId) {
+                this.recentCreatedCascadeId = null;
+                this.recentCreatedCascadeAt = 0;
+            }
         }
 
         // Create a new Antigravity cascade and send the message
@@ -1074,6 +1086,8 @@ export class CdpService extends EventEmitter {
         const newCascadeId = await client.createCascade(text, modelId || undefined);
         if (newCascadeId) {
             this.cachedCascadeId = newCascadeId;
+            this.recentCreatedCascadeId = newCascadeId;
+            this.recentCreatedCascadeAt = Date.now();
             logger.warn(`[CdpService] New cascade created: ${newCascadeId.slice(0, 16)}...`);
             return { ok: true, method: 'grpc', cascadeId: newCascadeId };
         }
@@ -1102,12 +1116,12 @@ export class CdpService extends EventEmitter {
      * NOTE: gRPC does not support image attachment yet — text is sent via gRPC,
      * images are logged as unsupported.
      */
-    async injectMessageWithImageFiles(text: string, imageFilePaths: string[]): Promise<InjectResult> {
+    async injectMessageWithImageFiles(text: string, imageFilePaths: string[], overrideCascadeId?: string): Promise<InjectResult> {
         if (imageFilePaths.length > 0) {
             logger.warn(`[CdpService] Image attachment not supported via gRPC (${imageFilePaths.length} images ignored)`);
         }
         // Send text-only via gRPC
-        return this.injectMessage(text);
+        return this.injectMessage(text, overrideCascadeId);
     }
 
     /**
@@ -1454,6 +1468,19 @@ export class CdpService extends EventEmitter {
                 return toSessionInfo(this.cachedCascadeId, summaries[this.cachedCascadeId]);
             }
 
+            if (
+                this.cachedCascadeId
+                && this.cachedCascadeId === this.recentCreatedCascadeId
+                && (Date.now() - this.recentCreatedCascadeAt) <= RECENT_CASCADE_PROPAGATION_GRACE_MS
+            ) {
+                logger.debug(`[CdpService] Preserving recently created cascade ${this.cachedCascadeId.slice(0, 12)}... while summaries catch up`);
+                return {
+                    id: this.cachedCascadeId,
+                    title: 'Current Session',
+                    summary: '',
+                };
+            }
+
             // Find the most recently modified cascade
             let latestId: string | null = null;
             let latestTime = 0;
@@ -1503,6 +1530,10 @@ export class CdpService extends EventEmitter {
      */
     setCachedCascadeId(id: string | null): void {
         this.cachedCascadeId = id;
+        if (!id) {
+            this.recentCreatedCascadeId = null;
+            this.recentCreatedCascadeAt = 0;
+        }
     }
 
     // ─── Gateway Restart (OpenClaw-style) ────────────────────────────
@@ -1543,6 +1574,8 @@ export class CdpService extends EventEmitter {
 
             // Step 3: Clear cached state
             this.cachedCascadeId = null;
+            this.recentCreatedCascadeId = null;
+            this.recentCreatedCascadeAt = 0;
             this.cachedModelLabel = null;
             this.cachedModelConfigs = [];
             steps.push('Cached state cleared (cascade, model, configs)');
