@@ -131,6 +131,8 @@ export interface GrpcResponseMonitorOptions {
     cascadeId: string;
     /** Max monitoring duration in ms (default: 300000 = 5 min) */
     maxDurationMs?: number;
+    /** Optional user message text used to anchor polling fallback to the current turn. */
+    expectedUserMessage?: string;
 
     // Callbacks shared by the response-monitoring call sites
     onProgress?: (text: string) => void;
@@ -146,6 +148,8 @@ interface TrajectoryRecoverySnapshot {
     runStatus: string | null;
     latestRole: 'user' | 'assistant' | null;
     latestResponseText: string | null;
+    /** True if the latest assistant step contains tool calls (i.e. still working) */
+    latestAssistantHasToolCalls: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +171,7 @@ export class GrpcResponseMonitor {
     private currentPhase: GrpcResponsePhase = 'waiting';
     private lastResponseText: string | null = null;
     private lastThinkingText: string | null = null;
+    private hasSeenToolCall = false;
     private readonly emittedPlannedToolIds = new Set<string>();
     private hasSeenActivity = false;
     private startTime = 0;
@@ -202,6 +207,7 @@ export class GrpcResponseMonitor {
         this.lastThinkingText = null;
         this.emittedPlannedToolIds.clear();
         this.hasSeenActivity = false;
+        this.hasSeenToolCall = false;
         this.recoveryPromise = null;
 
         this.setPhase('waiting', null);
@@ -335,12 +341,20 @@ export class GrpcResponseMonitor {
         } else if (evt.type === 'tool_call') {
             const toolName = evt.raw?.result?.toolCall?.name || 'tool';
             this.hasSeenActivity = true;
+            this.hasSeenToolCall = true;
             this.onProcessLog?.(`🔧 ${toolName}`);
         } else if (evt.type === 'status') {
             const status = evt.text || '';
             if (status === 'CASCADE_RUN_STATUS_IDLE') {
                 if (this.hasSeenActivity) {
-                    this.finishSuccessfully();
+                    // If we've seen tool calls during this session, the IDLE
+                    // may be a transient pause between tool-call rounds.
+                    // Verify via trajectory before completing.
+                    if (this.hasSeenToolCall) {
+                        void this.verifyIdleAndComplete();
+                    } else {
+                        this.finishSuccessfully();
+                    }
                 }
             } else if (status === 'CASCADE_RUN_STATUS_RUNNING') {
                 this.hasSeenActivity = true;
@@ -429,17 +443,21 @@ export class GrpcResponseMonitor {
 
             let latestRole: 'user' | 'assistant' | null = null;
             let latestResponseText: string | null = null;
+            let latestAssistantHasToolCalls = false;
 
             for (const step of steps) {
                 if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') {
                     latestRole = 'user';
                     latestResponseText = null;
+                    latestAssistantHasToolCalls = false;
                     continue;
                 }
 
                 if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
                     latestRole = 'assistant';
                     latestResponseText = step?.plannerResponse?.response || step?.assistantResponse?.text || '';
+                    latestAssistantHasToolCalls = Array.isArray(step?.plannerResponse?.toolCalls)
+                        && step.plannerResponse.toolCalls.length > 0;
                 }
             }
 
@@ -453,6 +471,7 @@ export class GrpcResponseMonitor {
                 runStatus,
                 latestRole,
                 latestResponseText,
+                latestAssistantHasToolCalls,
             };
         } catch (err: any) {
             logger.debug(`[GrpcMonitor] Trajectory recovery failed: ${err?.message || err}`);
@@ -483,22 +502,71 @@ export class GrpcResponseMonitor {
             }
         }
 
-        if (snapshot.latestRole === 'assistant' && snapshot.runStatus !== 'CASCADE_RUN_STATUS_RUNNING') {
-            this.lastResponseText = latestText ?? this.lastResponseText ?? '';
-            this.hasSeenActivity = true;
-            logger.info(`[GrpcMonitor] Recovered completed response from trajectory (${this.lastResponseText.length} chars)`);
-            this.finishSuccessfully();
-            return true;
+        // Don't complete if:
+        //  - Still RUNNING
+        //  - Latest step has tool calls (model is mid-turn, waiting for tool results)
+        //  - Latest role isn't assistant
+        if (
+            snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING'
+            || snapshot.latestAssistantHasToolCalls
+            || snapshot.latestRole !== 'assistant'
+        ) {
+            return false;
         }
 
-        return false;
+        this.lastResponseText = latestText ?? this.lastResponseText ?? '';
+        this.hasSeenActivity = true;
+        logger.info(`[GrpcMonitor] Recovered completed response from trajectory (${this.lastResponseText.length} chars)`);
+        this.finishSuccessfully();
+        return true;
     }
 
     private finishSuccessfully(): void {
+        if (this.currentPhase === 'complete') return; // guard against double-fire
         this.setPhase('complete', this.lastResponseText);
         const text = this.lastResponseText ?? '';
         this.stop().catch(() => { });
         this.onComplete?.(text);
+    }
+
+    /**
+     * When IDLE arrives during a session with tool calls, verify via trajectory
+     * that the model isn't mid-turn before completing. LS often transitions
+     * RUNNING→IDLE→RUNNING between tool-call rounds within a single agentic turn.
+     * Direct completion on IDLE truncates the response.
+     */
+    private async verifyIdleAndComplete(): Promise<void> {
+        if (!this.isRunning) return;
+
+        const snapshot = await this.readTrajectorySnapshot();
+        if (!this.isRunning) return;
+
+        if (!snapshot) {
+            // Can't verify — finish optimistically to avoid hanging
+            logger.warn('[GrpcMonitor] IDLE verification failed (no trajectory) — completing anyway');
+            this.finishSuccessfully();
+            return;
+        }
+
+        if (snapshot.latestAssistantHasToolCalls || snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+            logger.debug(
+                `[GrpcMonitor] IDLE received but model still working ` +
+                `(toolCalls=${snapshot.latestAssistantHasToolCalls}, status=${snapshot.runStatus}) — continuing to monitor`,
+            );
+            // Update response text from trajectory in case stream missed some
+            if (snapshot.latestResponseText && snapshot.latestResponseText !== this.lastResponseText) {
+                this.lastResponseText = snapshot.latestResponseText;
+                this.onProgress?.(snapshot.latestResponseText);
+            }
+            return;
+        }
+
+        // Truly idle — update with latest text from trajectory and finish
+        if (snapshot.latestResponseText && snapshot.latestResponseText.length > (this.lastResponseText?.length ?? 0)) {
+            this.lastResponseText = snapshot.latestResponseText;
+        }
+        logger.info(`[GrpcMonitor] IDLE verified via trajectory — completing (${this.lastResponseText?.length ?? 0} chars)`);
+        this.finishSuccessfully();
     }
 
     private emitThinkingDetailsFromPayload(payload: any): void {
