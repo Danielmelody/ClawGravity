@@ -59,8 +59,9 @@ export interface CascadeConfig {
 
 /** Events emitted by the streaming response listener */
 export interface CascadeStreamEvent {
-    type: 'text' | 'tool_call' | 'status' | 'complete' | 'error';
+    type: 'text' | 'tool_call' | 'status' | 'complete' | 'error' | 'thinking';
     text?: string;
+    toolName?: string;
     raw?: any;
 }
 
@@ -318,12 +319,13 @@ export class GrpcCascadeClient extends EventEmitter {
                         const text = messageData.toString('utf8');
                         const parsed = JSON.parse(text);
 
-                        // The reactive stream sends protobuf-level diffs.
-                        // Rather than trying to apply diffs, emit a 'data' event
-                        // so GrpcResponseMonitor can fetch a fresh trajectory snapshot.
-                        // This turns polling into event-driven updates.
-                        const event = this.parseReactiveDiffEvent(parsed);
-                        this.emit('data', event);
+                        // Parse the reactive diff into multiple events.
+                        // Each event carries actual content (text, tool calls)
+                        // extracted directly from the diff — no polling needed.
+                        const events = this.parseReactiveDiffEvents(parsed);
+                        for (const event of events) {
+                            this.emit('data', event);
+                        }
                     } catch (e) {
                         logger.warn(`[GrpcStream] Parse failure: ${e}`);
                     }
@@ -356,47 +358,47 @@ export class GrpcCascadeClient extends EventEmitter {
     }
 
     /**
-     * Parse a reactive diff update into a CascadeStreamEvent.
+     * Parse a reactive diff update into CascadeStreamEvents.
      *
      * The reactive stream returns incremental protobuf diffs in the format:
      * { version: "N", diff: { fieldDiffs: [...] } }
      *
-     * We inspect the diff to detect status changes (e.g. cascadeRunStatus
-     * transitioning to IDLE) and emit appropriate events. For text updates
-     * and tool calls, we emit a generic 'status' event so the monitor can
-     * fetch the full trajectory snapshot.
+     * We use diffs ONLY as a notification channel:
+     *   - Detect status transitions (IDLE, RUNNING, QUOTA) via string matching
+     *   - Everything else emits a generic 'status' event (= "something changed")
+     *
+     * Actual content (response text, tool calls, thinking) is fetched on
+     * demand via GetCascadeTrajectory — Antigravity already parses that
+     * into structured data. Trying to extract text from diffs is fragile
+     * and error-prone (UUIDs, tool args, enum values leak through).
      */
-    private parseReactiveDiffEvent(raw: any): CascadeStreamEvent {
+    parseReactiveDiffEvents(raw: any): CascadeStreamEvent[] {
         const diff = raw?.diff;
 
         if (!diff || !diff.fieldDiffs) {
-            // Non-diff message (maybe a version-only heartbeat)
-            return { type: 'status', raw };
+            // Non-diff message (version-only heartbeat)
+            return [];
         }
 
-        // Scan field diffs for known trajectory fields
-        // Trajectory proto field numbers (from extension analysis):
-        //   field 1: cascadeId (string)
-        //   field 2: trajectory data (message)
-        //   ...status fields are nested
-        //
-        // Rather than fully decoding, look for string values that match
-        // known status strings to detect completion.
+        const events: CascadeStreamEvent[] = [];
+
+        // Check for status transitions (IDLE, RUNNING, QUOTA)
         const statusStrings = this.extractStatusFromDiff(diff);
         for (const status of statusStrings) {
             if (status.includes('IDLE') || status.includes('idle')) {
-                return { type: 'status', text: 'CASCADE_RUN_STATUS_IDLE', raw };
-            }
-            if (status.includes('RUNNING') || status.includes('running')) {
-                return { type: 'status', text: 'CASCADE_RUN_STATUS_RUNNING', raw };
-            }
-            if (status.includes('QUOTA') || status.includes('quota')) {
-                return { type: 'error', text: 'Quota reached', raw };
+                events.push({ type: 'status', text: 'CASCADE_RUN_STATUS_IDLE', raw });
+            } else if (status.includes('RUNNING') || status.includes('running')) {
+                events.push({ type: 'status', text: 'CASCADE_RUN_STATUS_RUNNING', raw });
+            } else if (status.includes('QUOTA') || status.includes('quota')) {
+                events.push({ type: 'error', text: 'Quota reached', raw });
             }
         }
 
-        // Generic update — trajectory changed, fetch fresh snapshot
-        return { type: 'status', raw };
+        // Always emit a generic notification so the monitor knows the cascade state has changed.
+        // Even if a status change was detected in this diff, there could also be content updates!
+        events.push({ type: 'status', raw });
+
+        return events;
     }
 
     /**
@@ -409,17 +411,14 @@ export class GrpcCascadeClient extends EventEmitter {
 
         const fieldDiffs = diff.fieldDiffs || [];
         for (const fd of fieldDiffs) {
-            // Check updateSingular for string values
             const sv = fd?.updateSingular?.stringValue;
             if (typeof sv === 'string' && sv.includes('CASCADE_RUN_STATUS')) {
                 results.push(sv);
             }
-            // Recurse into nested message diffs
             const msgValue = fd?.updateSingular?.messageValue;
             if (msgValue) {
                 results.push(...this.extractStatusFromDiff(msgValue));
             }
-            // Check repeated field updates
             const repeatedDiff = fd?.updateRepeated;
             if (repeatedDiff?.pushBack) {
                 for (const item of repeatedDiff.pushBack) {

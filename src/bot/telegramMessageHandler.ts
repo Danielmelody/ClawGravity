@@ -327,8 +327,13 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
             let sessionLines: string[] = [];
             let lastStatusEditTime = 0;
-            const STATUS_EDIT_MIN_INTERVAL_MS = 2000;
-            const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout') => {
+            const STATUS_EDIT_MIN_INTERVAL_MS = 1500;
+            let pendingStatusUpdateTimer: NodeJS.Timeout | null = null;
+            let isStatusTerminal = false;
+            let currentStateIndicator = '⏳ Waiting for response...';
+
+            const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
+                if (isStatusTerminal && mode === 'streaming') return;
                 if (!statusMsg) return;
                 const now = Date.now();
                 const elapsed = Math.round((now - startTime) / 1000);
@@ -339,14 +344,42 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     mode,
                     headerLines,
                     sessionLines,
+                    stateIndicator: currentStateIndicator,
                 });
                 if (!nextText || nextText === lastStatusRender) {
                     return;
                 }
-                // Throttle: skip if last edit was too recent (unless it's a terminal state)
-                if (mode === 'streaming' && (now - lastStatusEditTime) < STATUS_EDIT_MIN_INTERVAL_MS) {
+
+                // If terminal state, clear pending and update immediately
+                if (mode === 'complete' || mode === 'timeout' || mode === 'error') {
+                    if (pendingStatusUpdateTimer) {
+                        clearTimeout(pendingStatusUpdateTimer);
+                        pendingStatusUpdateTimer = null;
+                    }
+                    lastStatusRender = nextText;
+                    lastStatusEditTime = now;
+                    statusMsg.edit({ text: nextText }).catch(() => { });
                     return;
                 }
+
+                // Throttle trailing edit
+                const timeSinceLastEdit = now - lastStatusEditTime;
+                if (timeSinceLastEdit < STATUS_EDIT_MIN_INTERVAL_MS) {
+                    if (!pendingStatusUpdateTimer) {
+                        const delay = STATUS_EDIT_MIN_INTERVAL_MS - timeSinceLastEdit;
+                        pendingStatusUpdateTimer = setTimeout(() => {
+                            pendingStatusUpdateTimer = null;
+                            refreshStatusMessage(mode);
+                        }, delay);
+                    }
+                    return;
+                }
+
+                if (pendingStatusUpdateTimer) {
+                    clearTimeout(pendingStatusUpdateTimer);
+                    pendingStatusUpdateTimer = null;
+                }
+
                 lastStatusRender = nextText;
                 lastStatusEditTime = now;
                 statusMsg.edit({ text: nextText }).catch(() => { });
@@ -400,14 +433,32 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                     onPhaseChange: (phase: string, text: string | null) => {
                         if (phase === 'thinking') {
+                            currentStateIndicator = '🤔 Thinking...';
                             lastActivityLogText = '🤔 Thinking / Planning...';
+                        } else if (phase === 'generating') {
+                            currentStateIndicator = '✍️ Generating...';
+                        } else if (phase === 'error') {
+                            currentStateIndicator = '❌ Error';
+                            lastActivityLogText = '❌ Error occurred';
+                        } else if (phase === 'quotaReached') {
+                            currentStateIndicator = '⚠️ Quota Reached';
+                            lastActivityLogText = '⚠️ Quota reached';
                         }
                         refreshStatusMessage('streaming');
                     },
 
                     onComplete: async (finalText: string) => {
+                        isStatusTerminal = true;
+                        if (pendingStatusUpdateTimer) {
+                            clearTimeout(pendingStatusUpdateTimer);
+                            pendingStatusUpdateTimer = null;
+                        }
                         try {
                             const elapsed = Math.round((Date.now() - startTime) / 1000);
+
+                            // Flash "Done" state on the card before replacing with final text
+                            currentStateIndicator = `✅ Finished`;
+                            refreshStatusMessage('complete');
 
                             // Console log output (mirroring Discord handler pattern)
                             const finalLogText = lastActivityLogText || processLogBuffer.snapshot();
@@ -505,14 +556,32 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                         }
                     },
                     onTimeout: async (lastText: string) => {
+                        isStatusTerminal = true;
+                        if (pendingStatusUpdateTimer) {
+                            clearTimeout(pendingStatusUpdateTimer);
+                            pendingStatusUpdateTimer = null;
+                        }
                         try {
-                            // Update status message on timeout
+                            // Determine cause from monitor phase
+                            const monitorPhase = monitor?.getPhase?.() || 'timeout';
+                            const isError = monitorPhase === 'error';
+                            const isQuota = monitorPhase === 'quotaReached';
+
+                            // Update status message with correct mode
                             if (statusMsg) {
                                 latestPreviewText = '';
-                                refreshStatusMessage('timeout');
+                                refreshStatusMessage(isError || isQuota ? 'error' : 'timeout');
                             }
 
-                            if (lastText && lastText.trim().length > 0) {
+                            if (isQuota) {
+                                await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(logger.error);
+                            } else if (isError) {
+                                if (lastText && lastText.trim().length > 0) {
+                                    await sendTextChunked(channel, `❌ Error occurred. Partial response:\n${lastText}`);
+                                } else {
+                                    await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(logger.error);
+                                }
+                            } else if (lastText && lastText.trim().length > 0) {
                                 await sendTextChunked(channel, `(Timeout) ${lastText}`);
                             } else {
                                 await channel.send({ text: 'Response timed out.' }).catch(logger.error);
@@ -627,16 +696,25 @@ function buildTelegramStatusText(options: {
     activityLogText: string;
     previewText: string;
     elapsedSeconds: number;
-    mode: 'streaming' | 'complete' | 'timeout';
+    mode: 'streaming' | 'complete' | 'timeout' | 'error';
     headerLines?: string[];
     sessionLines?: string[];
+    stateIndicator?: string;
 }): string {
     const MAX_LENGTH = 4096;
+
+    // State indicator bar at the top
+    const stateBar = options.stateIndicator
+        ? `${options.stateIndicator}\n${'─'.repeat(Math.min(options.stateIndicator.length + 4, 30))}`
+        : '';
+
     const footer = options.mode === 'complete'
-        ? `Status: Done in ${options.elapsedSeconds}s`
+        ? `✅ Done in ${options.elapsedSeconds}s`
         : options.mode === 'timeout'
-            ? `Status: Timed out after ${options.elapsedSeconds}s`
-            : `Elapsed: ${options.elapsedSeconds}s`;
+            ? `⏱️ Timed out after ${options.elapsedSeconds}s`
+            : options.mode === 'error'
+                ? `❌ Error after ${options.elapsedSeconds}s`
+                : `⏱️ ${options.elapsedSeconds}s`;
 
     const header = options.headerLines && options.headerLines.length > 0
         ? options.headerLines.join('\n')
@@ -665,6 +743,7 @@ function buildTelegramStatusText(options: {
     const activitySection = activityLog ? `[activity]\n${activityLog}` : '';
 
     const sections: string[] = [];
+    if (stateBar) sections.push(stateBar);
     if (header) sections.push(header);
     if (options.sessionLines && options.sessionLines.length > 0) {
         sections.push(options.sessionLines.join('\n'));
@@ -735,7 +814,10 @@ async function startPassiveResponseMonitor(
     let statusMsgSent = false;
 
     let sessionLines: string[] = [];
-    const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout') => {
+    let isStatusTerminal = false;
+    let currentStateIndicator = '⏳ Waiting for response...';
+    const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
+        if (isStatusTerminal && mode === 'streaming') return;
         if (!statusMsg) return;
         const elapsed = Math.round((Date.now() - startTime) / 1000);
 
@@ -745,6 +827,7 @@ async function startPassiveResponseMonitor(
             elapsedSeconds: elapsed,
             mode,
             sessionLines,
+            stateIndicator: currentStateIndicator,
         });
         if (!nextText || nextText === lastStatusRender) return;
         lastStatusRender = nextText;
@@ -784,6 +867,7 @@ async function startPassiveResponseMonitor(
         },
 
         onComplete: async (finalText: string) => {
+            isStatusTerminal = true;
             passiveResponseMonitors.delete(projectName);
             activeMonitors?.delete(`passive:${projectName}`);
             if (!finalText || finalText.trim().length === 0) {
@@ -868,11 +952,44 @@ async function startPassiveResponseMonitor(
                 }
             }
         },
-        onTimeout: (lastText: string) => {
+        onPhaseChange: (phase: string, _text: string | null) => {
+            if (phase === 'thinking') {
+                currentStateIndicator = '🤔 Thinking...';
+                lastActivityLogText = '🤔 Thinking / Planning...';
+            } else if (phase === 'generating') {
+                currentStateIndicator = '✍️ Generating...';
+            } else if (phase === 'error') {
+                currentStateIndicator = '❌ Error';
+                lastActivityLogText = '❌ Error occurred';
+            } else if (phase === 'quotaReached') {
+                currentStateIndicator = '⚠️ Quota Reached';
+                lastActivityLogText = '⚠️ Quota reached';
+            }
+            ensureStatusMsg().then(() => refreshStatusMessage('streaming')).catch(() => { });
+        },
+
+        onTimeout: async (lastText: string) => {
+            isStatusTerminal = true;
             passiveResponseMonitors.delete(projectName);
             activeMonitors?.delete(`passive:${projectName}`);
+
+            // Determine cause from monitor phase
+            const monitorPhase = monitor?.getPhase?.() || 'timeout';
+            const isError = monitorPhase === 'error';
+            const isQuota = monitorPhase === 'quotaReached';
+
             if (statusMsg) {
-                refreshStatusMessage('timeout');
+                refreshStatusMessage(isError ? 'error' : 'timeout');
+            }
+
+            if (isQuota) {
+                await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(() => { });
+            } else if (isError) {
+                if (lastText && lastText.trim().length > 0) {
+                    await sendTextChunked(channel, `❌ Error occurred. Partial response:\n${lastText}`);
+                } else {
+                    await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(() => { });
+                }
             }
         },
     };

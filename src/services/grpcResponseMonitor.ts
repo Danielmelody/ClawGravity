@@ -1,5 +1,11 @@
 /**
- * GrpcResponseMonitor — LS-based response monitoring with stream-first fallback polling.
+ * GrpcResponseMonitor — LS-based response monitoring with reactive stream
+ * notifications and on-demand trajectory fetches.
+ *
+ * The reactive diff stream acts as a notification channel: it tells us
+ * WHEN something changes (status transitions, generic diffs). Actual
+ * content (response text, tool calls) is fetched from GetCascadeTrajectory
+ * on-demand with debouncing.
  *
  * Completely headless — no DOM, no CDP.
  */
@@ -142,7 +148,14 @@ export interface GrpcResponseMonitorOptions {
     onProcessLog?: (text: string) => void;
 }
 
-const TRAJECTORY_POLL_INTERVAL_MS = 750;
+/** Debounce delay for trajectory fetches triggered by reactive diffs */
+const REACTIVE_SNAPSHOT_DEBOUNCE_MS = 300;
+/** Initial retry delay for recovery (doubles each attempt) */
+const RECOVERY_INITIAL_DELAY_MS = 500;
+/** Max retry delay cap */
+const RECOVERY_MAX_DELAY_MS = 4000;
+/** Max retries before giving up recovery */
+const RECOVERY_MAX_RETRIES = 8;
 
 interface TrajectoryRecoverySnapshot {
     runStatus: string | null;
@@ -153,6 +166,8 @@ interface TrajectoryRecoverySnapshot {
     /** True if the latest assistant step contains PENDING tool calls (no result yet — model is mid-turn) */
     latestAssistantHasToolCalls: boolean;
     latestAssistantSignature: string | null;
+    accumulatedThinkingText: string;
+    allToolCalls: any[];
 }
 
 function normalizeComparableText(text: string | null | undefined): string {
@@ -223,6 +238,7 @@ export class GrpcResponseMonitor {
     // Global timers
     private safetyTimer: NodeJS.Timeout | null = null;
     private reactiveSnapshotTimer: NodeJS.Timeout | null = null;
+    private activeTrajectoryRPC: Promise<TrajectoryRecoverySnapshot | null> | null = null;
     private recoveryPromise: Promise<void> | null = null;
 
     constructor(options: GrpcResponseMonitorOptions) {
@@ -351,6 +367,7 @@ export class GrpcResponseMonitor {
     private handleStreamData(evt: CascadeStreamEvent): void {
         if (!this.isRunning) return;
 
+        // Legacy payload extraction (for non-reactive stream formats)
         this.emitThinkingDetailsFromPayload(evt.raw?.result ?? evt.raw);
         this.emitPlannedToolCalls(evt.raw?.result?.plannerResponse?.toolCalls);
 
@@ -366,37 +383,12 @@ export class GrpcResponseMonitor {
             return;
         }
 
-        if (evt.type === 'text') {
-            const text = evt.text || '';
-            const trimmed = text.trim();
-            if (/^thought for\s+\d+/i.test(trimmed)) {
-                this.hasSeenActivity = true;
-                this.onProcessLog?.(`🧠 ${trimmed}`);
-                return;
-            }
-
-            if (text !== this.lastResponseText) {
-                this.lastResponseText = text;
-                this.hasSeenActivity = true;
-                if (this.currentPhase === 'thinking' || this.currentPhase === 'waiting') {
-                    this.setPhase('generating', text);
-                }
-                this.onProgress?.(text);
-            }
-        } else if (evt.type === 'tool_call') {
-            const toolName = evt.raw?.result?.toolCall?.name || 'tool';
-            this.hasSeenActivity = true;
-            this.hasSeenToolCall = true;
-            this.onProcessLog?.(`🔧 ${toolName}`);
-        } else if (evt.type === 'status') {
+        if (evt.type === 'status') {
             const status = evt.text || '';
             if (status === 'CASCADE_RUN_STATUS_IDLE') {
                 if (this.hasSeenActivity) {
-                    if (this.hasSeenToolCall) {
-                        void this.verifyIdleAndComplete();
-                    } else {
-                        this.finishSuccessfully();
-                    }
+                    // Cascade finished — fetch trajectory for final text.
+                    void this.verifyIdleAndComplete();
                 }
             } else if (status === 'CASCADE_RUN_STATUS_RUNNING') {
                 this.hasSeenActivity = true;
@@ -404,10 +396,10 @@ export class GrpcResponseMonitor {
                     this.setPhase('thinking', null);
                 }
             } else {
-                // Generic reactive diff update (no specific status string).
-                // The reactive stream sends protobuf diffs which we can't fully
-                // decode into text/tool_call events. Schedule a debounced
-                // trajectory snapshot fetch to extract the latest content.
+                // Generic diff notification — something changed in the cascade.
+                // Schedule a debounced trajectory fetch to get the actual content.
+                // The reactive stream only tells us WHEN things change;
+                // GetCascadeTrajectory tells us WHAT changed.
                 this.hasSeenActivity = true;
                 this.scheduleReactiveSnapshotFetch();
             }
@@ -416,18 +408,32 @@ export class GrpcResponseMonitor {
 
     /**
      * Schedule a debounced trajectory snapshot fetch.
-     * Called when the reactive stream sends a diff update without a specific
-     * status string. Coalesces rapid diffs into a single trajectory fetch.
+     * Called when the reactive stream signals a change (non-status diff).
+     * Coalesces rapid diff notifications into a single trajectory fetch.
      */
     private scheduleReactiveSnapshotFetch(): void {
         if (this.reactiveSnapshotTimer) return; // Already scheduled
         this.reactiveSnapshotTimer = setTimeout(async () => {
             this.reactiveSnapshotTimer = null;
             if (!this.isRunning) return;
-            const snapshot = await this.readTrajectorySnapshot();
-            if (!this.isRunning) return;
-            this.applyTrajectorySnapshot(snapshot);
-        }, 200); // 200ms debounce — much faster than 3s polling
+
+            // Prevent overlapping/parallel trajectory fetches which can exhaust HTTP/2 stream limits
+            // and cause severe streaming latency (stuck in thinking or multi-second delays).
+            if (this.activeTrajectoryRPC) {
+                // We're already fetching, so re-schedule for after another debounce tick
+                this.scheduleReactiveSnapshotFetch();
+                return;
+            }
+
+            try {
+                this.activeTrajectoryRPC = this.readTrajectorySnapshot();
+                const snapshot = await this.activeTrajectoryRPC;
+                if (!this.isRunning) return;
+                this.applyTrajectorySnapshot(snapshot);
+            } finally {
+                this.activeTrajectoryRPC = null;
+            }
+        }, REACTIVE_SNAPSHOT_DEBOUNCE_MS);
     }
 
     private handleStreamComplete(): void {
@@ -482,9 +488,12 @@ export class GrpcResponseMonitor {
     }
 
     private async tryRecoverCompletedResponse(failureMessage: string): Promise<void> {
-        logger.warn(`[GrpcMonitor] ${failureMessage}; falling back to trajectory polling`);
+        logger.warn(`[GrpcMonitor] ${failureMessage}; attempting trajectory recovery with exponential backoff`);
 
-        while (this.isRunning) {
+        let delay = RECOVERY_INITIAL_DELAY_MS;
+        let retries = 0;
+
+        while (this.isRunning && retries < RECOVERY_MAX_RETRIES) {
             const snapshot = await this.readTrajectorySnapshot();
             if (!this.isRunning) return;
 
@@ -497,7 +506,15 @@ export class GrpcResponseMonitor {
                 return;
             }
 
-            await new Promise((resolve) => setTimeout(resolve, Math.min(TRAJECTORY_POLL_INTERVAL_MS, remainingMs)));
+            retries++;
+            const waitMs = Math.min(delay, remainingMs, RECOVERY_MAX_DELAY_MS);
+            logger.debug(`[GrpcMonitor] Recovery attempt ${retries}/${RECOVERY_MAX_RETRIES}, next in ${waitMs}ms`);
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            delay = Math.min(delay * 2, RECOVERY_MAX_DELAY_MS);
+        }
+
+        if (this.isRunning) {
+            logger.warn(`[GrpcMonitor] Recovery exhausted after ${retries} attempts`);
         }
     }
 
@@ -522,6 +539,8 @@ export class GrpcResponseMonitor {
             let latestResponseText: string | null = null;
             let latestAssistantHasToolCalls = false;
             let latestAssistantSignature: string | null = null;
+            let accumulatedThinkingText = '';
+            const allToolCalls: any[] = [];
 
             let anchorIndex = -1;
             if (this.expectedUserMessage) {
@@ -542,6 +561,8 @@ export class GrpcResponseMonitor {
                         latestResponseText: null,
                         latestAssistantHasToolCalls: false,
                         latestAssistantSignature: null,
+                        accumulatedThinkingText,
+                        allToolCalls,
                     };
                 }
             }
@@ -566,6 +587,18 @@ export class GrpcResponseMonitor {
 
                 if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
                     latestRole = 'assistant';
+
+                    const thinking = step?.plannerResponse?.thinking;
+                    if (typeof thinking === 'string' && thinking.trim().length > 0) {
+                        accumulatedThinkingText = accumulatedThinkingText
+                            ? accumulatedThinkingText + '\n' + thinking
+                            : thinking;
+                    }
+
+                    if (Array.isArray(step?.plannerResponse?.toolCalls)) {
+                        allToolCalls.push(...step.plannerResponse.toolCalls);
+                    }
+
                     const stepText = extractAssistantStepText(step);
                     // Accumulate all assistant step texts (not just the last one)
                     // so the streaming preview shows the full multi-step output.
@@ -605,6 +638,8 @@ export class GrpcResponseMonitor {
                 latestResponseText,
                 latestAssistantHasToolCalls,
                 latestAssistantSignature,
+                accumulatedThinkingText,
+                allToolCalls,
             };
         } catch (err: any) {
             logger.debug(`[GrpcMonitor] Trajectory recovery failed: ${err?.message || err}`);
@@ -629,6 +664,13 @@ export class GrpcResponseMonitor {
         const latestText = snapshot.latestRole === 'assistant'
             ? (snapshot.latestResponseText ?? '')
             : null;
+
+        if (snapshot.accumulatedThinkingText) {
+            this.emitThinkingDetails(snapshot.accumulatedThinkingText);
+        }
+        if (snapshot.allToolCalls.length > 0) {
+            this.emitPlannedToolCalls(snapshot.allToolCalls);
+        }
 
         if (latestText !== null && latestText !== this.lastResponseText) {
             this.lastResponseText = latestText;

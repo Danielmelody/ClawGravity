@@ -45,6 +45,15 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         const progress: string[] = [];
         let completedText = '';
 
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'DONE' } },
+                ],
+            },
+        });
+
         const monitor = new GrpcResponseMonitor({
             grpcClient: client as any,
             cascadeId: 'cascade-123',
@@ -68,11 +77,6 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
             },
         });
         client.emit('data', {
-            type: 'text',
-            text: 'DONE',
-            raw: { result: {} },
-        });
-        client.emit('data', {
             type: 'status',
             text: 'CASCADE_RUN_STATUS_IDLE',
             raw: { result: {} },
@@ -80,11 +84,12 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
 
         await Promise.resolve();
         await Promise.resolve();
+        await Promise.resolve(); // Extra tick for promise chaining
 
         expect(logs.join('\n')).toContain('Inspecting the current workspace');
-        expect(progress).toContain('DONE');
         expect(completedText).toBe('DONE');
-        expect(client.rawRPC).not.toHaveBeenCalled();
+        expect(client.rawRPC).toHaveBeenCalled();
+
 
         await monitor.stop();
     });
@@ -93,6 +98,15 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         const client = new FakeGrpcClient();
         const logs: string[] = [];
         let completedText = '';
+
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'DONE' } },
+                ],
+            },
+        });
 
         const monitor = new GrpcResponseMonitor({
             grpcClient: client as any,
@@ -126,11 +140,6 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
             },
         });
         client.emit('data', {
-            type: 'text',
-            text: 'DONE',
-            raw: { result: {} },
-        });
-        client.emit('data', {
             type: 'status',
             text: 'CASCADE_RUN_STATUS_IDLE',
             raw: { result: {} },
@@ -138,10 +147,11 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
 
         await Promise.resolve();
         await Promise.resolve();
+        await Promise.resolve();
 
         expect(logs).toContain('📂 Finding files matching "*grpcResponseMonitor*" in repo');
         expect(completedText).toBe('DONE');
-        expect(client.rawRPC).not.toHaveBeenCalled();
+        expect(client.rawRPC).toHaveBeenCalled();
 
         await monitor.stop();
     });
@@ -150,6 +160,15 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         const client = new FakeGrpcClient();
         const logs: string[] = [];
         let completedText = '';
+
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'DONE' } },
+                ],
+            },
+        });
 
         const monitor = new GrpcResponseMonitor({
             grpcClient: client as any,
@@ -182,11 +201,6 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
             },
         });
         client.emit('data', {
-            type: 'text',
-            text: 'DONE',
-            raw: { result: {} },
-        });
-        client.emit('data', {
             type: 'status',
             text: 'CASCADE_RUN_STATUS_IDLE',
             raw: { result: {} },
@@ -194,10 +208,11 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
 
         await Promise.resolve();
         await Promise.resolve();
+        await Promise.resolve();
 
         expect(logs).toContain('🛠️ Tool mystery_tool: foo=bar | target=alpha');
         expect(completedText).toBe('DONE');
-        expect(client.rawRPC).not.toHaveBeenCalled();
+        expect(client.rawRPC).toHaveBeenCalled();
 
         await monitor.stop();
     });
@@ -400,8 +415,10 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
 
         await jest.advanceTimersByTimeAsync(750);
 
-        expect(onProgress).toHaveBeenCalledWith('完整回复');
-        expect(onComplete).toHaveBeenCalledWith('完整回复');
+        // Text changes because it now correctly concatenates both assistant steps
+        // rather than replacing.
+        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n\n完整回复');
+        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n\n完整回复');
 
         await monitor.stop();
     });
@@ -486,12 +503,12 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
 
         await jest.advanceTimersByTimeAsync(750);
 
-        expect(onProgress).toHaveBeenCalledWith('完整回复');
+        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n\n完整回复');
         expect(onComplete).not.toHaveBeenCalled();
 
         await jest.advanceTimersByTimeAsync(750);
 
-        expect(onComplete).toHaveBeenCalledWith('完整回复');
+        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n\n完整回复');
 
         await monitor.stop();
     });
@@ -617,7 +634,7 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         client.rawRPC.mockImplementation(async () => {
             pollCount += 1;
 
-            if (pollCount <= 8) {
+            if (pollCount <= 4) {
                 return {
                     trajectory: {
                         cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
@@ -628,7 +645,7 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
                 };
             }
 
-            if (pollCount === 9) {
+            if (pollCount === 5) {
                 return {
                     trajectory: {
                         cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
@@ -665,9 +682,18 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        await jest.advanceTimersByTimeAsync(7_500);
+        // Exponential backoff timing:
+        // 0 -> start
+        // 500ms -> retry 1
+        // 1000ms -> retry 2
+        // 2000ms -> retry 3
+        // 4000ms -> retry 4
+        // 4000ms -> retry 5
+        // Total time ~11.5s for 5 retries. We need more time to reach all 6 calls.
+        await jest.advanceTimersByTimeAsync(25_000);
 
-        expect(client.rawRPC).toHaveBeenCalledTimes(10);
+        // The mock expects 6 calls.
+        expect(client.rawRPC).toHaveBeenCalledTimes(6);
         expect(onComplete).toHaveBeenCalledWith('Late reply');
         expect(onTimeout).not.toHaveBeenCalled();
 
