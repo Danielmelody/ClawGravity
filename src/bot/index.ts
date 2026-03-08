@@ -1014,8 +1014,10 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     const workspaceService = new WorkspaceService(config.workspaceBaseDir);
     const channelManager = new ChannelManager();
 
-    // Auto-launch Antigravity with CDP port if not already running
-    await ensureAntigravityRunning();
+    // Auto-launch Antigravity with CDP port if not already running.
+    // Pass the __claw__ workspace so it opens directly instead of an empty window.
+    const clawDir = config.clawWorkspace ?? path.join(config.workspaceBaseDir, '__claw__');
+    await ensureAntigravityRunning(clawDir);
 
     // Initialize CDP bridge (lazy connection: pool creation only)
     const bridge = initCdpBridge(config.autoApproveFileEdits);
@@ -1099,8 +1101,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
     // Resolve Claw workspace — dedicated directory for the agent's tasks and memory.
     // This keeps scheduled work isolated from the user's active conversations.
-    const clawWorkspacePath = config.clawWorkspace
-        ?? path.join(config.workspaceBaseDir, '__claw__');
+    const clawWorkspacePath = clawDir;
 
     // Ensure the Claw workspace directory exists
     if (!fs.existsSync(clawWorkspacePath)) {
@@ -1200,7 +1201,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     '--new-window',
                     `--remote-debugging-port=${freePort}`,
                     clawWorkspacePath,
-                ], { stdio: 'ignore', detached: true });
+                ], { stdio: 'ignore', detached: true, shell: process.platform === 'win32' });
                 child.unref();
                 child.once('error', (err) => {
                     logger.warn(`[Claw] Failed to launch Antigravity: ${err?.message || err}`);
@@ -2021,16 +2022,17 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 const projects = workspaceService.scanWorkspaces();
 
                 // Eagerly connect CDP to read actual model/mode from Antigravity UI
+                // IMPORTANT: We use the dedicated Claw agent workspace (__claw__) to read state.
+                // This ensures we always have a reliable, dedicated endpoint and memory space.
                 let tgCdpModel: string | null = null;
                 let tgCdpMode: string | null = null;
-                if (projects.length > 0) {
-                    try {
-                        const cdp = await bridge.pool.getOrConnect(projects[0]);
-                        tgCdpModel = await cdp.getCurrentModel();
-                        tgCdpMode = await cdp.getCurrentMode();
-                    } catch (e) {
-                        logger.debug('Telegram startup CDP probe failed (will use defaults):', e instanceof Error ? e.message : e);
-                    }
+
+                try {
+                    const cdp = await bridge.pool.getOrConnect(clawWorkspacePath);
+                    tgCdpModel = await cdp.getCurrentModel();
+                    tgCdpMode = await cdp.getCurrentMode();
+                } catch (e) {
+                    logger.debug(`Telegram startup CDP probe missed (__claw__):`, e instanceof Error ? e.message : e);
                 }
 
                 const activeWorkspaces = bridge.pool.getActiveWorkspaceNames();

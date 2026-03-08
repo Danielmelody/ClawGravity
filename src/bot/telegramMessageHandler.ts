@@ -167,6 +167,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
             : binding.workspacePath;
 
+        // Acknowledge receipt before queueing
+        await message.react('\u{1F440}').catch(() => { });
+
         await enqueueForWorkspace(workspacePath, async () => {
             // Track all bot-sent message IDs so /clear can delete them
             const tracker = deps.messageTracker;
@@ -237,9 +240,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 handlePassiveUserMessage(message.channel, cdp, projectName, info, deps.activeMonitors, deps.extractionMode)
                     .catch((err: any) => logger.error('[TelegramPassive] Error handling PC message:', err));
             });
-
-            // Acknowledge receipt
-            await message.react('\u{1F440}').catch(() => { });
 
             // Download image attachments if present
             let inboundImages: InboundImageAttachment[] = [];

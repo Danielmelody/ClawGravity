@@ -386,8 +386,9 @@ export class CdpService extends EventEmitter {
         }
 
         if (respondingPort === null) {
-            // Launch Antigravity if no port responds
-            return this.launchAndConnectWorkspace(workspacePath, projectName);
+            // No CDP port is responding. Launching Antigravity here will just open an un-debuggable window and timeout.
+            // We must fail fast.
+            throw new Error('Antigravity CDP ports are not responding. Please manually start Antigravity with --remote-debugging-port=9222 before proceeding.');
         }
 
         // Filter workbench pages only (exclude Launchpad, Manager, iframe, worker)
@@ -654,7 +655,7 @@ export class CdpService extends EventEmitter {
 
     private async runCommand(command: string, args: string[]): Promise<void> {
         await new Promise<void>((resolve, reject) => {
-            const child = spawn(command, args, { stdio: 'ignore' });
+            const child = spawn(command, args, { stdio: 'ignore', shell: process.platform === 'win32' });
 
             child.once('error', (error) => {
                 reject(error);

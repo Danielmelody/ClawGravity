@@ -19,9 +19,13 @@ export function getAntigravityCliPath(): string {
     if (process.platform === 'win32') {
         const localAppData = process.env.LOCALAPPDATA;
         if (localAppData) {
-            return `${localAppData}\\Programs\\Antigravity\\Antigravity.exe`;
+            // Use the CLI wrapper (bin/antigravity.cmd) instead of the raw Electron
+            // executable (Antigravity.exe). The .exe doesn't understand VS Code CLI
+            // arguments like --new-window, --folder-uri, or positional folder paths.
+            // The .cmd wrapper sets ELECTRON_RUN_AS_NODE=1 and routes through cli.js.
+            return `${localAppData}\\Programs\\Antigravity\\bin\\antigravity.cmd`;
         }
-        return 'Antigravity.exe'; // Fallback if LOCALAPPDATA is undefined
+        return 'antigravity'; // Fallback — assume CLI is in system PATH
     }
 
     // Default for Linux or any unknown OS, assuming 'antigravity' is in the system PATH
@@ -50,7 +54,7 @@ export function getAntigravityCdpHint(port: number = 9222): string {
         case 'darwin':
             return `open -a ${APP_NAME} --args --remote-debugging-port=${port}`;
         case 'win32':
-            return `${APP_NAME}.exe --remote-debugging-port=${port}`;
+            return `antigravity --remote-debugging-port=${port}`;
         default:
             return `${APP_NAME.toLowerCase()} --remote-debugging-port=${port}`;
     }
