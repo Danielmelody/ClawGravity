@@ -29,7 +29,18 @@ export class WorkspaceService {
 
         const entries = fs.readdirSync(this.baseDir, { withFileTypes: true });
         return entries
-            .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+            .filter((entry) => {
+                if (entry.name.startsWith('.')) return false;
+                // Follow symlinks: isDirectory() returns false for symlinks,
+                // so use statSync (which follows symlinks) to check the target
+                if (entry.isDirectory()) return true;
+                if (entry.isSymbolicLink()) {
+                    try {
+                        return fs.statSync(`${this.baseDir}/${entry.name}`).isDirectory();
+                    } catch { return false; }
+                }
+                return false;
+            })
             .map((entry) => entry.name)
             .sort();
     }
