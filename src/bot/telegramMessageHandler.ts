@@ -335,7 +335,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
             await new Promise<void>(async (resolve) => {
                 const TIMEOUT_MS = 600_000;
-                const SAFETY_IDLE_MS = 120_000; // Reset safety timer on each activity
 
                 let settled = false;
                 const settle = () => {
@@ -360,13 +359,11 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             lastActivityLogText = processLogBuffer.append(logText);
                         }
                         refreshStatusMessage('streaming');
-                        renewSafetyTimer();
                     },
 
                     onProgress: (progressText: string) => {
                         latestPreviewText = progressText || '';
                         refreshStatusMessage('streaming');
-                        renewSafetyTimer();
                     },
 
                     onPhaseChange: (phase: string, text: string | null) => {
@@ -374,7 +371,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             lastActivityLogText = '🤔 Thinking / Planning...';
                         }
                         refreshStatusMessage('streaming');
-                        renewSafetyTimer();
                     },
 
                     onComplete: async (finalText: string) => {
@@ -513,16 +509,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     monitor.stop().catch(() => { });
                     settle();
                 }, TIMEOUT_MS);
-
-                // Renew safety timer on activity — prevents premature timeout during long tool-calling sessions
-                const renewSafetyTimer = () => {
-                    clearTimeout(safetyTimer);
-                    safetyTimer = setTimeout(() => {
-                        logger.warn(`[TelegramHandler:${projectName}] Safety timeout — no activity for ${SAFETY_IDLE_MS / 1000}s`);
-                        monitor.stop().catch(() => { });
-                        settle();
-                    }, SAFETY_IDLE_MS);
-                };
 
                 // Register the monitor so /stop can access and stop it
                 deps.activeMonitors?.set(projectName, monitor);

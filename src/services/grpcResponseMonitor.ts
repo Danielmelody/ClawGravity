@@ -146,10 +146,46 @@ const TRAJECTORY_POLL_INTERVAL_MS = 750;
 
 interface TrajectoryRecoverySnapshot {
     runStatus: string | null;
+    hasExplicitRunStatus: boolean;
+    anchorMatched: boolean;
     latestRole: 'user' | 'assistant' | null;
     latestResponseText: string | null;
     /** True if the latest assistant step contains tool calls (i.e. still working) */
     latestAssistantHasToolCalls: boolean;
+    latestAssistantSignature: string | null;
+}
+
+function normalizeComparableText(text: string | null | undefined): string {
+    return (text || '').replace(/\r/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function extractUserStepText(step: any): string {
+    const direct = typeof step?.userInput?.userResponse === 'string'
+        ? step.userInput.userResponse
+        : '';
+    if (direct.trim()) return direct;
+
+    const items = Array.isArray(step?.userInput?.items) ? step.userInput.items : [];
+    return items
+        .map((item: any) => typeof item?.text === 'string' ? item.text : '')
+        .filter(Boolean)
+        .join('\n');
+}
+
+function extractAssistantStepText(step: any): string {
+    if (typeof step?.plannerResponse?.response === 'string') {
+        return step.plannerResponse.response;
+    }
+    if (typeof step?.assistantResponse?.text === 'string') {
+        return step.assistantResponse.text;
+    }
+    return '';
+}
+
+function buildAssistantSignature(step: any, stepIndex: number): string {
+    const text = normalizeComparableText(extractAssistantStepText(step));
+    const toolCalls = Array.isArray(step?.plannerResponse?.toolCalls) ? step.plannerResponse.toolCalls.length : 0;
+    return `${stepIndex}:${step?.type || 'assistant'}:${toolCalls}:${text}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +196,7 @@ export class GrpcResponseMonitor {
     private readonly client: GrpcCascadeClient;
     private readonly cascadeId: string;
     private readonly maxDurationMs: number;
+    private readonly expectedUserMessage: string | null;
 
     private readonly onProgress?: (text: string) => void;
     private readonly onComplete?: (finalText: string) => void;
@@ -175,6 +212,7 @@ export class GrpcResponseMonitor {
     private readonly emittedPlannedToolIds = new Set<string>();
     private hasSeenActivity = false;
     private startTime = 0;
+    private pendingTerminalAssistantSignature: string | null = null;
 
     // Stream state
     private abortController: AbortController | null = null;
@@ -190,6 +228,7 @@ export class GrpcResponseMonitor {
         this.client = options.grpcClient;
         this.cascadeId = options.cascadeId;
         this.maxDurationMs = options.maxDurationMs ?? 300_000;
+        this.expectedUserMessage = normalizeComparableText(options.expectedUserMessage);
 
         this.onProgress = options.onProgress;
         this.onComplete = options.onComplete;
@@ -208,6 +247,7 @@ export class GrpcResponseMonitor {
         this.emittedPlannedToolIds.clear();
         this.hasSeenActivity = false;
         this.hasSeenToolCall = false;
+        this.pendingTerminalAssistantSignature = null;
         this.recoveryPromise = null;
 
         this.setPhase('waiting', null);
@@ -441,37 +481,80 @@ export class GrpcResponseMonitor {
             const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
             const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
 
+            const runStatus = typeof trajectory?.cascadeRunStatus === 'string'
+                ? trajectory.cascadeRunStatus
+                : typeof trajectoryResp?.cascadeRunStatus === 'string'
+                    ? trajectoryResp.cascadeRunStatus
+                    : typeof trajectory?.status === 'string'
+                        ? trajectory.status
+                        : typeof trajectoryResp?.status === 'string'
+                            ? trajectoryResp.status
+                            : null;
+
+            const hasExplicitRunStatus = typeof runStatus === 'string' && runStatus.length > 0;
             let latestRole: 'user' | 'assistant' | null = null;
             let latestResponseText: string | null = null;
             let latestAssistantHasToolCalls = false;
+            let latestAssistantSignature: string | null = null;
 
-            for (const step of steps) {
+            let anchorIndex = -1;
+            if (this.expectedUserMessage) {
+                for (let i = steps.length - 1; i >= 0; i--) {
+                    if (steps[i]?.type !== 'CORTEX_STEP_TYPE_USER_INPUT') continue;
+                    if (normalizeComparableText(extractUserStepText(steps[i])) === this.expectedUserMessage) {
+                        anchorIndex = i;
+                        break;
+                    }
+                }
+
+                if (anchorIndex === -1) {
+                    return {
+                        runStatus,
+                        hasExplicitRunStatus,
+                        anchorMatched: false,
+                        latestRole: null,
+                        latestResponseText: null,
+                        latestAssistantHasToolCalls: false,
+                        latestAssistantSignature: null,
+                    };
+                }
+            }
+
+            for (let i = Math.max(anchorIndex, 0); i < steps.length; i++) {
+                const step = steps[i];
                 if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') {
+                    if (this.expectedUserMessage && i === anchorIndex) {
+                        latestRole = 'user';
+                        latestResponseText = null;
+                        latestAssistantHasToolCalls = false;
+                        latestAssistantSignature = null;
+                        continue;
+                    }
+
                     latestRole = 'user';
                     latestResponseText = null;
                     latestAssistantHasToolCalls = false;
+                    latestAssistantSignature = null;
                     continue;
                 }
 
                 if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
                     latestRole = 'assistant';
-                    latestResponseText = step?.plannerResponse?.response || step?.assistantResponse?.text || '';
+                    latestResponseText = extractAssistantStepText(step);
                     latestAssistantHasToolCalls = Array.isArray(step?.plannerResponse?.toolCalls)
                         && step.plannerResponse.toolCalls.length > 0;
+                    latestAssistantSignature = buildAssistantSignature(step, i);
                 }
             }
 
-            const runStatus = typeof trajectory?.cascadeRunStatus === 'string'
-                ? trajectory.cascadeRunStatus
-                : typeof trajectoryResp?.cascadeRunStatus === 'string'
-                    ? trajectoryResp.cascadeRunStatus
-                    : null;
-
             return {
                 runStatus,
+                hasExplicitRunStatus,
+                anchorMatched: !this.expectedUserMessage || anchorIndex !== -1,
                 latestRole,
                 latestResponseText,
                 latestAssistantHasToolCalls,
+                latestAssistantSignature,
             };
         } catch (err: any) {
             logger.debug(`[GrpcMonitor] Trajectory recovery failed: ${err?.message || err}`);
@@ -481,6 +564,17 @@ export class GrpcResponseMonitor {
 
     private applyTrajectorySnapshot(snapshot: TrajectoryRecoverySnapshot | null): boolean {
         if (!snapshot) return false;
+
+        if (!snapshot.anchorMatched) {
+            if (snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+                this.hasSeenActivity = true;
+                if (this.currentPhase === 'waiting') {
+                    this.setPhase('thinking', null);
+                }
+            }
+            this.pendingTerminalAssistantSignature = null;
+            return false;
+        }
 
         const latestText = snapshot.latestRole === 'assistant'
             ? (snapshot.latestResponseText ?? '')
@@ -502,6 +596,8 @@ export class GrpcResponseMonitor {
             }
         }
 
+        const latestTextIsEmpty = latestText !== null && latestText.trim().length === 0;
+
         // Don't complete if:
         //  - Still RUNNING
         //  - Latest step has tool calls (model is mid-turn, waiting for tool results)
@@ -510,8 +606,20 @@ export class GrpcResponseMonitor {
             snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING'
             || snapshot.latestAssistantHasToolCalls
             || snapshot.latestRole !== 'assistant'
+            || latestTextIsEmpty
         ) {
+            this.pendingTerminalAssistantSignature = null;
             return false;
+        }
+
+        if (!snapshot.hasExplicitRunStatus) {
+            if (!snapshot.latestAssistantSignature) return false;
+            if (this.pendingTerminalAssistantSignature !== snapshot.latestAssistantSignature) {
+                this.pendingTerminalAssistantSignature = snapshot.latestAssistantSignature;
+                return false;
+            }
+        } else {
+            this.pendingTerminalAssistantSignature = null;
         }
 
         this.lastResponseText = latestText ?? this.lastResponseText ?? '';
@@ -561,9 +669,22 @@ export class GrpcResponseMonitor {
             return;
         }
 
+        if (!snapshot.anchorMatched) {
+            logger.debug('[GrpcMonitor] IDLE verification waiting for anchored user turn');
+            return;
+        }
+
+        const verifiedText = snapshot.latestRole === 'assistant'
+            ? (snapshot.latestResponseText ?? '')
+            : '';
+        if (!verifiedText.trim()) {
+            logger.debug('[GrpcMonitor] IDLE verification saw empty assistant placeholder — continuing to monitor');
+            return;
+        }
+
         // Truly idle — update with latest text from trajectory and finish
-        if (snapshot.latestResponseText && snapshot.latestResponseText.length > (this.lastResponseText?.length ?? 0)) {
-            this.lastResponseText = snapshot.latestResponseText;
+        if (verifiedText.length > (this.lastResponseText?.length ?? 0)) {
+            this.lastResponseText = verifiedText;
         }
         logger.info(`[GrpcMonitor] IDLE verified via trajectory — completing (${this.lastResponseText?.length ?? 0} chars)`);
         this.finishSuccessfully();
