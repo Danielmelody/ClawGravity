@@ -103,8 +103,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
         // Intercept built-in commands (/help, /status, /stop, /ping, /start)
         const cmd = parseTelegramCommand(promptText);
+        let forwardedPrompt: string | undefined;
         if (cmd) {
-            await handleTelegramCommand(
+            const cmdResult = await handleTelegramCommand(
                 {
                     bridge: deps.bridge,
                     modeService: deps.modeService,
@@ -124,7 +125,13 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 message,
                 cmd,
             );
-            return;
+            if (cmdResult?.forwardAsMessage) {
+                // Command wants to inject a prompt through the regular pipeline
+                // (e.g. /debug builds a prompt and hands it off for full monitoring)
+                forwardedPrompt = cmdResult.forwardAsMessage;
+            } else {
+                return;
+            }
         }
 
         // Intercept /project command before CDP path
@@ -255,8 +262,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 }
             }
 
-            // Determine the prompt text — use default for image-only messages
-            const effectivePrompt = promptText || 'Please review the attached images and respond accordingly.';
+            // Determine the prompt text — use forwarded prompt (from /debug) if available,
+            // otherwise fall back to regular prompt or default for image-only messages
+            const effectivePrompt = forwardedPrompt || promptText || 'Please review the attached images and respond accordingly.';
 
             // Register echo hash so UserMessageDetector skips this message
             // (prevents Telegram-sent messages from being echoed back as "PC" messages)

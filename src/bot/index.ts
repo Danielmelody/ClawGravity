@@ -1986,6 +1986,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 { command: 'new', description: 'Start a new chat session' },
                 { command: 'clear', description: 'Clear conversation history' },
                 { command: 'session', description: 'Switch to an existing session' },
+                { command: 'debug', description: 'Send conversation to AI for analysis' },
                 { command: 'schedule', description: 'List scheduled tasks' },
                 { command: 'schedule_add', description: 'Add a scheduled task' },
                 { command: 'schedule_remove', description: 'Remove a scheduled task' },

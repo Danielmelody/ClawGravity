@@ -49,7 +49,7 @@ import type { TelegramMessageTracker } from '../services/telegramMessageTracker'
 // Known commands (used by both parser and /help output)
 // ---------------------------------------------------------------------------
 
-const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'session', 'schedule', 'schedule_add', 'schedule_remove'] as const;
+const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'session', 'debug', 'schedule', 'schedule_add', 'schedule_remove'] as const;
 type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ export async function handleTelegramCommand(
     deps: TelegramCommandDeps,
     message: PlatformMessage,
     parsed: ParsedTelegramCommand,
-): Promise<void> {
+): Promise<{ forwardAsMessage?: string } | void> {
     const argsDisplay = parsed.args ? ` ${parsed.args}` : '';
     logger.info(`[TelegramCommand] /${parsed.command}${argsDisplay} (chat=${message.channel.id})`);
 
@@ -185,6 +185,8 @@ export async function handleTelegramCommand(
         case 'session':
             await handleSession(deps, message);
             break;
+        case 'debug':
+            return handleDebug(deps, message);
         case 'schedule':
             await handleScheduleList(deps, message);
             break;
@@ -237,6 +239,7 @@ async function handleHelp(message: PlatformMessage): Promise<void> {
         '/new — Start a new chat session',
         '/clear — Clear conversation history',
         '/session — Switch to an existing session',
+        '/debug — Send conversation to Antigravity for analysis',
         '/schedule — List scheduled tasks',
         '/schedule_add — Add a scheduled task',
         '/schedule_remove — Remove a scheduled task',
@@ -663,6 +666,63 @@ async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage):
         logger.error('[TelegramCommand:clear] startNewChat threw:', err?.message || err);
         await message.reply({ text: 'Failed to clear conversation history.' }).catch(logger.error);
     }
+}
+
+async function handleDebug(
+    deps: TelegramCommandDeps,
+    message: PlatformMessage,
+): Promise<{ forwardAsMessage?: string } | void> {
+    const chatId = message.channel.id;
+
+    // Collect recent conversation messages
+    const recentMessages = deps.sessionStateStore?.getRecentMessages(chatId, 10) ?? [];
+
+    // Collect recent logs
+    const recentLogs = logBuffer.getRecent(30);
+    const logText = recentLogs.length > 0
+        ? recentLogs.map(e => `[${e.level}] ${e.message}`).join('\n')
+        : '';
+
+    // Build the debug prompt
+    const parts: string[] = [];
+    parts.push(
+        'I need you to analyze the recent conversation and logs for any issues, errors, or unexpected behavior, and try to fix them.',
+        '',
+    );
+
+    if (recentMessages.length > 0) {
+        parts.push('## Recent Conversation');
+        parts.push('```');
+        for (const msg of recentMessages) {
+            parts.push(msg);
+            parts.push('---');
+        }
+        parts.push('```');
+        parts.push('');
+    }
+
+    if (logText) {
+        parts.push('## Recent Logs');
+        parts.push('```');
+        parts.push(logText);
+        parts.push('```');
+        parts.push('');
+    }
+
+    parts.push(
+        'Please:',
+        '1. Identify any errors, warnings, or anomalies in the above',
+        '2. Diagnose the root cause',
+        '3. Attempt to fix the issues if possible',
+        '4. Summarize what you found and what you did',
+    );
+
+    const debugPrompt = parts.join('\n');
+    logger.info(`[TelegramCommand:debug] built prompt (${debugPrompt.length} chars, ${recentMessages.length} msgs, ${recentLogs.length} log entries)`);
+
+    await message.react('\u{1F50D}').catch(() => { });
+
+    return { forwardAsMessage: debugPrompt };
 }
 
 async function handleSession(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
