@@ -1109,99 +1109,107 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
     // Auto-launch Antigravity with the agent workspace if not already open.
     // This ensures scheduled tasks always have a dedicated CDP endpoint.
-    (async () => {
-        const http = await import('http');
-        const { execFile } = await import('child_process');
-        const { CDP_PORTS } = await import('../utils/cdpPorts');
-        const clawProjectName = path.basename(clawWorkspacePath);
+    // Only launch if there are active schedules — avoids opening an empty
+    // Antigravity window on every startup when no cron tasks are configured.
+    const enabledSchedules = scheduleRepo.findEnabled();
+    if (enabledSchedules.length === 0) {
+        logger.debug('[Claw] No enabled schedules — skipping dedicated Antigravity auto-launch');
+    } else {
+        logger.info(`[Claw] ${enabledSchedules.length} enabled schedule(s) found — ensuring dedicated Antigravity instance...`);
+        (async () => {
+            const http = await import('http');
+            const { execFile } = await import('child_process');
+            const { CDP_PORTS } = await import('../utils/cdpPorts');
+            const clawProjectName = path.basename(clawWorkspacePath);
 
-        // Check if the agent workspace is already open in a DEDICATED Antigravity instance.
-        // A port is "dedicated" if it only contains the agent workbench pages,
-        // i.e. not shared with the user's active projects.
-        const checkPort = (port: number): Promise<{ titles: string[]; hasClaw: boolean }> => {
-            return new Promise((resolve) => {
-                const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
-                    let data = '';
-                    res.on('data', (chunk: string) => (data += chunk));
-                    res.on('end', () => {
-                        try {
-                            const tabs = JSON.parse(data);
-                            const titles = tabs
-                                .filter((t: any) => t.type === 'page' && t.url?.includes('workbench'))
-                                .map((t: any) => t.title || '');
-                            const hasClaw = titles.some((t: string) => t.includes(clawProjectName));
-                            resolve({ titles, hasClaw });
-                        } catch { resolve({ titles: [], hasClaw: false }); }
+            // Check if the agent workspace is already open in a DEDICATED Antigravity instance.
+            // A port is "dedicated" if it only contains the agent workbench pages,
+            // i.e. not shared with the user's active projects.
+            const checkPort = (port: number): Promise<{ titles: string[]; hasClaw: boolean }> => {
+                return new Promise((resolve) => {
+                    const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
+                        let data = '';
+                        res.on('data', (chunk: string) => (data += chunk));
+                        res.on('end', () => {
+                            try {
+                                const tabs = JSON.parse(data);
+                                const titles = tabs
+                                    .filter((t: any) => t.type === 'page' && t.url?.includes('workbench'))
+                                    .map((t: any) => t.title || '');
+                                const hasClaw = titles.some((t: string) => t.includes(clawProjectName));
+                                resolve({ titles, hasClaw });
+                            } catch { resolve({ titles: [], hasClaw: false }); }
+                        });
                     });
+                    req.on('error', () => resolve({ titles: [], hasClaw: false }));
+                    req.setTimeout(2000, () => { req.destroy(); resolve({ titles: [], hasClaw: false }); });
                 });
-                req.on('error', () => resolve({ titles: [], hasClaw: false }));
-                req.setTimeout(2000, () => { req.destroy(); resolve({ titles: [], hasClaw: false }); });
-            });
-        };
+            };
 
-        for (const port of CDP_PORTS) {
-            const { titles, hasClaw } = await checkPort(port);
-            if (hasClaw) {
-                // Check if this port is dedicated to the agent workspace only
-                const nonClawTitles = titles.filter(t => !t.includes(clawProjectName));
-                if (nonClawTitles.length === 0) {
-                    // Only the agent workspace on this port — it's a dedicated instance
-                    logger.info(`[Claw] "${clawProjectName}" workspace already open on DEDICATED CDP port ${port}`);
-                    return;
-                } else {
-                    // Shared port — agent workspace is open in the user's window, need a separate one
-                    logger.warn(
-                        `[Claw] "${clawProjectName}" found on CDP port ${port} but shared with: ${nonClawTitles.join(', ')}. ` +
-                        `Launching a dedicated instance...`
-                    );
-                    // Don't return — fall through to launch a new window
+            for (const port of CDP_PORTS) {
+                const { titles, hasClaw } = await checkPort(port);
+                if (hasClaw) {
+                    // Check if this port is dedicated to the agent workspace only
+                    const nonClawTitles = titles.filter(t => !t.includes(clawProjectName));
+                    if (nonClawTitles.length === 0) {
+                        // Only the agent workspace on this port — it's a dedicated instance
+                        logger.info(`[Claw] "${clawProjectName}" workspace already open on DEDICATED CDP port ${port}`);
+                        return;
+                    } else {
+                        // Shared port — agent workspace is open in the user's window, need a separate one
+                        logger.warn(
+                            `[Claw] "${clawProjectName}" found on CDP port ${port} but shared with: ${nonClawTitles.join(', ')}. ` +
+                            `Launching a dedicated instance...`
+                        );
+                        // Don't return — fall through to launch a new window
+                    }
                 }
             }
-        }
 
-        // Find an available port (one that is NOT responding = free)
-        const net = await import('net');
-        const isPortFree = (port: number): Promise<boolean> => {
-            return new Promise((resolve) => {
-                const server = net.createServer();
-                server.once('error', () => resolve(false));
-                server.once('listening', () => { server.close(() => resolve(true)); });
-                server.listen(port, '127.0.0.1');
-            });
-        };
-
-        let freePort: number | null = null;
-        for (const port of CDP_PORTS) {
-            if (await isPortFree(port)) {
-                freePort = port;
-                break;
-            }
-        }
-
-        if (!freePort) {
-            logger.warn(`[Claw] No free CDP port available to auto-launch "${clawProjectName}" workspace. Scheduled tasks may fail.`);
-            return;
-        }
-
-        logger.info(`[Claw] Launching Antigravity for "${clawProjectName}" workspace on CDP port ${freePort}...`);
-        try {
-            const platform = (await import('os')).platform();
-            if (platform === 'win32') {
-                execFile('Antigravity', [`--remote-debugging-port=${freePort}`, clawWorkspacePath], { shell: true }, () => { });
-            } else if (platform === 'darwin') {
-                execFile('open', ['-a', 'Antigravity', '--args', `--remote-debugging-port=${freePort}`, clawWorkspacePath], () => { });
-            } else {
-                const { spawn } = await import('child_process');
-                const child = spawn('antigravity', [`--remote-debugging-port=${freePort}`, clawWorkspacePath], {
-                    detached: true, stdio: 'ignore',
+            // Find an available port (one that is NOT responding = free)
+            const net = await import('net');
+            const isPortFree = (port: number): Promise<boolean> => {
+                return new Promise((resolve) => {
+                    const server = net.createServer();
+                    server.once('error', () => resolve(false));
+                    server.once('listening', () => { server.close(() => resolve(true)); });
+                    server.listen(port, '127.0.0.1');
                 });
-                child.unref();
+            };
+
+            let freePort: number | null = null;
+            for (const port of CDP_PORTS) {
+                if (await isPortFree(port)) {
+                    freePort = port;
+                    break;
+                }
             }
-            logger.info(`[Claw] Antigravity launched for "${clawProjectName}" workspace (port ${freePort})`);
-        } catch (err: any) {
-            logger.warn(`[Claw] Failed to auto-launch Antigravity: ${err?.message || err}`);
-        }
-    })();
+
+            if (!freePort) {
+                logger.warn(`[Claw] No free CDP port available to auto-launch "${clawProjectName}" workspace. Scheduled tasks may fail.`);
+                return;
+            }
+
+            logger.info(`[Claw] Launching Antigravity for "${clawProjectName}" workspace on CDP port ${freePort}...`);
+            try {
+                const { getAntigravityCliPath: getCliPath } = await import('../utils/pathUtils');
+                const antigravityCli = getCliPath();
+                const { spawn } = await import('child_process');
+                const child = spawn(antigravityCli, [
+                    '--new-window',
+                    `--remote-debugging-port=${freePort}`,
+                    clawWorkspacePath,
+                ], { stdio: 'ignore', detached: true });
+                child.unref();
+                child.once('error', (err) => {
+                    logger.warn(`[Claw] Failed to launch Antigravity: ${err?.message || err}`);
+                });
+                logger.info(`[Claw] Antigravity launched for "${clawProjectName}" workspace (port ${freePort})`);
+            } catch (err: any) {
+                logger.warn(`[Claw] Failed to auto-launch Antigravity: ${err?.message || err}`);
+            }
+        })();
+    } // end: else (enabledSchedules.length > 0)
 
     // Auto-generate GEMINI.md — Antigravity reads this to learn about @claw commands.
     // Regenerated on every boot to keep instructions up-to-date.
