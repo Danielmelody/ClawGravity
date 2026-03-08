@@ -543,27 +543,41 @@ export class GrpcResponseMonitor {
             const allToolCalls: any[] = [];
 
             let anchorIndex = -1;
+            let latestUserInputIndex = -1;
             if (this.expectedUserMessage) {
                 for (let i = steps.length - 1; i >= 0; i--) {
                     if (steps[i]?.type !== 'CORTEX_STEP_TYPE_USER_INPUT') continue;
-                    if (normalizeComparableText(extractUserStepText(steps[i])) === this.expectedUserMessage) {
+
+                    if (latestUserInputIndex === -1) {
+                        latestUserInputIndex = i; // Remember the most recent user input in case exact match fails
+                    }
+
+                    const stepText = normalizeComparableText(extractUserStepText(steps[i]));
+                    if (stepText === this.expectedUserMessage ||
+                        (stepText && this.expectedUserMessage && (stepText.includes(this.expectedUserMessage) || this.expectedUserMessage.includes(stepText)))) {
                         anchorIndex = i;
                         break;
                     }
                 }
 
                 if (anchorIndex === -1) {
-                    return {
-                        runStatus,
-                        hasExplicitRunStatus,
-                        anchorMatched: false,
-                        latestRole: null,
-                        latestResponseText: null,
-                        latestAssistantHasToolCalls: false,
-                        latestAssistantSignature: null,
-                        accumulatedThinkingText,
-                        allToolCalls,
-                    };
+                    if (latestUserInputIndex !== -1) {
+                        logger.warn(`[GrpcMonitor] Anchor text not strictly matched (${this.expectedUserMessage.length} chars vs ${normalizeComparableText(extractUserStepText(steps[latestUserInputIndex])).length} chars), falling back to latest user step index ${latestUserInputIndex}`);
+                        anchorIndex = latestUserInputIndex;
+                    } else {
+                        logger.warn(`[GrpcMonitor] Anchor not matched and no user input steps found. Expected: "${this.expectedUserMessage.slice(0, 50)}..."`);
+                        return {
+                            runStatus,
+                            hasExplicitRunStatus,
+                            anchorMatched: false,
+                            latestRole: null,
+                            latestResponseText: null,
+                            latestAssistantHasToolCalls: false,
+                            latestAssistantSignature: null,
+                            accumulatedThinkingText,
+                            allToolCalls,
+                        };
+                    }
                 }
             }
 
