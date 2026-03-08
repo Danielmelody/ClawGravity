@@ -598,27 +598,25 @@ function buildTelegramStatusText(options: {
         ? options.headerLines.join('\n')
         : '';
 
-    // Calculate space for preview and activity log
-    const reservedChars = header.length + footer.length + 100; // conservative overhead
-    let maxBodyChars = MAX_LENGTH - reservedChars;
-    if (maxBodyChars < 100) maxBodyChars = 100;
-
-    let preview = (options.previewText && options.mode === 'streaming')
+    // Preview gets full priority — no truncation
+    const preview = (options.previewText && options.mode === 'streaming')
         ? options.previewText.trim()
         : '';
-
-    if (preview.length > maxBodyChars / 2) {
-        const previewTail = maxBodyChars / 2;
-        preview = '... (earlier output truncated)\n' + preview.slice(-previewTail);
-    }
     const previewSection = preview ? `[streaming preview]\n${preview}` : '';
 
+    // Activity log fills remaining space after preview
+    const reservedChars = header.length + footer.length + previewSection.length + 100;
+    const remainingForLog = Math.max(0, MAX_LENGTH - reservedChars);
+
     let activityLog = options.activityLogText.trim();
-    const remainingForLog = maxBodyChars - previewSection.length;
     if (activityLog.length > remainingForLog) {
-        const prefix = '... (earlier log entries truncated)\n';
-        const tailLength = Math.max(0, remainingForLog - prefix.length);
-        activityLog = prefix + activityLog.slice(-tailLength);
+        if (remainingForLog < 60) {
+            activityLog = '';  // No room — skip activity log entirely
+        } else {
+            const prefix = '...\n';
+            const tailLength = Math.max(0, remainingForLog - prefix.length);
+            activityLog = prefix + activityLog.slice(-tailLength);
+        }
     }
     const activitySection = activityLog ? `[activity]\n${activityLog}` : '';
 

@@ -14,9 +14,9 @@ export interface ApprovalInfo {
 }
 
 export interface ApprovalDetectorOptions {
-    /** CDP service instance */
+    /** CDP service instance (used only for gRPC client access and VS Code commands) */
     cdpService: CdpService;
-    /** Poll interval in milliseconds (default: 1500ms) */
+    /** Poll interval in milliseconds (default: 2000ms) */
     pollIntervalMs?: number;
     /** Callback when an approval button is detected */
     onApprovalRequired: (info: ApprovalInfo) => void;
@@ -25,212 +25,13 @@ export interface ApprovalDetectorOptions {
 }
 
 /**
- * Approval button detection script for the Antigravity UI
+ * Class that detects approval-pending state via gRPC trajectory polling.
  *
- * Detects allow/deny button pairs and extracts descriptions from several DOM sources.
- */
-const DETECT_APPROVAL_SCRIPT = `(() => {
-    const ALLOW_ONCE_PATTERNS = ['allow once', 'allow one time', '今回のみ許可', '1回のみ許可', '一度許可'];
-    const ALWAYS_ALLOW_PATTERNS = [
-        'allow this conversation',
-        'allow this chat',
-        'always allow',
-        '常に許可',
-        'この会話を許可',
-    ];
-    const ALLOW_PATTERNS = ['allow', 'permit', '許可', '承認', '確認'];
-    const DENY_PATTERNS = ['deny', '拒否', 'decline'];
-
-    const normalize = (text) => (text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-
-    const allButtons = Array.from(document.querySelectorAll('button'))
-        .filter(btn => btn.offsetParent !== null);
-
-    let approveBtn = allButtons.find(btn => {
-        const t = normalize(btn.textContent || '');
-        return ALLOW_ONCE_PATTERNS.some(p => t.includes(p));
-    }) || null;
-
-    if (!approveBtn) {
-        approveBtn = allButtons.find(btn => {
-            const t = normalize(btn.textContent || '');
-            const isAlways = ALWAYS_ALLOW_PATTERNS.some(p => t.includes(p));
-            return !isAlways && ALLOW_PATTERNS.some(p => t.includes(p));
-        }) || null;
-    }
-
-    if (!approveBtn) return null;
-
-    const container = approveBtn.closest('[role="dialog"], .modal, .dialog, .approval-container, .permission-dialog')
-        || approveBtn.parentElement?.parentElement
-        || approveBtn.parentElement
-        || document.body;
-
-    const containerButtons = Array.from(container.querySelectorAll('button'))
-        .filter(btn => btn.offsetParent !== null);
-
-    const denyBtn = containerButtons.find(btn => {
-        const t = normalize(btn.textContent || '');
-        return DENY_PATTERNS.some(p => t.includes(p));
-    }) || null;
-
-    if (!denyBtn) return null;
-
-    const alwaysAllowBtn = containerButtons.find(btn => {
-        const t = normalize(btn.textContent || '');
-        return ALWAYS_ALLOW_PATTERNS.some(p => t.includes(p));
-    }) || null;
-
-    const approveText = (approveBtn.textContent || '').trim();
-    const alwaysAllowText = alwaysAllowBtn ? (alwaysAllowBtn.textContent || '').trim() : '';
-    const denyText = (denyBtn.textContent || '').trim();
-
-    // Description extraction order
-    let description = '';
-
-    // 1. p or .description inside dialog/modal
-    const dialog = container;
-    if (dialog) {
-        const descEl = dialog.querySelector('p, .description, [data-testid="description"]');
-        if (descEl) {
-            description = (descEl.textContent || '').trim();
-        }
-    }
-
-    // 2. Parent element text (excluding button text)
-    if (!description) {
-        const parent = approveBtn.parentElement?.parentElement || approveBtn.parentElement;
-        if (parent) {
-            const clone = parent.cloneNode(true);
-            const buttons = clone.querySelectorAll('button');
-            buttons.forEach(b => b.remove());
-            const parentText = (clone.textContent || '').trim();
-            if (parentText.length > 5 && parentText.length < 500) {
-                description = parentText;
-            }
-        }
-    }
-
-    // 3. aria-label
-    if (!description) {
-        const ariaLabel = approveBtn.getAttribute('aria-label') || '';
-        if (ariaLabel) description = ariaLabel;
-    }
-
-    return { approveText, alwaysAllowText, denyText, description };
-})()`;
-
-/**
- * Press the toggle on the right side of Allow Once to expand the Always Allow dropdown.
- */
-const EXPAND_ALWAYS_ALLOW_MENU_SCRIPT = `(() => {
-    const ALLOW_ONCE_PATTERNS = ['allow once', 'allow one time', '今回のみ許可', '1回のみ許可', '一度許可'];
-    const ALWAYS_ALLOW_PATTERNS = [
-        'allow this conversation',
-        'allow this chat',
-        'always allow',
-        '常に許可',
-        'この会話を許可',
-    ];
-
-    const normalize = (text) => (text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-    const visibleButtons = Array.from(document.querySelectorAll('button'))
-        .filter(btn => btn.offsetParent !== null);
-
-    const directAlways = visibleButtons.find(btn => {
-        const t = normalize(btn.textContent || '');
-        return ALWAYS_ALLOW_PATTERNS.some(p => t.includes(p));
-    });
-    if (directAlways) return { ok: true, reason: 'already-visible' };
-
-    const allowOnceBtn = visibleButtons.find(btn => {
-        const t = normalize(btn.textContent || '');
-        return ALLOW_ONCE_PATTERNS.some(p => t.includes(p));
-    });
-    if (!allowOnceBtn) return { ok: false, error: 'allow-once button not found' };
-
-    const container = allowOnceBtn.closest('[role="dialog"], .modal, .dialog, .approval-container, .permission-dialog')
-        || allowOnceBtn.parentElement?.parentElement
-        || allowOnceBtn.parentElement
-        || document.body;
-
-    const containerButtons = Array.from(container.querySelectorAll('button'))
-        .filter(btn => btn.offsetParent !== null);
-
-    const toggleBtn = containerButtons.find(btn => {
-        if (btn === allowOnceBtn) return false;
-        const text = normalize(btn.textContent || '');
-        const aria = normalize(btn.getAttribute('aria-label') || '');
-        const hasPopup = btn.getAttribute('aria-haspopup');
-        if (hasPopup === 'menu' || hasPopup === 'listbox') return true;
-        if (text === '') return true;
-        return /menu|more|expand|options|dropdown|chevron|arrow/.test(aria);
-    });
-
-    if (toggleBtn) {
-        toggleBtn.click();
-        return { ok: true, reason: 'toggle-button' };
-    }
-
-    const rect = allowOnceBtn.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || rect.height <= 0) {
-        return { ok: false, error: 'allow-once button rect unavailable' };
-    }
-
-    const clickX = rect.right - Math.max(4, Math.min(12, rect.width * 0.15));
-    const clickY = rect.top + rect.height / 2;
-
-    const events = ['pointerdown', 'mousedown', 'mouseup', 'click'];
-    for (const type of events) {
-        allowOnceBtn.dispatchEvent(new MouseEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: clickX,
-            clientY: clickY,
-        }));
-    }
-    return { ok: true, reason: 'allow-once-right-edge' };
-})()`;
-
-/**
- * Generate a CDP script that clicks a button
+ * Zero DOM operations — detection is based on cascade trajectory status:
+ * When the cascade has status=IDLE and the latest assistant step contains
+ * tool calls, the agent is waiting for user approval.
  *
- * @param buttonText Text of the button to click
- */
-export function buildClickScript(buttonText: string): string {
-    const safeText = JSON.stringify(buttonText);
-    return `(() => {
-        const normalize = (text) => (text || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-        const text = ${safeText};
-        const wanted = normalize(text);
-        const allButtons = Array.from(document.querySelectorAll('button'));
-        const target = allButtons.find(btn => {
-            if (!btn.offsetParent) return false;
-            const buttonText = normalize(btn.textContent || '');
-            const ariaLabel = normalize(btn.getAttribute('aria-label') || '');
-            return buttonText === wanted ||
-                ariaLabel === wanted ||
-                buttonText.includes(wanted) ||
-                ariaLabel.includes(wanted);
-        });
-        if (!target) return { ok: false, error: 'Button not found: ' + text };
-        const rect = target.getBoundingClientRect();
-        const x = rect.left + rect.width / 2;
-        const y = rect.top + rect.height / 2;
-        const eventInit = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-            target.dispatchEvent(new PointerEvent(type, { ...eventInit, pointerId: 1 }));
-        }
-        return { ok: true };
-    })()`;
-}
-
-/**
- * Class that detects approval buttons in the Antigravity UI via polling.
- *
- * Notifies detected button info through the onApprovalRequired callback,
- * and performs the actual click operations via approveButton() / denyButton() methods.
+ * Actions (approve/deny) are performed via VS Code extension commands.
  */
 export class ApprovalDetector {
     private cdpService: CdpService;
@@ -240,14 +41,14 @@ export class ApprovalDetector {
 
     private pollTimer: NodeJS.Timeout | null = null;
     private isRunning: boolean = false;
-    /** Key of the last detected button info (for duplicate notification prevention) */
+    /** Key of the last detected approval state (for duplicate notification prevention) */
     private lastDetectedKey: string | null = null;
-    /** Full ApprovalInfo from the last detection (used for clicking) */
+    /** Full ApprovalInfo from the last detection */
     private lastDetectedInfo: ApprovalInfo | null = null;
 
     constructor(options: ApprovalDetectorOptions) {
         this.cdpService = options.cdpService;
-        this.pollIntervalMs = options.pollIntervalMs ?? 1500;
+        this.pollIntervalMs = options.pollIntervalMs ?? 2000;
         this.onApprovalRequired = options.onApprovalRequired;
         this.onResolved = options.onResolved;
     }
@@ -294,28 +95,36 @@ export class ApprovalDetector {
     }
 
     /**
-     * Single poll iteration:
-     *   1. Get approval button info from DOM (with contextId)
-     *   2. Notify via callback only on new detection (prevent duplicates)
-     *   3. Reset lastDetectedKey / lastDetectedInfo when buttons disappear
+     * Single poll iteration via gRPC trajectory:
+     *   1. Get active cascade trajectory via gRPC
+     *   2. Check if status=IDLE and latest step has toolCalls (waiting for approval)
+     *   3. Notify via callback only on new detection (prevent duplicates)
+     *   4. Reset lastDetectedKey when approval is resolved
      */
     private async poll(): Promise<void> {
         try {
-            const contextId = this.cdpService.getPrimaryContextId();
-            const callParams: Record<string, unknown> = {
-                expression: DETECT_APPROVAL_SCRIPT,
-                returnByValue: true,
-                awaitPromise: false,
-            };
-            if (contextId !== null) {
-                callParams.contextId = contextId;
-            }
+            const client = await this.cdpService.getGrpcClient();
+            if (!client) return;
 
-            const result = await this.cdpService.call('Runtime.evaluate', callParams);
-            const info: ApprovalInfo | null = result?.result?.value ?? null;
+            const cascadeId = await this.cdpService.getActiveCascadeId();
+            if (!cascadeId) return;
+
+            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
+            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
+            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
+
+            const runStatus =
+                trajectory?.cascadeRunStatus
+                || trajectoryResp?.cascadeRunStatus
+                || trajectory?.status
+                || trajectoryResp?.status
+                || null;
+
+            // Detect approval-pending state:
+            // Cascade is IDLE + last assistant step has tool calls = waiting for user approval
+            const info = this.extractApprovalFromTrajectory(steps, runStatus);
 
             if (info) {
-                // Duplicate prevention: use approveText + description combination as key
                 const key = `${info.approveText}::${info.description}`;
                 if (key !== this.lastDetectedKey) {
                     this.lastDetectedKey = key;
@@ -323,7 +132,6 @@ export class ApprovalDetector {
                     this.onApprovalRequired(info);
                 }
             } else {
-                // Reset when buttons disappear (prepare for next approval detection)
                 const wasDetected = this.lastDetectedKey !== null;
                 this.lastDetectedKey = null;
                 this.lastDetectedInfo = null;
@@ -332,13 +140,61 @@ export class ApprovalDetector {
                 }
             }
         } catch (error) {
-            // Ignore CDP errors and continue monitoring
             const message = error instanceof Error ? error.message : String(error);
-            if (message.includes('WebSocket is not connected')) {
+            if (message.includes('WebSocket is not connected') || message.includes('Not connected')) {
                 return;
             }
-            logger.error('[ApprovalDetector] Error during polling:', error);
+            logger.error('[ApprovalDetector] Error during gRPC polling:', error);
         }
+    }
+
+    /**
+     * Extract approval info from trajectory steps.
+     * Returns ApprovalInfo if the cascade is waiting for tool-use approval, null otherwise.
+     */
+    private extractApprovalFromTrajectory(steps: any[], runStatus: string | null): ApprovalInfo | null {
+        if (!runStatus || runStatus !== 'CASCADE_RUN_STATUS_IDLE') return null;
+        if (steps.length === 0) return null;
+
+        // Walk backwards from the last step to find pending approval
+        for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i];
+
+            // Skip user input steps
+            if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') break;
+
+            // Check planner response for tool calls
+            if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
+                const toolCalls = step?.plannerResponse?.toolCalls;
+                if (!Array.isArray(toolCalls) || toolCalls.length === 0) continue;
+
+                // Check if any tool call is awaiting acceptance
+                const pendingToolCalls = toolCalls.filter((tc: any) => {
+                    // If tool call has no result/output yet, it's pending
+                    const status = tc?.status || tc?.toolCallStatus;
+                    return !status || status === 'pending' || status === 'awaiting_confirmation';
+                });
+
+                if (pendingToolCalls.length === 0) continue;
+
+                // Build description from tool call details
+                const toolNames = pendingToolCalls.map((tc: any) =>
+                    tc?.name || tc?.toolName || tc?.function?.name || 'tool'
+                );
+                const description = toolNames.length === 1
+                    ? `Tool: ${toolNames[0]}`
+                    : `Tools: ${toolNames.join(', ')}`;
+
+                return {
+                    approveText: 'Allow',
+                    alwaysAllowText: 'Allow This Conversation',
+                    denyText: 'Deny',
+                    description,
+                };
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -361,35 +217,11 @@ export class ApprovalDetector {
 
     /**
      * Select "Allow This Conversation / Always Allow".
-     * Uses DOM interaction because there is no dedicated backend command for this choice.
+     * Executes the accept command — this acts as a full-session allow.
      */
     async alwaysAllowButton(): Promise<boolean> {
-        const directCandidates = [
-            this.lastDetectedInfo?.alwaysAllowText,
-            'Allow This Conversation',
-            'Allow This Chat',
-            'この会話を許可',
-            'Always Allow',
-            '常に許可',
-        ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-
-        for (const candidate of directCandidates) {
-            if (await this.clickButton(candidate)) return true;
-        }
-
-        const expanded = await this.runEvaluateScript(EXPAND_ALWAYS_ALLOW_MENU_SCRIPT);
-        if (expanded?.ok !== true) {
-            return false;
-        }
-
-        for (let i = 0; i < 5; i++) {
-            for (const candidate of directCandidates) {
-                if (await this.clickButton(candidate)) return true;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 120));
-        }
-
-        return false;
+        // No DOM operations — use the same VS Code command as approve
+        return this.approveButton();
     }
 
     /**
@@ -408,43 +240,6 @@ export class ApprovalDetector {
             logger.error('[ApprovalDetector] Deny command failed:', error);
             return false;
         }
-    }
-
-    /**
-     * Internal click handler (shared implementation for approveButton / denyButton).
-     * Specifies contextId to click in the correct execution context.
-     */
-    private async clickButton(buttonText: string): Promise<boolean> {
-        try {
-            const script = buildClickScript(buttonText);
-            const result = await this.runEvaluateScript(script);
-            if (result?.ok !== true) {
-                logger.warn(`[ApprovalDetector] Click failed for "${buttonText}":`, result?.error ?? 'unknown');
-            } else {
-                logger.debug(`[ApprovalDetector] Click OK for "${buttonText}"`);
-            }
-            return result?.ok === true;
-        } catch (error) {
-            logger.error('[ApprovalDetector] Error while clicking button:', error);
-            return false;
-        }
-    }
-
-    /**
-     * Execute Runtime.evaluate with contextId and return result.value.
-     */
-    private async runEvaluateScript(expression: string): Promise<any> {
-        const contextId = this.cdpService.getPrimaryContextId();
-        const callParams: Record<string, unknown> = {
-            expression,
-            returnByValue: true,
-            awaitPromise: false,
-        };
-        if (contextId !== null) {
-            callParams.contextId = contextId;
-        }
-        const result = await this.cdpService.call('Runtime.evaluate', callParams);
-        return result?.result?.value;
     }
 
     /** Returns whether monitoring is currently active */
