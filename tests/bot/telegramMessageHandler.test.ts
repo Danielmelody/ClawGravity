@@ -99,11 +99,13 @@ function createMockMessage(overrides: Record<string, unknown> = {}) {
 
 function createMockCdp() {
     return {
-        injectMessage: jest.fn().mockResolvedValue({ ok: true }),
-        activateSessionByTitle: jest.fn(),
+        injectMessage: jest.fn().mockResolvedValue({ ok: true, cascadeId: 'test-cascade-id' }),
+        setCachedCascadeId: jest.fn(),
         getGrpcClient: jest.fn().mockResolvedValue({ isReady: () => true }),
         getActiveCascadeId: jest.fn().mockResolvedValue('test-cascade-id'),
-        getCurrentModel: jest.fn().mockResolvedValue('test-model'),
+        getActiveSessionInfo: jest.fn().mockResolvedValue({ title: 'Session Title', summary: 'Summary' }),
+        getCurrentModel: jest.fn().mockResolvedValue(null),
+        setUiMode: jest.fn().mockResolvedValue({ ok: true }),
     };
 }
 
@@ -196,7 +198,7 @@ describe('createTelegramMessageHandler', () => {
         expect(mockCdp.injectMessage).toHaveBeenCalledWith('test prompt');
     });
 
-    it('activates previously joined session before sending prompt', async () => {
+    it('sets previously joined cascade ID before sending prompt', async () => {
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
         const bridge = createBridge(pool);
@@ -204,15 +206,12 @@ describe('createTelegramMessageHandler', () => {
         const telegramBindingRepo = createTelegramBindingRepo(binding);
         const { message } = createMockMessage({ content: 'test prompt' });
         const sessionStateStore = new TelegramSessionStateStore();
-        sessionStateStore.setSelectedSession('chat-123', 'History Session');
-        const chatSessionService = {
-            activateSessionByTitle: jest.fn().mockResolvedValue({ ok: true }),
-        } as any;
+        sessionStateStore.setSelectedSession('chat-123', 'History Session', 'cascade-123');
 
-        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo, sessionStateStore, chatSessionService });
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo, sessionStateStore });
         await handler(message as any);
 
-        expect(chatSessionService.activateSessionByTitle).toHaveBeenCalledWith(mockCdp, 'History Session');
+        expect(mockCdp.setCachedCascadeId).toHaveBeenCalledWith('cascade-123');
         expect(mockCdp.injectMessage).toHaveBeenCalledWith('test prompt');
     });
 
@@ -732,6 +731,30 @@ describe('createTelegramMessageHandler', () => {
             await handler(message as any);
 
             expect(mockCdp.setUiMode).not.toHaveBeenCalled();
+        });
+
+        it('displays current mode and model in status message', async () => {
+            const mockCdp = {
+                ...createMockCdp(),
+                getCurrentModel: jest.fn().mockResolvedValue('Claude 4.0 Ultra'),
+            };
+            const pool = createMockPool(mockCdp);
+            const bridge = createBridge(pool);
+            const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+            const telegramBindingRepo = createTelegramBindingRepo(binding);
+            const modeService = {
+                getCurrentMode: jest.fn().mockReturnValue('fast'),
+                markSynced: jest.fn(),
+            } as any;
+            const { message, channel } = createMockMessage();
+
+            const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo, modeService });
+            await handler(message as any);
+
+            const statusEdit = channel._statusMsg.edit.mock.calls.find(
+                ([payload]: any[]) => payload.text.includes('Current Mode: Fast') && payload.text.includes('Model: Claude 4.0 Ultra'),
+            );
+            expect(statusEdit).toBeDefined();
         });
     });
 

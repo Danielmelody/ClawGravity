@@ -5,7 +5,6 @@ import type { ExtractionMode } from '../utils/config';
 import { CdpConnectionPool } from './cdpConnectionPool';
 import { CdpService } from './cdpService';
 import { ChatSessionService } from './chatSessionService';
-import { ResponseMonitor } from './responseMonitor';
 import { GrpcResponseMonitor } from './grpcResponseMonitor';
 import { WorkspaceService } from './workspaceService';
 
@@ -225,10 +224,8 @@ export class AgentRouter {
             }
         }
 
-        // Fallback: last 500 chars (likely the concluding part)
-        logger.debug('[AgentRouter] No ## Summary found — using fallback');
-        const fallback = response.length > 500 ? '...' + response.slice(-500) : response;
-        return fallback;
+        logger.debug('[AgentRouter] No ## Summary found');
+        return '';
     }
 
     /**
@@ -257,6 +254,9 @@ export class AgentRouter {
     private async waitForResponse(cdp: CdpService): Promise<string | null> {
         const grpcClient = await cdp.getGrpcClient();
         const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
+        if (!grpcClient || !cascadeId) {
+            throw new Error('gRPC monitor unavailable for sub-agent response');
+        }
 
         return new Promise((resolve, reject) => {
             const monitorConfig = {
@@ -267,21 +267,12 @@ export class AgentRouter {
                 },
             };
 
-            const monitor = (grpcClient && cascadeId)
-                ? new GrpcResponseMonitor({
-                    grpcClient,
-                    cascadeId,
-                    maxDurationMs: this.responseTimeoutMs,
-                    ...monitorConfig
-                })
-                : new ResponseMonitor({
-                    cdpService: cdp,
-                    pollIntervalMs: 2000,
-                    maxDurationMs: this.responseTimeoutMs,
-                    stopGoneConfirmCount: 3,
-                    extractionMode: this.extractionMode,
-                    ...monitorConfig
-                });
+            const monitor = new GrpcResponseMonitor({
+                grpcClient,
+                cascadeId,
+                maxDurationMs: this.responseTimeoutMs,
+                ...monitorConfig
+            });
 
             try {
                 monitor.start();

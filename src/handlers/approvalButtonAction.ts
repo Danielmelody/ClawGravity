@@ -89,19 +89,11 @@ export function createApprovalButtonAction(
             logger.debug(`[ApprovalAction] ${actionLabel} result: ${success}`);
 
             if (success) {
-                // Remove buttons by editing the original message.
-                // If update() fails, fall back to editReply(), then followUp().
                 const updatePayload = { text: `✅ ${actionLabel} completed`, components: [] as any[] };
                 try {
                     await interaction.update(updatePayload);
                 } catch (updateErr) {
-                    logger.warn('[ApprovalAction] update failed, trying editReply:', updateErr);
-                    try {
-                        await interaction.editReply(updatePayload);
-                    } catch (editErr) {
-                        logger.warn('[ApprovalAction] editReply failed, sending followUp:', editErr);
-                        await interaction.followUp({ text: `✅ ${actionLabel} completed` }).catch(() => {});
-                    }
+                    logger.warn('[ApprovalAction] update failed:', updateErr);
                 }
             } else {
                 await interaction

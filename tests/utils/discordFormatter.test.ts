@@ -2,7 +2,6 @@ import {
     formatForDiscord,
     sanitizeActivityLines,
     splitOutputAndLogs,
-    separateOutputForDelivery,
 } from '../../src/utils/discordFormatter';
 
 describe('discordFormatter', () => {
@@ -95,50 +94,6 @@ describe('discordFormatter', () => {
             expect(output).toContain('Running tests');
             expect(output).not.toContain('tool call');
             expect(output).not.toContain('show details');
-        });
-    });
-
-    describe('separateOutputForDelivery', () => {
-        it('prioritizes DOM results over raw string when DOM extraction succeeds', () => {
-            const raw = [
-                'jina-mcp-server / search_web',
-                'Full output written to output.txt',
-                '最終回答本文',
-                'Good',
-            ].join('\n');
-
-            const separated = separateOutputForDelivery({
-                rawText: raw,
-                domSource: 'dom-structured',
-                domOutputText: '最終回答本文',
-                domActivityLines: ['jina-mcp-server / search_web'],
-            });
-
-            expect(separated.source).toBe('dom-structured');
-            expect(separated.output).toBe('最終回答本文');
-            expect(separated.logs).toBe('jina-mcp-server / search_web');
-        });
-
-        it('falls back to legacy string separation only when DOM extraction fails', () => {
-            const raw = [
-                'jina-mcp-server / search_web',
-                'Full output written to',
-                'output.txt#L1-10',
-                '',
-                '最終回答本文',
-                '',
-                'Good',
-            ].join('\n');
-
-            const separated = separateOutputForDelivery({
-                rawText: raw,
-                domSource: 'legacy-fallback',
-            });
-
-            expect(separated.source).toBe('legacy-fallback');
-            expect(separated.output).toContain('最終回答本文');
-            expect(separated.output).not.toContain('jina-mcp-server / search_web');
-            expect(separated.logs).toContain('jina-mcp-server / search_web');
         });
     });
 });

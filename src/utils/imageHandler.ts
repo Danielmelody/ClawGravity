@@ -126,8 +126,8 @@ export async function toDiscordAttachment(image: ExtractedResponseImage, index: 
 
     if (!buffer || buffer.length === 0) return null;
 
-    const fallbackExt = mimeTypeToExtension(mimeType);
-    const baseName = sanitizeFileName(image.name || `generated-image-${index + 1}.${fallbackExt}`);
-    const finalName = IMAGE_EXT_PATTERN.test(baseName) ? baseName : `${baseName}.${fallbackExt}`;
+    const inferredExt = mimeTypeToExtension(mimeType);
+    const baseName = sanitizeFileName(image.name || `generated-image-${index + 1}.${inferredExt}`);
+    const finalName = IMAGE_EXT_PATTERN.test(baseName) ? baseName : `${baseName}.${inferredExt}`;
     return new AttachmentBuilder(buffer, { name: finalName });
 }

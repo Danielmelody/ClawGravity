@@ -25,6 +25,7 @@ describe('ApprovalDetector - approval button detection and remote execution', ()
         jest.useFakeTimers();
         mockCdpService = new MockedCdpService() as jest.Mocked<CdpService>;
         mockCdpService.getPrimaryContextId = jest.fn().mockReturnValue(42);
+        mockCdpService.executeVscodeCommand = jest.fn();
         jest.clearAllMocks();
     });
 
@@ -122,12 +123,10 @@ describe('ApprovalDetector - approval button detection and remote execution', ()
     });
 
     // ──────────────────────────────────────────────────────
-    // Test 4: approveButton() can click the button
+    // Test 4: approveButton() uses the backend command
     // ──────────────────────────────────────────────────────
-    it('executes a click script via CDP when approveButton() is called', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: { ok: true } }
-        });
+    it('executes the backend command when approveButton() is called', async () => {
+        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
 
         detector = new ApprovalDetector({
             cdpService: mockCdpService,
@@ -138,23 +137,15 @@ describe('ApprovalDetector - approval button detection and remote execution', ()
         const result = await detector.approveButton('Allow');
 
         expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Allow'),
-                returnByValue: true,
-                contextId: 42,
-            })
-        );
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.agent.acceptAgentStep');
+        expect(mockCdpService.call).not.toHaveBeenCalled();
     });
 
     // ──────────────────────────────────────────────────────
-    // Test 5: denyButton() can click (deny) the button
+    // Test 5: denyButton() uses the backend command
     // ──────────────────────────────────────────────────────
-    it('executes a deny click script via CDP when denyButton() is called', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: { ok: true } }
-        });
+    it('executes the backend command when denyButton() is called', async () => {
+        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
 
         detector = new ApprovalDetector({
             cdpService: mockCdpService,
@@ -165,14 +156,8 @@ describe('ApprovalDetector - approval button detection and remote execution', ()
         const result = await detector.denyButton('Deny');
 
         expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Deny'),
-                returnByValue: true,
-                contextId: 42,
-            })
-        );
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.agent.rejectAgentStep');
+        expect(mockCdpService.call).not.toHaveBeenCalled();
     });
 
     it('alwaysAllowButton() can directly click Allow This Conversation', async () => {
@@ -345,67 +330,37 @@ describe('ApprovalDetector - approval button detection and remote execution', ()
     });
 
     // ──────────────────────────────────────────────────────
-    // Test 10: Button text propagates correctly through the detection-to-click flow
+    // Test 10: approveButton() returns false when the backend command is unavailable
     // ──────────────────────────────────────────────────────
-    it('approveButton() without arguments uses the detected approveText', async () => {
-        const mockInfo = makeApprovalInfo({ approveText: '承認する' });
-
-        // 1st call: for polling (detection)
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })
-            // 2nd call: for approveButton (click)
-            .mockResolvedValueOnce({ result: { value: { ok: true } } });
+    it('returns false when approveButton() command execution fails', async () => {
+        mockCdpService.executeVscodeCommand.mockRejectedValue(new Error('command failed'));
 
         detector = new ApprovalDetector({
             cdpService: mockCdpService,
             pollIntervalMs: 500,
             onApprovalRequired: jest.fn(),
         });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500); // detection
-
-        // Call approveButton() without arguments
         const result = await detector.approveButton();
 
-        expect(result).toBe(true);
-        // The detected approveText is used in the 2nd call
-        expect(mockCdpService.call).toHaveBeenLastCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('承認する'),
-            })
-        );
+        expect(result).toBe(false);
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.agent.acceptAgentStep');
     });
 
     // ──────────────────────────────────────────────────────
-    // Test 11: denyButton() without arguments uses the detected denyText
+    // Test 11: denyButton() returns false when the backend command is unavailable
     // ──────────────────────────────────────────────────────
-    it('denyButton() without arguments uses the detected denyText', async () => {
-        const mockInfo = makeApprovalInfo({ denyText: 'キャンセル' });
-
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })
-            .mockResolvedValueOnce({ result: { value: { ok: true } } });
+    it('returns false when denyButton() command execution fails', async () => {
+        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: false } as any);
 
         detector = new ApprovalDetector({
             cdpService: mockCdpService,
             pollIntervalMs: 500,
             onApprovalRequired: jest.fn(),
         });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);
-
         const result = await detector.denyButton();
 
-        expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenLastCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('キャンセル'),
-            })
-        );
+        expect(result).toBe(false);
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.agent.rejectAgentStep');
     });
 
     // ──────────────────────────────────────────────────────

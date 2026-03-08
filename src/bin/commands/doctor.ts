@@ -84,7 +84,7 @@ export async function doctorAction(): Promise<void> {
     if (ConfigLoader.configExists()) {
         ok(`Config file found: ${configFilePath}`);
     } else {
-        warn(`Config file not found: ${configFilePath} (optional — .env fallback used)`);
+        warn(`Config file not found: ${configFilePath} (optional — using .env defaults)`);
     }
 
     // 3. .env file check

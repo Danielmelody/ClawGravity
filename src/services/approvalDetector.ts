@@ -27,7 +27,7 @@ export interface ApprovalDetectorOptions {
 /**
  * Approval button detection script for the Antigravity UI
  *
- * Detects allow/deny button pairs and extracts descriptions with fallbacks.
+ * Detects allow/deny button pairs and extracts descriptions from several DOM sources.
  */
 const DETECT_APPROVAL_SCRIPT = `(() => {
     const ALLOW_ONCE_PATTERNS = ['allow once', 'allow one time', '今回のみ許可', '1回のみ許可', '一度許可'];
@@ -85,7 +85,7 @@ const DETECT_APPROVAL_SCRIPT = `(() => {
     const alwaysAllowText = alwaysAllowBtn ? (alwaysAllowBtn.textContent || '').trim() : '';
     const denyText = (denyBtn.textContent || '').trim();
 
-    // Description extraction (multiple fallbacks)
+    // Description extraction order
     let description = '';
 
     // 1. p or .description inside dialog/modal
@@ -111,7 +111,7 @@ const DETECT_APPROVAL_SCRIPT = `(() => {
         }
     }
 
-    // 3. aria-label fallback
+    // 3. aria-label
     if (!description) {
         const ariaLabel = approveBtn.getAttribute('aria-label') || '';
         if (ariaLabel) description = ariaLabel;
@@ -344,36 +344,26 @@ export class ApprovalDetector {
     /**
      * Approve the current agent step via VS Code command.
      * Uses `antigravity.agent.acceptAgentStep` from the verified SDK.
-     * Falls back to DOM click if command fails.
      */
-    async approveButton(buttonText?: string): Promise<boolean> {
+    async approveButton(_buttonText?: string): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.agent.acceptAgentStep');
             if (result?.ok) {
                 logger.debug('[ApprovalDetector] Approved via VS Code command');
                 return true;
             }
-        } catch { /* fallback to DOM */ }
-        // DOM fallback
-        const text = buttonText ?? this.lastDetectedInfo?.approveText ?? 'Allow';
-        return this.clickButton(text);
+            return false;
+        } catch (error) {
+            logger.error('[ApprovalDetector] Approve command failed:', error);
+            return false;
+        }
     }
 
     /**
      * Select "Allow This Conversation / Always Allow".
-     * Tries VS Code command first, DOM fallback if needed.
+     * Uses DOM interaction because there is no dedicated backend command for this choice.
      */
     async alwaysAllowButton(): Promise<boolean> {
-        // Try command-based approach first
-        try {
-            const result = await this.cdpService.executeVscodeCommand('antigravity.agent.acceptAgentStep');
-            if (result?.ok) {
-                logger.debug('[ApprovalDetector] Always-allow via VS Code command');
-                return true;
-            }
-        } catch { /* fallback to DOM */ }
-
-        // DOM fallback: expand dropdown and click
         const directCandidates = [
             this.lastDetectedInfo?.alwaysAllowText,
             'Allow This Conversation',
@@ -405,18 +395,19 @@ export class ApprovalDetector {
     /**
      * Reject the current agent step via VS Code command.
      * Uses `antigravity.agent.rejectAgentStep` from the verified SDK.
-     * Falls back to DOM click if command fails.
      */
-    async denyButton(buttonText?: string): Promise<boolean> {
+    async denyButton(_buttonText?: string): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.agent.rejectAgentStep');
             if (result?.ok) {
                 logger.debug('[ApprovalDetector] Denied via VS Code command');
                 return true;
             }
-        } catch { /* fallback to DOM */ }
-        const text = buttonText ?? this.lastDetectedInfo?.denyText ?? 'Deny';
-        return this.clickButton(text);
+            return false;
+        } catch (error) {
+            logger.error('[ApprovalDetector] Deny command failed:', error);
+            return false;
+        }
     }
 
     /**

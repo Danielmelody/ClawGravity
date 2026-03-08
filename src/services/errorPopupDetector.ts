@@ -92,9 +92,9 @@ const DETECT_ERROR_POPUP_SCRIPT = `(() => {
         const buttons = allButtons
             .map(btn => (btn.textContent || '').trim())
             .filter(t => t.length > 0 && t !== 'Good' && t !== 'Bad');
-        const fallbackTitle = title || (body.toLowerCase().startsWith('error ') ? 'Error' : 'Agent Error');
+        const resolvedTitle = title || (body.toLowerCase().startsWith('error ') ? 'Error' : 'Agent Error');
 
-        return { title: fallbackTitle, body, buttons };
+        return { title: resolvedTitle, body, buttons };
     };
 
     // Try dialog/modal first
@@ -247,7 +247,7 @@ export class ErrorPopupDetector {
 
     /**
      * Click the Retry button.
-     * Tries VS Code command `antigravity.command.retry` first, DOM fallback if needed.
+     * Uses VS Code command `antigravity.command.retry`.
      * @returns true if click succeeded
      */
     async clickRetryButton(): Promise<boolean> {
@@ -257,8 +257,11 @@ export class ErrorPopupDetector {
                 logger.debug('[ErrorPopupDetector] Retried via VS Code command');
                 return true;
             }
-        } catch { /* fallback to DOM */ }
-        return this.clickButton('Retry');
+            return false;
+        } catch (error) {
+            logger.error('[ErrorPopupDetector] Retry command failed:', error);
+            return false;
+        }
     }
 
     /**

@@ -18,13 +18,6 @@ jest.mock('../../src/services/cdpBridgeManager', () => ({
     getCurrentCdp: jest.fn(),
 }));
 
-jest.mock('../../src/services/responseMonitor', () => ({
-    RESPONSE_SELECTORS: {
-        CLICK_STOP_BUTTON: 'mock_stop_script',
-    },
-    ResponseMonitor: jest.fn(),
-}));
-
 jest.mock('../../src/ui/modeUi', () => ({
     buildModePayload: jest.fn().mockReturnValue({ richContent: { title: 'Mode' }, components: [] }),
 }));
@@ -56,6 +49,10 @@ jest.mock('../../src/utils/logBuffer', () => ({
     },
 }));
 
+jest.mock('../../src/services/processRestartService', () => ({
+    restartCurrentProcess: jest.fn(),
+}));
+
 import { getCurrentCdp } from '../../src/services/cdpBridgeManager';
 import { buildModePayload } from '../../src/ui/modeUi';
 import { buildModelsPayload } from '../../src/ui/modelsUi';
@@ -63,6 +60,7 @@ import { buildAutoAcceptPayload } from '../../src/ui/autoAcceptUi';
 import { buildTemplatePayload } from '../../src/ui/templateUi';
 import { buildScreenshotPayload } from '../../src/ui/screenshotUi';
 import { logBuffer } from '../../src/utils/logBuffer';
+import { restartCurrentProcess } from '../../src/services/processRestartService';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -308,29 +306,16 @@ describe('handleTelegramCommand — /status', () => {
 // ---------------------------------------------------------------------------
 
 describe('handleTelegramCommand — /stop', () => {
-    it('stops via active monitor when available', async () => {
+    it('cancels via gRPC and stops the active monitor when available', async () => {
+        const cancelCascade = jest.fn().mockResolvedValue(undefined);
         const mockMonitor = {
             isActive: jest.fn().mockReturnValue(true),
-            clickStopButton: jest.fn().mockResolvedValue({ ok: true, method: 'css' }),
-        };
-        const activeMonitors = new Map<string, any>([['test-project', mockMonitor]]);
-        const message = createMockMessage();
-        const bridge = createMockBridge({ lastActiveWorkspace: 'test-project' });
-
-        await handleTelegramCommand({ bridge, activeMonitors }, message as any, { command: 'stop', args: '' });
-
-        expect(mockMonitor.clickStopButton).toHaveBeenCalled();
-        expect(message.reply).toHaveBeenCalledWith({ text: 'Generation stopped.' });
-    });
-
-    it('falls back to direct CDP when monitor click fails', async () => {
-        const mockMonitor = {
-            isActive: jest.fn().mockReturnValue(true),
-            clickStopButton: jest.fn().mockResolvedValue({ ok: false, error: 'not found' }),
+            stop: jest.fn().mockResolvedValue(undefined),
         };
         const activeMonitors = new Map<string, any>([['test-project', mockMonitor]]);
         const mockCdp = {
-            call: jest.fn().mockResolvedValue({ result: { value: { ok: true, method: 'css' } } }),
+            getGrpcClient: jest.fn().mockResolvedValue({ cancelCascade }),
+            getActiveCascadeId: jest.fn().mockResolvedValue('cascade-123'),
         };
         (getCurrentCdp as jest.Mock).mockReturnValue(mockCdp);
         const message = createMockMessage();
@@ -338,10 +323,8 @@ describe('handleTelegramCommand — /stop', () => {
 
         await handleTelegramCommand({ bridge, activeMonitors }, message as any, { command: 'stop', args: '' });
 
-        expect(mockCdp.call).toHaveBeenCalledWith('Runtime.evaluate', {
-            expression: 'mock_stop_script',
-            returnByValue: true,
-        });
+        expect(cancelCascade).toHaveBeenCalledWith('cascade-123');
+        expect(mockMonitor.stop).toHaveBeenCalled();
         expect(message.reply).toHaveBeenCalledWith({ text: 'Generation stopped.' });
     });
 
@@ -355,9 +338,11 @@ describe('handleTelegramCommand — /stop', () => {
         expect(message.reply).toHaveBeenCalledWith({ text: 'No active workspace connection.' });
     });
 
-    it('clicks stop button via direct CDP and confirms (value.ok)', async () => {
+    it('cancels via gRPC without an active monitor', async () => {
+        const cancelCascade = jest.fn().mockResolvedValue(undefined);
         const mockCdp = {
-            call: jest.fn().mockResolvedValue({ result: { value: { ok: true, method: 'css' } } }),
+            getGrpcClient: jest.fn().mockResolvedValue({ cancelCascade }),
+            getActiveCascadeId: jest.fn().mockResolvedValue('cascade-123'),
         };
         (getCurrentCdp as jest.Mock).mockReturnValue(mockCdp);
         const message = createMockMessage();
@@ -365,16 +350,13 @@ describe('handleTelegramCommand — /stop', () => {
 
         await handleTelegramCommand({ bridge }, message as any, { command: 'stop', args: '' });
 
-        expect(mockCdp.call).toHaveBeenCalledWith('Runtime.evaluate', {
-            expression: 'mock_stop_script',
-            returnByValue: true,
-        });
+        expect(cancelCascade).toHaveBeenCalledWith('cascade-123');
         expect(message.reply).toHaveBeenCalledWith({ text: 'Generation stopped.' });
     });
 
-    it('reports when stop button is not found via direct CDP', async () => {
+    it('reports when no active backend stream is available', async () => {
         const mockCdp = {
-            call: jest.fn().mockResolvedValue({ result: { value: { ok: false } } }),
+            getGrpcClient: jest.fn().mockResolvedValue(null),
         };
         (getCurrentCdp as jest.Mock).mockReturnValue(mockCdp);
         const message = createMockMessage();
@@ -383,13 +365,16 @@ describe('handleTelegramCommand — /stop', () => {
         await handleTelegramCommand({ bridge }, message as any, { command: 'stop', args: '' });
 
         expect(message.reply).toHaveBeenCalledWith({
-            text: 'Stop button not found (generation may have already finished).',
+            text: 'No active backend stream to stop.',
         });
     });
 
-    it('handles CDP call errors gracefully', async () => {
+    it('handles backend cancel errors gracefully', async () => {
         const mockCdp = {
-            call: jest.fn().mockRejectedValue(new Error('CDP timeout')),
+            getGrpcClient: jest.fn().mockResolvedValue({
+                cancelCascade: jest.fn().mockRejectedValue(new Error('RPC timeout')),
+            }),
+            getActiveCascadeId: jest.fn().mockResolvedValue('cascade-123'),
         };
         (getCurrentCdp as jest.Mock).mockReturnValue(mockCdp);
         const message = createMockMessage();
@@ -397,17 +382,19 @@ describe('handleTelegramCommand — /stop', () => {
 
         await handleTelegramCommand({ bridge }, message as any, { command: 'stop', args: '' });
 
-        expect(message.reply).toHaveBeenCalledWith({ text: 'Failed to click stop button.' });
+        expect(message.reply).toHaveBeenCalledWith({ text: 'Failed to stop generation.' });
     });
 
-    it('skips inactive monitor and falls back to CDP', async () => {
+    it('skips inactive monitor and still cancels via gRPC', async () => {
+        const cancelCascade = jest.fn().mockResolvedValue(undefined);
         const mockMonitor = {
             isActive: jest.fn().mockReturnValue(false),
-            clickStopButton: jest.fn(),
+            stop: jest.fn(),
         };
         const activeMonitors = new Map<string, any>([['test-project', mockMonitor]]);
         const mockCdp = {
-            call: jest.fn().mockResolvedValue({ result: { value: { ok: true, method: 'css' } } }),
+            getGrpcClient: jest.fn().mockResolvedValue({ cancelCascade }),
+            getActiveCascadeId: jest.fn().mockResolvedValue('cascade-123'),
         };
         (getCurrentCdp as jest.Mock).mockReturnValue(mockCdp);
         const message = createMockMessage();
@@ -415,9 +402,37 @@ describe('handleTelegramCommand — /stop', () => {
 
         await handleTelegramCommand({ bridge, activeMonitors }, message as any, { command: 'stop', args: '' });
 
-        expect(mockMonitor.clickStopButton).not.toHaveBeenCalled();
-        expect(mockCdp.call).toHaveBeenCalled();
+        expect(mockMonitor.stop).not.toHaveBeenCalled();
+        expect(cancelCascade).toHaveBeenCalledWith('cascade-123');
         expect(message.reply).toHaveBeenCalledWith({ text: 'Generation stopped.' });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// handleTelegramCommand — /restart
+// ---------------------------------------------------------------------------
+
+describe('handleTelegramCommand — /restart', () => {
+    it('starts a full process restart without requiring an active CDP connection', async () => {
+        (restartCurrentProcess as jest.Mock).mockResolvedValue({ ok: true, pid: 4321 });
+        const message = createMockMessage();
+        const bridge = createMockBridge();
+
+        await handleTelegramCommand({ bridge }, message as any, { command: 'restart', args: '' });
+
+        expect(message.reply).toHaveBeenCalledWith({ text: '🔄 Restarting bot process...' });
+        expect(restartCurrentProcess).toHaveBeenCalled();
+    });
+
+    it('reports restart failures cleanly', async () => {
+        (restartCurrentProcess as jest.Mock).mockResolvedValue({ ok: false, error: 'spawn failed' });
+        const message = createMockMessage();
+        const bridge = createMockBridge();
+
+        await handleTelegramCommand({ bridge }, message as any, { command: 'restart', args: '' });
+
+        expect(message.reply).toHaveBeenNthCalledWith(1, { text: '🔄 Restarting bot process...' });
+        expect(message.reply).toHaveBeenNthCalledWith(2, { text: 'Failed to restart bot: spawn failed' });
     });
 });
 

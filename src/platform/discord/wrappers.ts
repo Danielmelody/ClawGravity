@@ -202,11 +202,11 @@ export function toDiscordPayload(
 const EPHEMERAL_ALLOWED: ToDiscordPayloadOpts = Object.freeze({ allowEphemeral: true });
 
 /**
- * Build a minimal PlatformChannel fallback when `interaction.channel` is null
+ * Build a minimal PlatformChannel adapter when `interaction.channel` is null
  * (e.g. DMs or uncached channels). Uses `interaction.channelId` which is
  * always available as a string.
  */
-function buildFallbackChannel(channelId: string): PlatformChannel {
+function buildSyntheticChannel(channelId: string): PlatformChannel {
     return {
         id: channelId,
         platform: 'discord',
@@ -306,7 +306,7 @@ export function wrapDiscordButton(interaction: ButtonInteraction): PlatformButto
     const user = wrapDiscordUser(interaction.user);
     const channel = interaction.channel
         ? wrapDiscordChannel(interaction.channel as TextChannel)
-        : buildFallbackChannel(interaction.channelId);
+        : buildSyntheticChannel(interaction.channelId);
 
     return {
         id: interaction.id,
@@ -339,7 +339,7 @@ export function wrapDiscordSelect(interaction: StringSelectMenuInteraction): Pla
     const user = wrapDiscordUser(interaction.user);
     const channel = interaction.channel
         ? wrapDiscordChannel(interaction.channel as TextChannel)
-        : buildFallbackChannel(interaction.channelId);
+        : buildSyntheticChannel(interaction.channelId);
 
     return {
         id: interaction.id,
@@ -388,7 +388,7 @@ export function wrapDiscordCommand(interaction: ChatInputCommandInteraction): Pl
     const user = wrapDiscordUser(interaction.user);
     const channel = interaction.channel
         ? wrapDiscordChannel(interaction.channel as TextChannel)
-        : buildFallbackChannel(interaction.channelId);
+        : buildSyntheticChannel(interaction.channelId);
     const options = extractCommandOptions(interaction);
 
     return {

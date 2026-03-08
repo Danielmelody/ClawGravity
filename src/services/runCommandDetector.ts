@@ -228,35 +228,37 @@ export class RunCommandDetector {
     /**
      * Accept/run the pending terminal command via VS Code command.
      * Uses `antigravity.terminalCommand.run` from the verified SDK.
-     * Falls back to DOM click if command fails.
      */
-    async runButton(buttonText?: string): Promise<boolean> {
+    async runButton(_buttonText?: string): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.terminalCommand.run');
             if (result?.ok) {
                 logger.debug('[RunCommandDetector] Ran via VS Code command');
                 return true;
             }
-        } catch { /* fallback to DOM */ }
-        const text = buttonText ?? this.lastDetectedInfo?.runText ?? 'Run';
-        return this.clickButton(text);
+            return false;
+        } catch (error) {
+            logger.error('[RunCommandDetector] Run command failed:', error);
+            return false;
+        }
     }
 
     /**
      * Reject the pending terminal command via VS Code command.
      * Uses `antigravity.terminalCommand.reject` from the verified SDK.
-     * Falls back to DOM click if command fails.
      */
-    async rejectButton(buttonText?: string): Promise<boolean> {
+    async rejectButton(_buttonText?: string): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.terminalCommand.reject');
             if (result?.ok) {
                 logger.debug('[RunCommandDetector] Rejected via VS Code command');
                 return true;
             }
-        } catch { /* fallback to DOM */ }
-        const text = buttonText ?? this.lastDetectedInfo?.rejectText ?? 'Reject';
-        return this.clickButton(text);
+            return false;
+        } catch (error) {
+            logger.error('[RunCommandDetector] Reject command failed:', error);
+            return false;
+        }
     }
 
     /**

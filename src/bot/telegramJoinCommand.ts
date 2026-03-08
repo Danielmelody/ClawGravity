@@ -11,16 +11,16 @@ export const TG_JOIN_SELECT_ID = 'tg_join_select';
 const MAX_TELEGRAM_HISTORY_CHARS = 3800;
 
 export class TelegramSessionStateStore {
-    constructor(private readonly recentMessageRepo?: TelegramRecentMessageRepository) {}
+    constructor(private readonly recentMessageRepo?: TelegramRecentMessageRepository) { }
 
-    private readonly selectedSessionByChat = new Map<string, string>();
+    private readonly selectedSessionByChat = new Map<string, { title: string, id: string }>();
     private readonly recentMessagesByChat = new Map<string, string[]>();
 
-    setSelectedSession(chatId: string, sessionTitle: string): void {
-        this.selectedSessionByChat.set(chatId, sessionTitle);
+    setSelectedSession(chatId: string, sessionTitle: string, cascadeId: string = ''): void {
+        this.selectedSessionByChat.set(chatId, { title: sessionTitle, id: cascadeId });
     }
 
-    getSelectedSession(chatId: string): string | null {
+    getSelectedSession(chatId: string): { title: string, id: string } | null {
         return this.selectedSessionByChat.get(chatId) ?? null;
     }
 
@@ -97,7 +97,7 @@ export async function handleTelegramJoinCommand(
         customId: TG_JOIN_SELECT_ID,
         placeholder: 'Select a history session',
         options: sessions.slice(0, 25).map((session) => ({
-            label: session.title === currentTitle ? `${session.title} (current)` : session.title,
+            label: session.title === currentTitle?.title ? `${session.title} (current)` : session.title,
             value: session.title,
         })),
     };
@@ -138,15 +138,15 @@ export async function handleTelegramJoinSelect(
         return;
     }
 
-    const activateResult = await deps.chatSessionService.activateSessionByTitle(cdp, selectedTitle);
-    if (!activateResult.ok) {
-        await interaction.reply({
-            text: `Failed to join session: ${escapeHtml(activateResult.error || 'unknown error')}`,
-        }).catch(logger.error);
-        return;
-    }
+    const sessions = await deps.chatSessionService.listAllSessions(cdp);
+    const selectedSession = sessions.find(s => s.title === selectedTitle);
+    const cascadeId = selectedSession?.cascadeId || '';
 
-    deps.sessionStateStore.setSelectedSession(chatId, selectedTitle);
+    deps.sessionStateStore.setSelectedSession(chatId, selectedTitle, cascadeId);
+
+    if (cascadeId) {
+        cdp.setCachedCascadeId(cascadeId);
+    }
 
     await interaction.update({
         text: `Joined history session: <b>${escapeHtml(selectedTitle)}</b>\nLoading conversation history into Telegram...`,

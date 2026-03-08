@@ -230,6 +230,11 @@ const pingCommand = new SlashCommandBuilder()
     .setName('ping')
     .setDescription(t('Check bot latency'));
 
+/** /restart command definition */
+const restartCommand = new SlashCommandBuilder()
+    .setName('restart')
+    .setDescription(t('Fully restart the bot process'));
+
 /** Array of commands to register */
 export const slashCommands = [
     helpCommand,
@@ -250,6 +255,7 @@ export const slashCommands = [
     scheduleCommand,
     pingCommand,
     logsCommand,
+    restartCommand,
 ];
 
 /**

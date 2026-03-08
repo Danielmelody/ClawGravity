@@ -64,7 +64,7 @@ export interface CascadeStreamEvent {
     raw?: any;
 }
 
-/** Known model IDs (from antigravity-sdk) */
+/** Known legacy numeric model IDs (from older antigravity-sdk payloads) */
 export const Models = {
     GEMINI_FLASH: 1018,
     GEMINI_PRO_LOW: 1164,
@@ -74,7 +74,7 @@ export const Models = {
     GPT_OSS: 342,
 } as const;
 
-export type ModelId = typeof Models[keyof typeof Models] | number;
+export type ModelId = typeof Models[keyof typeof Models] | number | string;
 
 // ---------------------------------------------------------------------------
 // GrpcCascadeClient
@@ -110,7 +110,7 @@ export class GrpcCascadeClient extends EventEmitter {
      * Create a new headless cascade and optionally send a message.
      *
      * @param text Optional text to send
-     * @param model Optional model ID
+     * @param model Optional model identifier
      * @returns cascadeId or null
      */
     async createCascade(text?: string, model?: ModelId): Promise<string | null> {
@@ -123,7 +123,11 @@ export class GrpcCascadeClient extends EventEmitter {
         logger.info(`[GrpcCascadeClient] Cascade created: ${cascadeId}`);
 
         if (text) {
-            await this.sendMessage(cascadeId, text, model);
+            const sendResult = await this.sendMessage(cascadeId, text, model);
+            if (!sendResult.ok) {
+                logger.warn(`[GrpcCascadeClient] Initial send failed for cascade ${cascadeId}: ${sendResult.error}`);
+                return null;
+            }
         }
 
         return cascadeId;
@@ -135,7 +139,7 @@ export class GrpcCascadeClient extends EventEmitter {
      *
      * @param cascadeId The conversation/session ID
      * @param text The message text
-     * @param model Optional model ID
+     * @param model Optional model identifier
      */
     async sendMessage(
         cascadeId: string,
@@ -144,17 +148,22 @@ export class GrpcCascadeClient extends EventEmitter {
     ): Promise<{ ok: boolean; data?: any; error?: string }> {
         // Verified payload format via E2E testing:
         //   items: [{text}]  (NOT chunk/case)
-        //   planModel: number (NOT requestedModel.choice)
+        //   planModel: model identifier string or legacy numeric ID
         //   conversational: {} (NOT plannerTypeConfig.case)
+        //
+        // When model is NOT specified, omit planModel entirely so the
+        // server uses the user's UI-selected model (not a hardcoded default).
+        const plannerConfig: any = {
+            conversational: {},
+        };
+        if (model != null) {
+            plannerConfig.planModel = model;
+        }
+
         const payload: any = {
             cascadeId,
             items: [{ text }],
-            cascadeConfig: {
-                plannerConfig: {
-                    conversational: {},
-                    planModel: model || Models.GEMINI_FLASH,
-                },
-            },
+            cascadeConfig: { plannerConfig },
         };
 
         try {
@@ -196,7 +205,7 @@ export class GrpcCascadeClient extends EventEmitter {
 
     /**
      * Open a streaming connection to receive real-time cascade updates.
-     * Replaces polling-based ResponseMonitor with event-driven listening.
+     * Used by GrpcResponseMonitor for event-driven listening.
      *
      * Emits events:
      *   - 'data' (CascadeStreamEvent): each response chunk
@@ -217,30 +226,17 @@ export class GrpcCascadeClient extends EventEmitter {
         const proto = conn.useTls ? 'https' : 'http';
         const url = `${proto}://127.0.0.1:${conn.port}/exa.language_server_pb.LanguageServerService/StreamCascadeReactiveUpdates`;
 
+        // Use the same content-type format as unary RPCs (application/json)
+        // to avoid HTTP 415 from newer LS versions that reject connect+json.
         const jsonBody = JSON.stringify({ cascadeId });
-        const jsonBuf = Buffer.from(jsonBody, 'utf8');
-        // Envelope: Data frame (5 bytes + payload) + EOS frame (5 bytes + payload {})
-        const eosBody = JSON.stringify({});
-        const eosBuf = Buffer.from(eosBody, 'utf8');
-        const envelope = Buffer.alloc(10 + jsonBuf.length + eosBuf.length);
-
-        // Data frame
-        envelope[0] = 0x00;
-        envelope.writeUInt32BE(jsonBuf.length, 1);
-        jsonBuf.copy(envelope, 5);
-
-        // EOS frame (flag 0x02 = Trailer)
-        const eosOffset = 5 + jsonBuf.length;
-        envelope[eosOffset] = 0x02;
-        envelope.writeUInt32BE(eosBuf.length, eosOffset + 1);
-        eosBuf.copy(envelope, eosOffset + 5);
 
         const headers: Record<string, string | number> = {
-            'Content-Type': 'application/connect+json; connect=v1',
-            'Content-Length': envelope.length,
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(jsonBody),
+            'connect-protocol-version': '1',
         };
         if (conn.csrfToken) {
-            headers['X-Codeium-Csrf-Token'] = conn.csrfToken;
+            headers['x-codeium-csrf-token'] = conn.csrfToken;
         }
 
         const reqOptions: any = {
@@ -252,8 +248,6 @@ export class GrpcCascadeClient extends EventEmitter {
         }
 
         const req = httpModule.request(url, reqOptions, (res) => {
-            let buffer = '';
-
             // Diagnostic: log HTTP status and cascade ID
             logger.warn(`[GrpcStream] HTTP ${res.statusCode} for cascade=${cascadeId.slice(0, 12)}... url=${url}`);
             if (res.statusCode && res.statusCode !== 200) {
@@ -276,44 +270,77 @@ export class GrpcCascadeClient extends EventEmitter {
                     logger.warn(`[GrpcStream] First chunk: ${chunk.length} bytes, hex=${chunk.slice(0, 50).toString('hex')}`);
                 }
 
-                // Accumulate raw binary buffer for Connect envelope parsing
+                // Accumulate raw binary buffer for parsing
                 rawBuffer = Buffer.concat([rawBuffer, chunk]);
 
-                // Try parsing Connect streaming envelopes from the binary buffer
-                while (rawBuffer.length >= 5) {
-                    const flags = rawBuffer[0];
-                    const messageLength = rawBuffer.readUInt32BE(1);
+                // Detect format: Connect streaming envelope (binary frames) vs plain JSON
+                // Connect envelopes start with flag byte (0x00 data, 0x02 trailer)
+                // Plain JSON starts with '{' (0x7B)
+                if (rawBuffer.length > 0 && (rawBuffer[0] === 0x00 || rawBuffer[0] === 0x02)) {
+                    // Connect streaming envelope format
+                    while (rawBuffer.length >= 5) {
+                        const flags = rawBuffer[0];
+                        const messageLength = rawBuffer.readUInt32BE(1);
 
-                    if (rawBuffer.length < 5 + messageLength) {
-                        break; // Need more data
-                    }
+                        if (rawBuffer.length < 5 + messageLength) {
+                            break; // Need more data
+                        }
 
-                    const messageData = rawBuffer.slice(5, 5 + messageLength);
-                    rawBuffer = rawBuffer.slice(5 + messageLength);
+                        const messageData = rawBuffer.slice(5, 5 + messageLength);
+                        rawBuffer = rawBuffer.slice(5 + messageLength);
 
-                    if (flags === 2 || (flags & 0x02)) { // Trailer flag
-                        // End-of-stream trailer
+                        if (flags === 2 || (flags & 0x02)) { // Trailer flag
+                            try {
+                                const trailer = JSON.parse(messageData.toString('utf8'));
+                                if (trailer.error) {
+                                    logger.warn(`[GrpcStream] Trailer error: ${JSON.stringify(trailer.error).slice(0, 300)}`);
+                                }
+                            } catch { /* ignore */ }
+                            continue;
+                        }
+
                         try {
-                            const trailer = JSON.parse(messageData.toString('utf8'));
-                            if (trailer.error) {
-                                logger.warn(`[GrpcStream] Trailer error: ${JSON.stringify(trailer.error).slice(0, 300)}`);
-                            }
-                        } catch { /* ignore */ }
-                        continue;
+                            const text = messageData.toString('utf8');
+                            const parsed = JSON.parse(text);
+                            this.emit('data', this.parseStreamEvent(parsed));
+                        } catch (e) {
+                            logger.warn(`[GrpcStream] Parse failure: ${e}`);
+                        }
                     }
+                } else {
+                    // Plain JSON format (newline-delimited or single object)
+                    const bufStr = rawBuffer.toString('utf8');
+                    const lines = bufStr.split('\n');
 
-                    // Parse the JSON message
-                    try {
-                        const text = messageData.toString('utf8');
-                        const parsed = JSON.parse(text);
-                        this.emit('data', this.parseStreamEvent(parsed));
-                    } catch (e) {
-                        logger.warn(`[GrpcStream] Parse failure: ${e}`);
+                    // Keep the last potentially incomplete line in the buffer
+                    const lastLine = lines.pop() ?? '';
+                    rawBuffer = Buffer.from(lastLine, 'utf8');
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed) continue;
+                        try {
+                            const parsed = JSON.parse(trimmed);
+                            this.emit('data', this.parseStreamEvent(parsed));
+                        } catch (e) {
+                            logger.warn(`[GrpcStream] JSON line parse failure: ${e}`);
+                        }
                     }
                 }
             });
 
             res.on('end', () => {
+                // Try parsing any remaining buffer
+                if (rawBuffer.length > 0) {
+                    const remaining = rawBuffer.toString('utf8').trim();
+                    if (remaining) {
+                        try {
+                            const parsed = JSON.parse(remaining);
+                            this.emit('data', this.parseStreamEvent(parsed));
+                        } catch { /* ignore partial data */ }
+                    }
+                }
+
                 logger.warn(`[GrpcStream] Stream ended, total bytes=${totalBytesReceived}`);
                 this.emit('complete');
             });
@@ -328,7 +355,7 @@ export class GrpcCascadeClient extends EventEmitter {
         });
 
         controller.signal.addEventListener('abort', () => req.destroy());
-        req.write(envelope);
+        req.write(jsonBody);
         req.end();
 
         return controller;
@@ -483,11 +510,6 @@ export async function discoverLSConnection(workspaceHint?: string): Promise<LSCo
         // Phase 2: Find ConnectRPC port via netstat
         const connectPort = await findConnectPort(platform, processInfo.pid, processInfo.extPort);
         if (!connectPort) {
-            // Fallback: try extension_server_port with HTTP
-            if (processInfo.extPort) {
-                logger.debug(`[GrpcDiscovery] Using extension_server_port ${processInfo.extPort} as fallback (HTTP)`);
-                return { port: processInfo.extPort, csrfToken: processInfo.csrfToken, useTls: false };
-            }
             logger.debug('[GrpcDiscovery] Could not find ConnectRPC port');
             return null;
         }

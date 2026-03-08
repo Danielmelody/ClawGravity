@@ -76,35 +76,18 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
             );
         });
 
-        it('should fallback to `open -a Antigravity` if the CLI launch fails on Mac', async () => {
+        it('throws when the CLI launch fails on Mac', async () => {
             setPlatform('darwin');
 
-            // First runCommand fails, second succeeds
-            mockRunCommand
-                .mockRejectedValueOnce(new Error('Command not found'))
-                .mockResolvedValueOnce(undefined);
-
-            mockGetJson
-                .mockRejectedValueOnce(new Error('Initial pre-launch port scan fails'))
-                .mockResolvedValue([{
-                    id: 'new-id',
-                    type: 'page',
-                    title: 'MyProject',
-                    webSocketDebuggerUrl: 'ws://debug',
-                    url: 'file:///workbench'
-                }]);
+            mockRunCommand.mockRejectedValueOnce(new Error('Command not found'));
 
             const workspacePath = '/Users/test/Documents/MyProject';
-            await service.discoverAndConnectForWorkspace(workspacePath);
+            await expect(service.discoverAndConnectForWorkspace(workspacePath)).rejects.toThrow('Command not found');
 
-            expect(mockRunCommand).toHaveBeenCalledTimes(2);
-            expect(mockRunCommand).toHaveBeenNthCalledWith(1,
+            expect(mockRunCommand).toHaveBeenCalledTimes(1);
+            expect(mockRunCommand).toHaveBeenCalledWith(
                 '/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity',
                 ['--new-window', workspacePath]
-            );
-            expect(mockRunCommand).toHaveBeenNthCalledWith(2,
-                'open',
-                ['-a', 'Antigravity', workspacePath]
             );
         });
     });

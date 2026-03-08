@@ -16,7 +16,7 @@ import {
     getCurrentChatTitle,
 } from '../services/cdpBridgeManager';
 import { CdpService } from '../services/cdpService';
-import { ResponseMonitor } from '../services/responseMonitor';
+import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import { WorkspaceService } from '../services/workspaceService';
 import { buildSessionPickerUI } from '../ui/sessionPickerUi';
 import { logger } from '../utils/logger';
@@ -41,8 +41,8 @@ export class JoinCommandHandler {
     private readonly client: Client;
     private readonly extractionMode?: ExtractionMode;
 
-    /** Active ResponseMonitors per workspace (for AI response mirroring) */
-    private readonly activeResponseMonitors = new Map<string, ResponseMonitor>();
+    /** Active gRPC response monitors per workspace (for AI response mirroring) */
+    private readonly activeResponseMonitors = new Map<string, GrpcResponseMonitor>();
 
     constructor(
         chatSessionService: ChatSessionService,
@@ -380,9 +380,9 @@ export class JoinCommandHandler {
 
     /**
      * Route a mirrored PC message to the correct Discord channel and
-     * start a passive ResponseMonitor to capture the AI response.
+     * start a passive gRPC response monitor to capture the AI response.
      *
-     * Routing: chatSessionRepo.findByDisplayName only — no fallbacks.
+     * Routing: chatSessionRepo.findByDisplayName only — single lookup path.
      * Sessions without an explicit channel binding are silently skipped.
      */
     private async routeMirroredMessage(
@@ -418,31 +418,38 @@ export class JoinCommandHandler {
             logger.error('[Mirror] Failed to send user message:', err);
         });
 
-        // Start passive ResponseMonitor to capture the AI response
-        this.startResponseMirror(cdp, projectName, sendable, chatTitle);
+        // Start passive gRPC response monitor to capture the AI response
+        void this.startResponseMirror(cdp, projectName, sendable, chatTitle);
     }
 
     /**
-     * Start a passive ResponseMonitor that sends the AI response to Discord
+     * Start a passive gRPC response monitor that sends the AI response to Discord
      * when generation completes.
      */
-    private startResponseMirror(
+    private async startResponseMirror(
         cdp: CdpService,
         projectName: string,
         channel: { send: (...args: any[]) => Promise<any> },
         chatTitle: string,
-    ): void {
+    ): Promise<void> {
         // Stop previous monitor if still running
         const prev = this.activeResponseMonitors.get(projectName);
         if (prev?.isActive()) {
             prev.stop().catch(() => {});
         }
 
-        const monitor = new ResponseMonitor({
-            cdpService: cdp,
-            pollIntervalMs: 2000,
+        const grpcClient = await cdp.getGrpcClient();
+        const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
+        if (!grpcClient || !cascadeId) {
+            logger.warn(`[Mirror] gRPC monitor unavailable for workspace "${projectName}"`);
+            this.activeResponseMonitors.delete(projectName);
+            return;
+        }
+
+        const monitor = new GrpcResponseMonitor({
+            grpcClient,
+            cascadeId,
             maxDurationMs: 300000,
-            extractionMode: this.extractionMode,
             onComplete: (finalText: string) => {
                 this.activeResponseMonitors.delete(projectName);
                 if (!finalText || finalText.trim().length === 0) return;

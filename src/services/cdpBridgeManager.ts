@@ -53,62 +53,33 @@ function buildSessionRouteKey(projectName: string, sessionTitle: string): string
     return `${projectName}::${normalizeSessionTitle(sessionTitle)}`;
 }
 
-const GET_CURRENT_CHAT_TITLE_SCRIPT = `(() => {
-    const panel = document.querySelector('.antigravity-agent-side-panel');
-    if (!panel) return '';
-    const header = panel.querySelector('div[class*="border-b"]');
-    if (!header) return '';
-    const titleEl = header.querySelector('div[class*="text-ellipsis"]');
-    const title = titleEl ? (titleEl.textContent || '').trim() : '';
-    if (!title || title === 'Agent') return '';
-    return title;
-})()`;
-
 export async function getCurrentChatTitle(cdp: CdpService): Promise<string | null> {
-    // Try gRPC first: get the most recently modified cascade's title
     try {
         const client = await cdp.getGrpcClient();
-        if (client) {
-            const summaries = await client.listCascades();
-            if (summaries && typeof summaries === 'object') {
-                let latestTitle: string | null = null;
-                let latestTime = 0;
+        if (!client) return null;
 
-                for (const [, summary] of Object.entries(summaries)) {
-                    const s = summary as any;
-                    const modTime = s.lastModifiedTimestamp
-                        ? new Date(s.lastModifiedTimestamp).getTime()
-                        : 0;
-                    if (modTime > latestTime) {
-                        latestTime = modTime;
-                        latestTitle = s.name || s.title || null;
-                    }
+        const summaries = await client.listCascades();
+        if (summaries && typeof summaries === 'object') {
+            let latestTitle: string | null = null;
+            let latestTime = 0;
+
+            for (const [, summary] of Object.entries(summaries)) {
+                const s = summary as any;
+                const modTime = s.lastModifiedTimestamp
+                    ? new Date(s.lastModifiedTimestamp).getTime()
+                    : 0;
+                if (modTime > latestTime) {
+                    latestTime = modTime;
+                    latestTitle = s.name || s.title || null;
                 }
-
-                if (latestTitle) return latestTitle;
             }
+
+            if (latestTitle) return latestTitle;
         }
     } catch {
-        // Fall through to DOM fallback
+        return null;
     }
 
-    // DOM fallback
-    const contexts = cdp.getContexts();
-    for (const ctx of contexts) {
-        try {
-            const result = await cdp.call('Runtime.evaluate', {
-                expression: GET_CURRENT_CHAT_TITLE_SCRIPT,
-                returnByValue: true,
-                contextId: ctx.id,
-            });
-            const value = result?.result?.value;
-            if (typeof value === 'string' && value.trim().length > 0) {
-                return value.trim();
-            }
-        } catch {
-            // Continue to next context
-        }
-    }
     return null;
 }
 

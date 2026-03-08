@@ -470,7 +470,7 @@ describe('wrapDiscordButton', () => {
         expect(wrapped.messageId).toBe('msg-orig');
     });
 
-    it('uses fallback channel when interaction.channel is null', () => {
+    it('uses a synthetic channel when interaction.channel is null', () => {
         const interaction = createMockInteraction({ channel: null });
         const wrapped = wrapDiscordButton(interaction as any);
 
@@ -479,7 +479,7 @@ describe('wrapDiscordButton', () => {
         expect(wrapped.channel.name).toBeUndefined();
     });
 
-    it('fallback channel send() throws with descriptive error', async () => {
+    it('synthetic channel send() throws with descriptive error', async () => {
         const interaction = createMockInteraction({ channel: null });
         const wrapped = wrapDiscordButton(interaction as any);
 
@@ -528,7 +528,7 @@ describe('wrapDiscordSelect', () => {
         expect(wrapped.channel.id).toBe('ch-99');
     });
 
-    it('uses fallback channel when interaction.channel is null', () => {
+    it('uses a synthetic channel when interaction.channel is null', () => {
         const interaction = createMockInteraction({
             channel: null,
             customId: 'select-action',
@@ -573,7 +573,7 @@ describe('wrapDiscordCommand', () => {
         expect(wrapped.channel.id).toBe('ch-99');
     });
 
-    it('uses fallback channel when interaction.channel is null', () => {
+    it('uses a synthetic channel when interaction.channel is null', () => {
         const interaction = createMockInteraction({
             channel: null,
             commandName: 'test-cmd',

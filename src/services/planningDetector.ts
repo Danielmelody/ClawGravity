@@ -226,7 +226,7 @@ export class PlanningDetector {
 
     /**
      * Click the Open button.
-     * Tries VS Code command `antigravity.command.accept` first, DOM fallback if needed.
+     * Uses DOM interaction because there is no dedicated backend command for this action.
      */
     async clickOpenButton(buttonText?: string): Promise<boolean> {
         // Open doesn't have a direct VS Code command, use DOM click
@@ -237,18 +237,19 @@ export class PlanningDetector {
     /**
      * Click the Proceed button via VS Code command.
      * Uses `antigravity.command.accept` from the verified SDK.
-     * Falls back to DOM click if command fails.
      */
-    async clickProceedButton(buttonText?: string): Promise<boolean> {
+    async clickProceedButton(_buttonText?: string): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.command.accept');
             if (result?.ok) {
                 logger.debug('[PlanningDetector] Proceeded via VS Code command');
                 return true;
             }
-        } catch { /* fallback to DOM */ }
-        const text = buttonText ?? this.lastDetectedInfo?.proceedText ?? 'Proceed';
-        return this.clickButton(text);
+            return false;
+        } catch (error) {
+            logger.error('[PlanningDetector] Proceed command failed:', error);
+            return false;
+        }
     }
 
     /**

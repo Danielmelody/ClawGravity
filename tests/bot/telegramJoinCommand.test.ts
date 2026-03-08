@@ -80,7 +80,7 @@ describe('TelegramSessionStateStore', () => {
         store.pushRecentMessage('chat-1', 'Second');
         store.pushRecentMessage('chat-1', 'Third');
 
-        expect(store.getSelectedSession('chat-1')).toBe('Session A');
+        expect(store.getSelectedSession('chat-1')).toEqual({ title: 'Session A', id: '' });
         expect(store.getRecentMessages('chat-1', 2)).toEqual(['Second', 'Third']);
 
         store.clearSelectedSession('chat-1');
@@ -140,7 +140,7 @@ describe('handleTelegramJoinCommand', () => {
 describe('handleTelegramJoinSelect', () => {
     it('activates selected session and sends extracted history to Telegram', async () => {
         const interaction = createInteraction('History A');
-        const cdp = {};
+        const cdp = { setCachedCascadeId: jest.fn() };
         const store = new TelegramSessionStateStore();
 
         const deps = {
@@ -149,6 +149,10 @@ describe('handleTelegramJoinSelect', () => {
             workspaceService: { getWorkspacePath: jest.fn().mockReturnValue('/workspace/DeepMarket') },
             chatSessionService: {
                 activateSessionByTitle: jest.fn().mockResolvedValue({ ok: true }),
+                listAllSessions: jest.fn().mockResolvedValue([
+                    { title: 'History A', isActive: false, cascadeId: 'cascade-a' },
+                    { title: 'History B', isActive: true, cascadeId: 'cascade-b' },
+                ]),
                 getConversationHistory: jest.fn().mockResolvedValue({
                     messages: [
                         { role: 'user', text: 'What changed?' },
@@ -162,12 +166,13 @@ describe('handleTelegramJoinSelect', () => {
 
         await handleTelegramJoinSelect(deps, interaction);
 
-        expect(deps.chatSessionService.activateSessionByTitle).toHaveBeenCalledWith(cdp, 'History A');
+        expect(deps.chatSessionService.listAllSessions).toHaveBeenCalledWith(cdp);
+        expect(cdp.setCachedCascadeId).toHaveBeenCalledWith('cascade-a');
         expect(deps.chatSessionService.getConversationHistory).toHaveBeenCalledWith(cdp, {
             maxMessages: 500,
             maxScrollSteps: 40,
         });
-        expect(store.getSelectedSession('chat-1')).toBe('History A');
+        expect(store.getSelectedSession('chat-1')).toEqual({ title: 'History A', id: 'cascade-a' });
         expect(interaction.update).toHaveBeenCalledWith(expect.objectContaining({
             text: expect.stringContaining('Joined history session'),
             components: [],

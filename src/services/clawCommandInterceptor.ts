@@ -4,6 +4,7 @@ import { ScheduleService } from './scheduleService';
 import type { ScheduleRecord } from '../database/scheduleRepository';
 import type { JobCallback } from './scheduleService';
 import type { AgentRouter } from './agentRouter';
+import type { CdpService } from './cdpService';
 
 /**
  * Parsed @claw command from Antigravity's response text.
@@ -113,6 +114,7 @@ export class ClawCommandInterceptor {
     private jobCallback: JobCallback;
     private clawWorkspacePath: string;
     private agentRouter?: AgentRouter;
+    private cdpService?: CdpService;
     /** Callback invoked when an agent_send response is saved — injects notification back to sender. */
     private onAgentResponse?: (fromAgent: string, filePath: string, preview: string) => void;
 
@@ -121,6 +123,7 @@ export class ClawCommandInterceptor {
         jobCallback: JobCallback;
         clawWorkspacePath: string;
         agentRouter?: AgentRouter;
+        cdpService?: CdpService;
         /** Called when agent_send response is saved — inject short notification to sender. */
         onAgentResponse?: (fromAgent: string, filePath: string, preview: string) => void;
     }) {
@@ -128,6 +131,7 @@ export class ClawCommandInterceptor {
         this.jobCallback = opts.jobCallback;
         this.clawWorkspacePath = opts.clawWorkspacePath;
         this.agentRouter = opts.agentRouter;
+        this.cdpService = opts.cdpService;
         this.onAgentResponse = opts.onAgentResponse;
     }
 
@@ -166,6 +170,8 @@ export class ClawCommandInterceptor {
                     return await this.handleAgentSend(cmd);
                 case 'agent_read':
                     return this.handleAgentRead(cmd);
+                case 'gateway_restart':
+                    return await this.handleGatewayRestart(cmd);
                 default:
                     return {
                         command: cmd,
@@ -354,5 +360,27 @@ export class ClawCommandInterceptor {
                 message: `Failed to read response file: ${err?.message}`,
             };
         }
+    }
+
+    private async handleGatewayRestart(cmd: ClawCommand): Promise<ClawCommandResult> {
+        if (!this.cdpService) {
+            return {
+                command: cmd,
+                success: false,
+                message: 'Gateway restart not available: CdpService is not configured.',
+            };
+        }
+
+        logger.info('[ClawInterceptor] gateway_restart: executing full gateway restart...');
+        const result = await this.cdpService.resetGateway();
+        const stepsText = result.steps.join('; ');
+
+        return {
+            command: cmd,
+            success: result.ok,
+            message: result.ok
+                ? `Gateway restarted successfully: ${stepsText}`
+                : `Gateway restart partial: ${stepsText}${result.error ? ` Error: ${result.error}` : ''}`,
+        };
     }
 }

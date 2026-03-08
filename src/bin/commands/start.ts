@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger';
 import type { LogLevel } from '../../utils/logger';
 import { version } from '../../../package.json';
 import { checkForUpdates } from '../../services/updateCheckService';
+import { waitForRestartParentExit } from '../../services/processRestartService';
 
 /**
  * Resolve log level from CLI flags on the root program.
@@ -30,6 +31,7 @@ export async function startAction(
     }
 
     console.log(LOGO);
+    await waitForRestartParentExit();
     acquireLock();
 
     // Non-blocking update check (fire-and-forget)

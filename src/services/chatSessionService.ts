@@ -124,6 +124,7 @@ export class ChatSessionService {
             if (!client) return { ok: false, error: 'gRPC client unavailable' };
             const newId = await client.createCascade();
             if (!newId) return { ok: false, error: 'Failed to create cascade via gRPC' };
+            cdpService.setCachedCascadeId(newId);
             return { ok: true };
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);

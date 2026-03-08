@@ -288,38 +288,6 @@ function collapseBlankLines(text: string): string {
 }
 
 /**
- * Separate raw text into output and logs, choosing between DOM-structured
- * extraction and legacy string-based separation.
- *
- * When domSource is 'dom-structured', DOM results are used directly.
- * When domSource is 'legacy-fallback', falls back to splitOutputAndLogs().
- */
-export function separateOutputForDelivery(options: {
-    rawText: string;
-    domSource: 'dom-structured' | 'legacy-fallback';
-    domOutputText?: string;
-    domActivityLines?: string[];
-}): { source: string; output: string; logs: string } {
-    const { rawText, domSource, domOutputText, domActivityLines } = options;
-
-    if (domSource === 'dom-structured' && domOutputText !== undefined) {
-        return {
-            source: 'dom-structured',
-            output: domOutputText,
-            logs: (domActivityLines ?? []).join('\n'),
-        };
-    }
-
-    // Fallback to legacy string-based separation
-    const separated = splitOutputAndLogs(rawText);
-    return {
-        source: 'legacy-fallback',
-        output: separated.output,
-        logs: separated.logs,
-    };
-}
-
-/**
  * Remove UI chrome lines from activity text.
  */
 export function sanitizeActivityLines(raw: string): string {

@@ -50,7 +50,6 @@ import { isSessionSelectId } from '../ui/sessionPickerUi';
 // CDP integration services
 import { CdpService } from '../services/cdpService';
 import { ChatSessionService } from '../services/chatSessionService';
-import { ResponseMonitor, RESPONSE_SELECTORS } from '../services/responseMonitor';
 import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import { AgentRouter } from '../services/agentRouter';
@@ -76,11 +75,10 @@ import {
     registerApprovalSessionChannel,
     registerApprovalWorkspaceChannel,
 } from '../services/cdpBridgeManager';
-import { buildModeModelLines, fitForSingleEmbedDescription, splitForEmbedDescription } from '../utils/streamMessageFormatter';
+import { buildModeModelLines, buildSessionLines, fitForSingleEmbedDescription, splitForEmbedDescription } from '../utils/streamMessageFormatter';
 import { formatForDiscord, splitOutputAndLogs } from '../utils/discordFormatter';
 import { ProcessLogBuffer } from '../utils/processLogBuffer';
 import {
-    buildPromptWithAttachmentUrls,
     cleanupInboundImageAttachments,
     downloadInboundImageAttachments,
     InboundImageAttachment,
@@ -118,6 +116,7 @@ import { createModelButtonAction } from '../handlers/modelButtonAction';
 import { createAutoAcceptButtonAction } from '../handlers/autoAcceptButtonAction';
 import { createTemplateButtonAction } from '../handlers/templateButtonAction';
 import { createModeSelectAction } from '../handlers/modeSelectAction';
+import { clearShutdownHooks, registerShutdownHook, restartCurrentProcess } from '../services/processRestartService';
 
 // =============================================================================
 // Embed color palette (color-coded by phase)
@@ -438,9 +437,13 @@ async function sendPromptToAntigravity(
     const fastModel = currentModel;
     const planModel = currentModel;
 
+    const sessionInfo = await cdp.getActiveSessionInfo();
+    const sessionLines = sessionInfo ? buildSessionLines(sessionInfo.title, sessionInfo.summary) : [];
+
+    const modelSuffix = (localMode === 'plan' && !currentModel?.includes('(Thinking)')) ? ' (Thinking)' : '';
     await sendEmbed(
-        `${PHASE_ICONS.sending} [${modeName} - ${currentModel}${localMode === 'plan' ? ' (Thinking)' : ''}] Sending...`,
-        buildModeModelLines(modeName, fastModel, planModel).join('\n'),
+        `${PHASE_ICONS.sending} [${modeName} - ${currentModel}${modelSuffix}] Sending...`,
+        [...buildModeModelLines(modeName, fastModel, planModel), ...sessionLines].join('\n'),
         PHASE_COLORS.sending,
     );
 
@@ -641,15 +644,6 @@ async function sendPromptToAntigravity(
                 prompt,
                 inboundImages.map((image) => image.localPath),
             );
-
-            if (!injectResult.ok) {
-                await sendEmbed(
-                    t('🖼️ Attached image fallback'),
-                    t('Failed to attach image directly, resending via URL reference.'),
-                    PHASE_COLORS.thinking,
-                );
-                injectResult = await cdp.injectMessage(buildPromptWithAttachmentUrls(prompt, inboundImages));
-            }
         } else {
             injectResult = await cdp.injectMessage(prompt);
         }
@@ -676,15 +670,71 @@ async function sendPromptToAntigravity(
             { source: 'initial' },
         );
 
-        const monitor = new ResponseMonitor({
-            cdpService: cdp,
-            pollIntervalMs: 2000,
+        const grpcClient = await cdp.getGrpcClient();
+        const cascadeId = injectResult.cascadeId || (grpcClient ? await cdp.getActiveCascadeId() : null);
+
+        if (!grpcClient || !cascadeId) {
+            isFinalized = true;
+            await sendEmbed(
+                `${PHASE_ICONS.error} Monitor Unavailable`,
+                'gRPC monitor unavailable. Unable to track the response stream.',
+                PHASE_COLORS.error,
+            );
+            await clearWatchingReaction();
+            await message.react('❌').catch(() => { });
+            signalCompletion('grpc-unavailable');
+            return;
+        }
+
+        const renderQuotaReached = async (elapsed: number, source: 'complete' | 'timeout') => {
+            const finalLogText = lastActivityLogText || processLogBuffer.snapshot();
+            if (finalLogText && finalLogText.trim().length > 0) {
+                logger.divider('Process Log');
+                console.info(finalLogText);
+            }
+            logger.divider();
+
+            liveActivityUpdateVersion += 1;
+            await upsertLiveActivityEmbeds(
+                `${PHASE_ICONS.thinking} Process Log`,
+                finalLogText || ACTIVITY_PLACEHOLDER,
+                PHASE_COLORS.thinking,
+                t(`⏱️ Time: ${elapsed}s | Process log`),
+                {
+                    source,
+                    expectedVersion: liveActivityUpdateVersion,
+                },
+            );
+
+            liveResponseUpdateVersion += 1;
+            await upsertLiveResponseEmbeds(
+                '⚠️ Model Quota Reached',
+                'Model quota limit reached. Please wait or switch to a different model.',
+                0xFF6B6B,
+                t(`⏱️ Time: ${elapsed}s | Quota Reached`),
+                {
+                    source,
+                    expectedVersion: liveResponseUpdateVersion,
+                },
+            );
+
+            try {
+                const modelsPayload = await buildModelsUI(cdp, () => bridge.quota.fetchQuota());
+                if (modelsPayload && channel) {
+                    await channel.send({ ...modelsPayload });
+                }
+            } catch (e) {
+                logger.error('[Quota] Failed to send model selection UI:', e);
+            }
+        };
+
+        const monitor = new GrpcResponseMonitor({
+            grpcClient,
+            cascadeId,
             maxDurationMs: 300000,
-            stopGoneConfirmCount: 3,
-            extractionMode: options?.extractionMode,
 
             onPhaseChange: (_phase, _text) => {
-                // Phase transitions are already logged inside ResponseMonitor.setPhase()
+                // Phase transitions are already logged inside GrpcResponseMonitor.setPhase()
             },
 
             onProcessLog: (logText) => {
@@ -710,10 +760,8 @@ async function sendPromptToAntigravity(
 
             onProgress: (text) => {
                 if (isFinalized) return;
-                // Live output streaming disabled: RESPONSE_TEXT currently includes process logs (see #1).
-                const separated = splitOutputAndLogs(text);
-                if (separated.output && separated.output.trim().length > 0) {
-                    lastProgressText = separated.output;
+                if (text && text.trim().length > 0) {
+                    lastProgressText = text;
                 }
             },
 
@@ -732,50 +780,11 @@ async function sendPromptToAntigravity(
 
                     try {
                         const elapsed = Math.round((Date.now() - startTime) / 1000);
-                        const isQuotaError = monitor.getPhase() === 'quotaReached' || monitor.getQuotaDetected();
+                        const isQuotaError = monitor.getPhase() === 'quotaReached';
 
                         // Quota early exit — skip text extraction, output logging, and embed entirely
                         if (isQuotaError) {
-                            const finalLogText = lastActivityLogText || processLogBuffer.snapshot();
-                            if (finalLogText && finalLogText.trim().length > 0) {
-                                logger.divider('Process Log');
-                                console.info(finalLogText);
-                            }
-                            logger.divider();
-
-                            liveActivityUpdateVersion += 1;
-                            await upsertLiveActivityEmbeds(
-                                `${PHASE_ICONS.thinking} Process Log`,
-                                finalLogText || ACTIVITY_PLACEHOLDER,
-                                PHASE_COLORS.thinking,
-                                t(`⏱️ Time: ${elapsed}s | Process log`),
-                                {
-                                    source: 'complete',
-                                    expectedVersion: liveActivityUpdateVersion,
-                                },
-                            );
-
-                            liveResponseUpdateVersion += 1;
-                            await upsertLiveResponseEmbeds(
-                                '⚠️ Model Quota Reached',
-                                'Model quota limit reached. Please wait or switch to a different model.',
-                                0xFF6B6B,
-                                t(`⏱️ Time: ${elapsed}s | Quota Reached`),
-                                {
-                                    source: 'complete',
-                                    expectedVersion: liveResponseUpdateVersion,
-                                },
-                            );
-
-                            try {
-                                const modelsPayload = await buildModelsUI(cdp, () => bridge.quota.fetchQuota());
-                                if (modelsPayload && channel) {
-                                    await channel.send({ ...modelsPayload });
-                                }
-                            } catch (e) {
-                                logger.error('[Quota] Failed to send model selection UI:', e);
-                            }
-
+                            await renderQuotaReached(elapsed, 'complete');
                             await clearWatchingReaction();
                             await message.react('⚠️').catch(() => { });
                             return;
@@ -885,6 +894,12 @@ async function sendPromptToAntigravity(
                 isFinalized = true;
                 try {
                     const elapsed = Math.round((Date.now() - startTime) / 1000);
+                    if (monitor.getPhase() === 'quotaReached') {
+                        await renderQuotaReached(elapsed, 'timeout');
+                        await clearWatchingReaction();
+                        await message.react('⚠️').catch(() => { });
+                        return;
+                    }
 
                     const timeoutText = (lastText && lastText.trim().length > 0)
                         ? lastText
@@ -972,6 +987,7 @@ async function sendPromptToAntigravity(
 // =============================================================================
 
 export const startBot = async (cliLogLevel?: LogLevel) => {
+    clearShutdownHooks();
     const config = loadConfig();
     logger.setLogLevel(cliLogLevel ?? config.logLevel);
 
@@ -1023,19 +1039,33 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     // Initialize ScheduleService
     const scheduleRepo = new ScheduleRepository(db);
     const scheduleService = new ScheduleService(scheduleRepo);
+    registerShutdownHook('core:schedules', () => {
+        scheduleService.stopAll();
+    });
+    registerShutdownHook('core:connections', () => {
+        bridge.pool.disconnectAll();
+    });
+    registerShutdownHook('core:database', () => {
+        try {
+            db.close();
+        } catch {
+            // Ignore close errors during shutdown.
+        }
+    });
 
     /**
-     * Check if Antigravity is currently generating a response (stop button visible).
+     * Check if Antigravity is currently generating a response via the backend trajectory status.
      * Returns true if busy, false if idle.
      */
     async function isAntigravityBusy(cdp: CdpService): Promise<boolean> {
         try {
-            const result = await cdp.call('Runtime.evaluate', {
-                expression: RESPONSE_SELECTORS.STOP_BUTTON,
-                returnByValue: true,
-                awaitPromise: false,
-            });
-            return result?.result?.value?.isGenerating === true;
+            const grpcClient = await cdp.getGrpcClient();
+            const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
+            if (!grpcClient || !cascadeId) return false;
+
+            const traj = await grpcClient.rawRPC('GetCascadeTrajectory', { cascadeId });
+            const status = traj?.trajectory?.cascadeRunStatus || traj?.status || '';
+            return status === 'CASCADE_RUN_STATUS_RUNNING';
         } catch {
             return false; // If we can't check, assume not busy
         }
@@ -1375,13 +1405,23 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
             logger.done(`[ScheduleJob] Schedule #${schedule.id} prompt injected — monitoring response...`);
 
+            const grpcClient = await cdp.getGrpcClient();
+            const cascadeId = injectResult.cascadeId || (grpcClient ? await cdp.getActiveCascadeId() : null);
+            if (!grpcClient || !cascadeId) {
+                logger.error(`[ScheduleJob] Schedule #${schedule.id}: gRPC monitor unavailable`);
+                if (telegramNotify) {
+                    await (telegramNotify as (text: string) => Promise<void>)(
+                        `🦞 Schedule #${schedule.id} failed: gRPC monitor unavailable.`,
+                    ).catch(() => { });
+                }
+                return;
+            }
+
             // Monitor the AI response and relay to Telegram
-            const monitor = new ResponseMonitor({
-                cdpService: cdp,
-                pollIntervalMs: 2000,
+            const monitor = new GrpcResponseMonitor({
+                grpcClient,
+                cascadeId,
                 maxDurationMs: 300_000,
-                stopGoneConfirmCount: 3,
-                extractionMode: config.extractionMode,
                 onComplete: async (finalText) => {
                     let outputText = finalText?.trim() || '';
                     if (outputText.length === 0) {
@@ -1435,13 +1475,18 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         logger.done(`[ScheduleJob] @claw results injected — awaiting follow-up (depth=${clawDepth + 1})...`);
 
                         // Wait for the follow-up AI response
+                        const followUpGrpcClient = await cdp.getGrpcClient();
+                        const followUpCascadeId = injectResult.cascadeId || (followUpGrpcClient ? await cdp.getActiveCascadeId() : null);
+                        if (!followUpGrpcClient || !followUpCascadeId) {
+                            logger.error(`[ScheduleJob] Schedule #${schedule.id}: gRPC monitor unavailable for @claw follow-up`);
+                            break;
+                        }
+
                         outputText = await new Promise<string>((resolve) => {
-                            const followUp = new ResponseMonitor({
-                                cdpService: cdp,
-                                pollIntervalMs: 2000,
+                            const followUp = new GrpcResponseMonitor({
+                                grpcClient: followUpGrpcClient,
+                                cascadeId: followUpCascadeId,
                                 maxDurationMs: 300_000,
-                                stopGoneConfirmCount: 3,
-                                extractionMode: config.extractionMode,
                                 onComplete: async (text) => resolve(text?.trim() || ''),
                                 onTimeout: async () => {
                                     logger.warn(`[ScheduleJob] @claw follow-up timed out (depth=${clawDepth + 1})`);
@@ -1624,6 +1669,10 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 } catch (error) {
                     logger.warn('Failed to restore Discord sessions on startup:', error);
                 }
+            });
+
+            registerShutdownHook('platform:discord', () => {
+                client.destroy();
             });
 
             // [Discord Interactions API] Slash command interaction handler
@@ -1929,6 +1978,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 { command: 'schedule_remove', description: 'Remove a scheduled task' },
                 { command: 'logs', description: 'Show recent log entries' },
                 { command: 'stop', description: 'Interrupt active LLM generation' },
+                { command: 'restart', description: 'Fully restart the bot process' },
                 { command: 'help', description: 'Show available commands' },
                 { command: 'ping', description: 'Check bot latency' },
             ]).catch((e: unknown) => {
@@ -1937,6 +1987,14 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
             eventRouter.registerAdapter(telegramAdapter);
             await eventRouter.startAll();
+
+            registerShutdownHook('platform:telegram', async () => {
+                for (const monitor of activeMonitors.values()) {
+                    await monitor.stop().catch(() => { });
+                }
+                activeMonitors.clear();
+                await eventRouter.stopAll();
+            });
 
             logger.info(`Telegram bot started: @${botInfo.username} (${config.telegramAllowedUserIds?.length ?? 0} allowed users)`);
 
@@ -2136,6 +2194,7 @@ async function handleSlashInteraction(
                         '`/status` — Display overall bot status',
                         '`/autoaccept` — Toggle auto-approve mode for approval dialogs via buttons',
                         '`/schedule` — Manage scheduled tasks (add/list/remove)',
+                        '`/restart` — Fully restart the bot process',
                         '`/logs [lines] [level]` — View recent bot logs',
                         '`/cleanup [days]` — Clean up unused channels/categories',
                         '`/help` — Show this help',
@@ -2328,48 +2387,26 @@ async function handleSlashInteraction(
             }
 
             try {
-                // Try VS Code command first
-                const cmdResult = await cdp.executeVscodeCommand('antigravity.cancelCascadeInvocation');
-                if (cmdResult?.ok) {
-                    userStopRequestedChannels.add(interaction.channelId);
+                const grpcClient = await cdp.getGrpcClient();
+                const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
+                if (!grpcClient || !cascadeId) {
                     const embed = new EmbedBuilder()
-                        .setTitle('⏹️ Generation Interrupted')
-                        .setDescription('AI response generation was safely stopped.')
-                        .setColor(0xE74C3C)
+                        .setTitle('⚠️ Could Not Stop')
+                        .setDescription('No active backend stream found.')
+                        .setColor(0xF39C12)
                         .setTimestamp();
                     await interaction.editReply({ embeds: [embed] });
-                } else {
-                    // DOM fallback
-                    const contextId = cdp.getPrimaryContextId();
-                    const callParams: Record<string, unknown> = {
-                        expression: RESPONSE_SELECTORS.CLICK_STOP_BUTTON,
-                        returnByValue: true,
-                        awaitPromise: false,
-                    };
-                    if (contextId !== null) {
-                        callParams.contextId = contextId;
-                    }
-
-                    const result = await cdp.call('Runtime.evaluate', callParams);
-                    const value = result?.result?.value;
-
-                    if (value?.ok) {
-                        userStopRequestedChannels.add(interaction.channelId);
-                        const embed = new EmbedBuilder()
-                            .setTitle('⏹️ Generation Interrupted')
-                            .setDescription('AI response generation was safely stopped.')
-                            .setColor(0xE74C3C)
-                            .setTimestamp();
-                        await interaction.editReply({ embeds: [embed] });
-                    } else {
-                        const embed = new EmbedBuilder()
-                            .setTitle('⚠️ Could Not Stop')
-                            .setDescription(value?.error || 'Stop button not found. The LLM may not be running.')
-                            .setColor(0xF39C12)
-                            .setTimestamp();
-                        await interaction.editReply({ embeds: [embed] });
-                    }
+                    break;
                 }
+
+                await grpcClient.cancelCascade(cascadeId);
+                userStopRequestedChannels.add(interaction.channelId);
+                const embed = new EmbedBuilder()
+                    .setTitle('⏹️ Generation Interrupted')
+                    .setDescription('AI response generation was safely stopped.')
+                    .setColor(0xE74C3C)
+                    .setTimestamp();
+                await interaction.editReply({ embeds: [embed] });
             } catch (e: any) {
                 await interaction.editReply({ content: `❌ Error during stop processing: ${e.message}` });
             }
@@ -2521,6 +2558,19 @@ async function handleSlashInteraction(
                     .setFooter({ text: 'Use /schedule remove <id> to delete' })
                     .setTimestamp();
                 await interaction.editReply({ embeds: [embed] });
+            }
+            break;
+        }
+
+        case 'restart': {
+            try {
+                await interaction.editReply({ content: '🔄 Restarting bot process...' });
+                const result = await restartCurrentProcess();
+                if (!result.ok) {
+                    await interaction.editReply({ content: `❌ Bot restart failed: ${result.error || 'unknown error'}` });
+                }
+            } catch (e: any) {
+                await interaction.editReply({ content: `❌ Bot restart failed: ${e.message}` });
             }
             break;
         }

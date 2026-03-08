@@ -1,42 +1,12 @@
 /**
- * GrpcResponseMonitor — LS-based response monitoring with logic for both
- * streaming (ideal) and polling (fallback).
+ * GrpcResponseMonitor — LS-based response monitoring with stream-first fallback polling.
  *
- * Replaces polling-only monitor with a hybrid approach that tries streaming
- * first, but reverts to polling if the server returns protocol errors or
- * fails to emit activity.
- *
- * Completely headless — no DOM, no CDP, no UI dependency.
+ * Completely headless — no DOM, no CDP.
  */
 
 import path from 'path';
 import { logger } from '../utils/logger';
 import { GrpcCascadeClient, CascadeStreamEvent } from './grpcCascadeClient';
-
-const RESERVED_STEP_KEYS = new Set([
-    'type',
-    'status',
-    'metadata',
-    'plannerResponse',
-    'assistantResponse',
-    'userInput',
-    'conversationHistory',
-    'ephemeralMessage',
-    'checkpoint',
-    'error',
-]);
-
-const PAYLOAD_DETAIL_KEYS = [
-    'query',
-    'pattern',
-    'searchType',
-    'searchDirectory',
-    'searchPathUri',
-    'absolutePathUri',
-    'relativePath',
-    'absolutePath',
-    'userErrorMessage',
-];
 
 function tryParseJsonObject(json: string | undefined): Record<string, unknown> | null {
     if (!json) return null;
@@ -141,17 +111,6 @@ function joinSummaryParts(parts: Array<string | null | undefined>): string {
     return parts.filter((part): part is string => Boolean(part && part.trim())).join(' ');
 }
 
-function extractPayloadObject(step: any): Record<string, unknown> | null {
-    for (const key of Object.keys(step || {})) {
-        if (RESERVED_STEP_KEYS.has(key)) continue;
-        const value = step?.[key];
-        if (value && typeof value === 'object' && !Array.isArray(value)) {
-            return value as Record<string, unknown>;
-        }
-    }
-    return null;
-}
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -173,12 +132,20 @@ export interface GrpcResponseMonitorOptions {
     /** Max monitoring duration in ms (default: 300000 = 5 min) */
     maxDurationMs?: number;
 
-    // Callbacks (matching ResponseMonitor interface)
+    // Callbacks shared by the response-monitoring call sites
     onProgress?: (text: string) => void;
     onComplete?: (finalText: string) => void;
     onTimeout?: (lastText: string) => void;
     onPhaseChange?: (phase: GrpcResponsePhase, text: string | null) => void;
     onProcessLog?: (text: string) => void;
+}
+
+const TRAJECTORY_POLL_INTERVAL_MS = 750;
+
+interface TrajectoryRecoverySnapshot {
+    runStatus: string | null;
+    latestRole: 'user' | 'assistant' | null;
+    latestResponseText: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,10 +168,8 @@ export class GrpcResponseMonitor {
     private lastResponseText: string | null = null;
     private lastThinkingText: string | null = null;
     private readonly emittedPlannedToolIds = new Set<string>();
-    private readonly emittedStepActivityKeys = new Set<string>();
     private hasSeenActivity = false;
     private startTime = 0;
-    private mode: 'stream' | 'poll' = 'stream';
 
     // Stream state
     private abortController: AbortController | null = null;
@@ -212,12 +177,9 @@ export class GrpcResponseMonitor {
     private streamCompleteListener: (() => void) | null = null;
     private streamErrorListener: ((err: any) => void) | null = null;
 
-    // Poll state
-    private pollTimer: NodeJS.Timeout | null = null;
-    private lastKnownStepCount = 0;
-
     // Global timers
     private safetyTimer: NodeJS.Timeout | null = null;
+    private recoveryPromise: Promise<void> | null = null;
 
     constructor(options: GrpcResponseMonitorOptions) {
         this.client = options.grpcClient;
@@ -239,9 +201,8 @@ export class GrpcResponseMonitor {
         this.lastResponseText = null;
         this.lastThinkingText = null;
         this.emittedPlannedToolIds.clear();
-        this.emittedStepActivityKeys.clear();
         this.hasSeenActivity = false;
-        this.lastKnownStepCount = 0;
+        this.recoveryPromise = null;
 
         this.setPhase('waiting', null);
 
@@ -273,17 +234,7 @@ export class GrpcResponseMonitor {
             this.safetyTimer = null;
         }
 
-        if (this.pollTimer) {
-            clearInterval(this.pollTimer);
-            this.pollTimer = null;
-        }
-
-        if (this.abortController) {
-            this.abortController.abort();
-            this.abortController = null;
-        }
-
-        this.removeStreamListeners();
+        this.teardownStream();
     }
 
     /** Whether monitoring is active */
@@ -304,8 +255,6 @@ export class GrpcResponseMonitor {
     // ─── Stream Implementation ──────────────────────────────────────
 
     private initStream(): void {
-        this.mode = 'stream';
-
         // Bind listeners
         this.streamDataListener = (evt) => this.handleStreamData(evt);
         this.streamCompleteListener = () => this.handleStreamComplete();
@@ -320,9 +269,17 @@ export class GrpcResponseMonitor {
         try {
             this.abortController = this.client.streamCascadeUpdates(this.cascadeId);
         } catch (err: any) {
-            logger.warn(`[GrpcMonitor] Failed to open stream: ${err.message}. Switching to poll.`);
-            this.switchToPolling();
+            this.failStream(err?.message || 'Failed to open stream');
         }
+    }
+
+    private teardownStream(): void {
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
+
+        this.removeStreamListeners();
     }
 
     private removeStreamListeners(): void {
@@ -341,15 +298,20 @@ export class GrpcResponseMonitor {
     }
 
     private handleStreamData(evt: CascadeStreamEvent): void {
-        if (!this.isRunning || this.mode !== 'stream') return;
+        if (!this.isRunning) return;
 
         this.emitThinkingDetailsFromPayload(evt.raw?.result ?? evt.raw);
         this.emitPlannedToolCalls(evt.raw?.result?.plannerResponse?.toolCalls);
 
         if (evt.type === 'error') {
             const msg = evt.text || 'Unknown stream payload error';
-            logger.warn(`[GrpcMonitor] Stream payload error: ${msg.slice(0, 100)}. Switching to poll.`);
-            this.switchToPolling();
+            if (msg.toLowerCase().includes('quota')) {
+                this.setPhase('quotaReached', this.lastResponseText);
+                this.stop().catch(() => { });
+                this.onTimeout?.(this.lastResponseText ?? '');
+                return;
+            }
+            this.failStream(`Stream payload error: ${msg.slice(0, 100)}`);
             return;
         }
 
@@ -390,12 +352,10 @@ export class GrpcResponseMonitor {
     }
 
     private handleStreamComplete(): void {
-        if (!this.isRunning || this.mode !== 'stream') return;
+        if (!this.isRunning) return;
 
-        // If the stream ended without activity, it might be the protocol error
         if (!this.hasSeenActivity) {
-            logger.warn(`[GrpcMonitor] Stream closed early with no activity. Switching to poll.`);
-            this.switchToPolling();
+            void this.recoverFromSilentStreamClosure('Stream closed before any activity was received');
             return;
         }
 
@@ -403,111 +363,136 @@ export class GrpcResponseMonitor {
     }
 
     private handleStreamError(err: any): void {
-        if (!this.isRunning || this.mode !== 'stream') return;
+        if (!this.isRunning) return;
 
         const msg = err?.message || String(err);
-        logger.warn(`[GrpcMonitor] Stream error: ${msg.slice(0, 100)}. Switching to poll.`);
-        this.switchToPolling();
-    }
-
-    // ─── Polling Implementation ──────────────────────────────────────
-
-    private switchToPolling(): void {
-        if (this.mode === 'poll') return;
-        this.mode = 'poll';
-
-        // Clean up stream
-        if (this.abortController) {
-            this.abortController.abort();
-            this.abortController = null;
+        if (msg.toLowerCase().includes('quota')) {
+            this.setPhase('quotaReached', this.lastResponseText);
+            this.stop().catch(() => { });
+            this.onTimeout?.(this.lastResponseText ?? '');
+            return;
         }
-        this.removeStreamListeners();
-
-        logger.info(`[GrpcMonitor] Polling fallback active | cascade=${this.cascadeId.slice(0, 12)}...`);
-
-        // Immediate first poll, then interval
-        this.pollOnce();
-        this.pollTimer = setInterval(() => this.pollOnce(), 1500);
-    }
-
-    private async pollOnce(): Promise<void> {
-        if (!this.isRunning || this.mode !== 'poll') return;
-
-        try {
-            const traj = await this.client.rawRPC('GetCascadeTrajectory', { cascadeId: this.cascadeId });
-            if (!traj || !this.isRunning) return;
-
-            const steps = traj?.trajectory?.steps || [];
-            const cascadeStatus = traj?.trajectory?.cascadeRunStatus || traj?.status || '';
-
-            // Update activity state
-            if (cascadeStatus === 'CASCADE_RUN_STATUS_RUNNING' && !this.hasSeenActivity) {
-                this.hasSeenActivity = true;
-                this.setPhase('thinking', null);
-            }
-
-            // Extract assistant text
-            let lastAssistantText: string | null = null;
-            let lastUserIdx = -1;
-            for (let i = steps.length - 1; i >= 0; i--) {
-                if (steps[i].type === 'CORTEX_STEP_TYPE_USER_INPUT') {
-                    lastUserIdx = i;
-                    break;
-                }
-            }
-
-            if (lastUserIdx >= 0) {
-                for (let i = lastUserIdx + 1; i < steps.length; i++) {
-                    const step = steps[i];
-                    this.emitThinkingDetails(step?.plannerResponse?.thinking);
-                    this.emitPlannedToolCalls(step?.plannerResponse?.toolCalls);
-                    this.emitStepActivity(step, i);
-
-                    if (step.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step.type === 'CORTEX_STEP_TYPE_RESPONSE') {
-                        const text =
-                            step.plannerResponse?.modifiedResponse
-                            || step.plannerResponse?.response
-                            || step.assistantResponse?.text
-                            || '';
-                        if (text) lastAssistantText = text;
-                    } else if (step.type === 'CORTEX_STEP_TYPE_TOOL_CALL' || step.type === 'CORTEX_STEP_TYPE_MCP_TOOL') {
-                        this.hasSeenActivity = true;
-                        if (steps.length > this.lastKnownStepCount) {
-                            const name = step.toolCall?.name || step.mcpTool?.name || 'tool';
-                            this.onProcessLog?.(`🔧 ${name}`);
-                        }
-                    }
-                }
-            }
-
-            this.lastKnownStepCount = steps.length;
-
-            if (lastAssistantText && lastAssistantText !== this.lastResponseText) {
-                this.lastResponseText = lastAssistantText;
-                this.hasSeenActivity = true;
-                if (this.currentPhase === 'thinking' || this.currentPhase === 'waiting') {
-                    this.setPhase('generating', lastAssistantText);
-                }
-                this.onProgress?.(lastAssistantText);
-            }
-
-            // Finish if IDLE and we have activity
-            if (cascadeStatus === 'CASCADE_RUN_STATUS_IDLE' && this.hasSeenActivity) {
-                this.finishSuccessfully();
-            }
-        } catch (err: any) {
-            const msg = err?.message || String(err);
-            if (msg.includes('quota')) {
-                this.setPhase('quotaReached', this.lastResponseText);
-                this.stop().catch(() => { });
-                this.onTimeout?.(this.lastResponseText ?? '');
-                return;
-            }
-            logger.debug(`[GrpcMonitor] Poll error: ${msg.slice(0, 100)}`);
-        }
+        void this.recoverFromSilentStreamClosure(`Stream error: ${msg.slice(0, 100)}`);
     }
 
     // ─── Common Logic ──────────────────────────────────────────────
+
+    private failStream(message: string): void {
+        logger.warn(`[GrpcMonitor] ${message}`);
+        this.setPhase('error', this.lastResponseText);
+        const text = this.lastResponseText ?? '';
+        this.stop().catch(() => { });
+        this.onTimeout?.(text);
+    }
+
+    private async recoverFromSilentStreamClosure(failureMessage: string): Promise<void> {
+        if (!this.isRunning) return;
+        if (this.recoveryPromise) {
+            await this.recoveryPromise;
+            return;
+        }
+
+        this.teardownStream();
+        this.recoveryPromise = this.tryRecoverCompletedResponse(failureMessage);
+        try {
+            await this.recoveryPromise;
+        } finally {
+            this.recoveryPromise = null;
+        }
+    }
+
+    private async tryRecoverCompletedResponse(failureMessage: string): Promise<void> {
+        logger.warn(`[GrpcMonitor] ${failureMessage}; falling back to trajectory polling`);
+
+        while (this.isRunning) {
+            const snapshot = await this.readTrajectorySnapshot();
+            if (!this.isRunning) return;
+
+            if (this.applyTrajectorySnapshot(snapshot)) {
+                return;
+            }
+
+            const remainingMs = this.maxDurationMs - (Date.now() - this.startTime);
+            if (remainingMs <= 0) {
+                return;
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, Math.min(TRAJECTORY_POLL_INTERVAL_MS, remainingMs)));
+        }
+    }
+
+    private async readTrajectorySnapshot(): Promise<TrajectoryRecoverySnapshot | null> {
+        try {
+            const trajectoryResp = await this.client.rawRPC('GetCascadeTrajectory', { cascadeId: this.cascadeId });
+            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
+            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
+
+            let latestRole: 'user' | 'assistant' | null = null;
+            let latestResponseText: string | null = null;
+
+            for (const step of steps) {
+                if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') {
+                    latestRole = 'user';
+                    latestResponseText = null;
+                    continue;
+                }
+
+                if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
+                    latestRole = 'assistant';
+                    latestResponseText = step?.plannerResponse?.response || step?.assistantResponse?.text || '';
+                }
+            }
+
+            const runStatus = typeof trajectory?.cascadeRunStatus === 'string'
+                ? trajectory.cascadeRunStatus
+                : typeof trajectoryResp?.cascadeRunStatus === 'string'
+                    ? trajectoryResp.cascadeRunStatus
+                    : null;
+
+            return {
+                runStatus,
+                latestRole,
+                latestResponseText,
+            };
+        } catch (err: any) {
+            logger.debug(`[GrpcMonitor] Trajectory recovery failed: ${err?.message || err}`);
+            return null;
+        }
+    }
+
+    private applyTrajectorySnapshot(snapshot: TrajectoryRecoverySnapshot | null): boolean {
+        if (!snapshot) return false;
+
+        const latestText = snapshot.latestRole === 'assistant'
+            ? (snapshot.latestResponseText ?? '')
+            : null;
+
+        if (latestText !== null && latestText !== this.lastResponseText) {
+            this.lastResponseText = latestText;
+            if (latestText.length > 0) {
+                this.hasSeenActivity = true;
+                if (this.currentPhase === 'thinking' || this.currentPhase === 'waiting') {
+                    this.setPhase('generating', latestText);
+                }
+                this.onProgress?.(latestText);
+            }
+        } else if (snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+            this.hasSeenActivity = true;
+            if (this.currentPhase === 'waiting') {
+                this.setPhase('thinking', null);
+            }
+        }
+
+        if (snapshot.latestRole === 'assistant' && snapshot.runStatus !== 'CASCADE_RUN_STATUS_RUNNING') {
+            this.lastResponseText = latestText ?? this.lastResponseText ?? '';
+            this.hasSeenActivity = true;
+            logger.info(`[GrpcMonitor] Recovered completed response from trajectory (${this.lastResponseText.length} chars)`);
+            this.finishSuccessfully();
+            return true;
+        }
+
+        return false;
+    }
 
     private finishSuccessfully(): void {
         this.setPhase('complete', this.lastResponseText);
@@ -571,23 +556,6 @@ export class GrpcResponseMonitor {
         }
     }
 
-    private emitStepActivity(step: any, stepIndex: number): void {
-        if (!step?.metadata?.toolCall) return;
-
-        const summary = this.buildStepActivitySummary(step);
-        if (!summary) return;
-
-        const key = `${stepIndex}:${step.status || 'unknown'}:${summary}`;
-        if (this.emittedStepActivityKeys.has(key)) return;
-
-        this.emittedStepActivityKeys.add(key);
-        this.hasSeenActivity = true;
-        if (this.currentPhase === 'waiting') {
-            this.setPhase('thinking', null);
-        }
-        this.onProcessLog?.(summary);
-    }
-
     private buildPlannedToolSummary(toolCall: any): string | null {
         const toolName = typeof toolCall?.name === 'string' ? toolCall.name : 'tool';
         const args = tryParseJsonObject(toolCall?.argumentsJson);
@@ -597,34 +565,6 @@ export class GrpcResponseMonitor {
         const parts = this.collectArgumentParts(args);
         return parts.length > 0
             ? `🛠️ Tool ${toolName}: ${parts.join(' | ')}`
-            : `🛠️ Tool ${toolName}`;
-    }
-
-    private buildStepActivitySummary(step: any): string | null {
-        const toolName = step?.metadata?.toolCall?.name || step?.type || 'tool';
-        const status = typeof step?.status === 'string' ? step.status : '';
-        const payload = extractPayloadObject(step);
-        const args = tryParseJsonObject(step?.metadata?.toolCall?.argumentsJson);
-
-        if (status.includes('ERROR')) {
-            const message = formatScalar(step?.error?.userErrorMessage)
-                || formatScalar(step?.error?.shortError)
-                || 'execution failed';
-            const knownError = this.buildKnownToolSummary(toolName, args, payload, 'error', message);
-            if (knownError) return knownError;
-            return `❌ Tool ${toolName} failed: ${message}`;
-        }
-
-        const known = this.buildKnownToolSummary(toolName, args, payload, 'done');
-        if (known) return known;
-
-        const parts: string[] = [];
-        parts.push(...this.collectArgumentParts(args));
-        parts.push(...this.collectPayloadParts(payload));
-
-        const dedupedParts = Array.from(new Set(parts.filter(Boolean)));
-        return dedupedParts.length > 0
-            ? `🛠️ Tool ${toolName}: ${dedupedParts.join(' | ')}`
             : `🛠️ Tool ${toolName}`;
     }
 
@@ -743,38 +683,6 @@ export class GrpcResponseMonitor {
         return Object.entries(args)
             .map(([key, value]) => formatKeyValue(key, value))
             .filter((value): value is string => Boolean(value));
-    }
-
-    private collectPayloadParts(payload: Record<string, unknown> | null): string[] {
-        if (!payload) return [];
-
-        const parts: string[] = [];
-        for (const key of PAYLOAD_DETAIL_KEYS) {
-            if (!(key in payload)) continue;
-            const formatted = formatKeyValue(key, payload[key]);
-            if (formatted) {
-                parts.push(formatted);
-            }
-        }
-
-        const startLine = typeof payload.startLine === 'number' ? payload.startLine : null;
-        const endLine = typeof payload.endLine === 'number' ? payload.endLine : null;
-        if (startLine !== null && endLine !== null) {
-            parts.push(`lines=${startLine}-${endLine}`);
-        }
-
-        const resultCount = typeof payload.totalResults === 'number'
-            ? payload.totalResults
-            : typeof payload.truncatedTotalResults === 'number'
-                ? payload.truncatedTotalResults
-                : Array.isArray(payload.results)
-                    ? payload.results.length
-                    : null;
-        if (resultCount !== null) {
-            parts.push(`results=${resultCount}`);
-        }
-
-        return parts;
     }
 
     private setPhase(phase: GrpcResponsePhase, text: string | null): void {

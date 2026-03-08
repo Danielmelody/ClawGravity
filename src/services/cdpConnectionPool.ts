@@ -11,7 +11,7 @@ import { UserMessageDetector } from './userMessageDetector';
  * Pool that manages independent CdpService instances per workspace.
  *
  * Each workspace owns its own WebSocket / contexts / pendingCalls, so
- * switching to workspace B while workspace A's ResponseMonitor is polling
+ * switching to workspace B while workspace A is still streaming a response
  * does not destroy A's WebSocket.
  */
 export class CdpConnectionPool {

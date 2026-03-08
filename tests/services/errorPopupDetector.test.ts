@@ -29,6 +29,7 @@ describe('ErrorPopupDetector - error popup detection and remote execution', () =
         jest.useFakeTimers();
         mockCdpService = new MockedCdpService() as jest.Mocked<CdpService>;
         mockCdpService.getPrimaryContextId = jest.fn().mockReturnValue(42);
+        mockCdpService.executeVscodeCommand = jest.fn();
         jest.clearAllMocks();
     });
 
@@ -244,12 +245,10 @@ describe('ErrorPopupDetector - error popup detection and remote execution', () =
     });
 
     // ──────────────────────────────────────────────────────
-    // Test 6: clickRetryButton() can click the Retry button
+    // Test 6: clickRetryButton() uses the backend command
     // ──────────────────────────────────────────────────────
-    it('executes a click script via CDP when clickRetryButton() is called', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: { ok: true } },
-        });
+    it('executes the backend command when clickRetryButton() is called', async () => {
+        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
 
         detector = new ErrorPopupDetector({
             cdpService: mockCdpService,
@@ -260,14 +259,8 @@ describe('ErrorPopupDetector - error popup detection and remote execution', () =
         const result = await detector.clickRetryButton();
 
         expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Retry'),
-                returnByValue: true,
-                contextId: 42,
-            }),
-        );
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.command.retry');
+        expect(mockCdpService.call).not.toHaveBeenCalled();
     });
 
     // ──────────────────────────────────────────────────────

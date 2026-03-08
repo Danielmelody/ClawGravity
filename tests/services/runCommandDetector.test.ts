@@ -22,6 +22,7 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         jest.useFakeTimers();
         mockCdpService = new MockedCdpService() as jest.Mocked<CdpService>;
         mockCdpService.getPrimaryContextId = jest.fn().mockReturnValue(42);
+        mockCdpService.executeVscodeCommand = jest.fn();
         jest.clearAllMocks();
     });
 
@@ -132,10 +133,8 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         expect(onRunCommandRequired).toHaveBeenNthCalledWith(2, expect.objectContaining({ commandText: 'npm test' }));
     });
 
-    it('executes a click script via CDP when runButton() is called', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: { ok: true } },
-        });
+    it('executes the backend command when runButton() is called', async () => {
+        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
 
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
@@ -146,20 +145,12 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         const result = await detector.runButton('Run');
 
         expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Run'),
-                returnByValue: true,
-                contextId: 42,
-            }),
-        );
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.terminalCommand.run');
+        expect(mockCdpService.call).not.toHaveBeenCalled();
     });
 
-    it('executes a reject click script via CDP when rejectButton() is called', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: { ok: true } },
-        });
+    it('executes the backend command when rejectButton() is called', async () => {
+        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
 
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
@@ -170,14 +161,8 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         const result = await detector.rejectButton('Reject');
 
         expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Reject'),
-                returnByValue: true,
-                contextId: 42,
-            }),
-        );
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.terminalCommand.reject');
+        expect(mockCdpService.call).not.toHaveBeenCalled();
     });
 
     it('stops polling and no longer calls the callback after stop()', async () => {
@@ -275,58 +260,32 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         expect(detector.getLastDetectedInfo()).toBeNull();
     });
 
-    it('runButton() without arguments uses the detected runText', async () => {
-        const mockInfo = makeRunCommandInfo({ runText: 'Execute' });
-
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })
-            .mockResolvedValueOnce({ result: { value: { ok: true } } });
+    it('runButton() returns false when the backend command is unavailable', async () => {
+        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: false } as any);
 
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
             pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
         });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);
-
         const result = await detector.runButton();
 
-        expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenLastCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Execute'),
-            }),
-        );
+        expect(result).toBe(false);
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.terminalCommand.run');
     });
 
-    it('rejectButton() without arguments uses the detected rejectText', async () => {
-        const mockInfo = makeRunCommandInfo({ rejectText: 'Cancel' });
-
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })
-            .mockResolvedValueOnce({ result: { value: { ok: true } } });
+    it('rejectButton() returns false when the backend command is unavailable', async () => {
+        mockCdpService.executeVscodeCommand.mockRejectedValue(new Error('command failed'));
 
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
             pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
         });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);
-
         const result = await detector.rejectButton();
 
-        expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenLastCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Cancel'),
-            }),
-        );
+        expect(result).toBe(false);
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.terminalCommand.reject');
     });
 
     it('calls without the contextId parameter when contextId is null', async () => {

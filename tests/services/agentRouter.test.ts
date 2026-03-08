@@ -10,7 +10,11 @@ import * as path from 'path';
 jest.mock('../../src/services/cdpConnectionPool');
 jest.mock('../../src/services/chatSessionService');
 jest.mock('../../src/services/workspaceService');
-jest.mock('../../src/services/responseMonitor');
+jest.mock('../../src/services/grpcResponseMonitor', () => ({
+    GrpcResponseMonitor: jest.fn().mockImplementation((opts: any) => ({
+        start: () => { setTimeout(() => opts.onComplete?.(''), 10); },
+    })),
+}));
 
 describe('AgentRouter (Sub-Agent Pattern)', () => {
     let router: AgentRouter;
@@ -112,10 +116,10 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
             expect(summary).toMatch(/\.\.\.$/);
         });
 
-        it('falls back to last 500 chars when no ## Summary found', () => {
+        it('returns an empty summary when no ## Summary is present', () => {
             const response = 'A'.repeat(100) + 'B'.repeat(500);
             const summary = router.extractSummary(response);
-            expect(summary).toContain('B'.repeat(500));
+            expect(summary).toBe('');
         });
     });
 
@@ -151,8 +155,8 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
 
             const mockCdp = {
                 injectMessage: jest.fn().mockResolvedValue({ ok: true }),
-                getGrpcClient: jest.fn().mockResolvedValue(null),
-                getActiveCascadeId: jest.fn().mockResolvedValue(null),
+                getGrpcClient: jest.fn().mockResolvedValue({}),
+                getActiveCascadeId: jest.fn().mockResolvedValue('cascade-123'),
             };
             mockPool.getOrConnect.mockResolvedValue(mockCdp as any);
             mockChatSession.startNewChat.mockResolvedValue({ ok: true });
@@ -165,8 +169,8 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
                 'Fixed 3 bugs in api.ts. All tests pass now.',
             ].join('\n');
 
-            const { ResponseMonitor } = require('../../src/services/responseMonitor');
-            ResponseMonitor.mockImplementation((opts: any) => ({
+            const { GrpcResponseMonitor } = require('../../src/services/grpcResponseMonitor');
+            GrpcResponseMonitor.mockImplementation((opts: any) => ({
                 start: () => { setTimeout(() => opts.onComplete?.(fullResponse), 10); },
             }));
 

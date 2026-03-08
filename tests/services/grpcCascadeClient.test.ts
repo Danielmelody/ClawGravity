@@ -55,3 +55,21 @@ describe('GrpcCascadeClient stream event parsing', () => {
         }));
     });
 });
+
+describe('GrpcCascadeClient createCascade', () => {
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    it('returns null when the initial message send fails for a new cascade', async () => {
+        const client = new GrpcCascadeClient();
+        jest.spyOn(client as any, 'rpc').mockResolvedValue({ cascadeId: 'cascade-123' });
+        jest.spyOn(client, 'sendMessage').mockResolvedValue({
+            ok: false,
+            error: 'missing model',
+        });
+
+        await expect(client.createCascade('hello', 1154)).resolves.toBeNull();
+        expect(client.sendMessage).toHaveBeenCalledWith('cascade-123', 'hello', 1154);
+    });
+});

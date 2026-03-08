@@ -149,13 +149,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                         }
                     } catch (interactionError: any) {
                         if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                            logger.warn('[Approval] Interaction expired. Responding directly in the channel.');
-                            if (interaction.channel && 'send' in interaction.channel) {
-                                const fallbackMessage = success
-                                    ? `${actionLabel} completed.`
-                                    : 'Approval button not found.';
-                                await (interaction.channel as any).send(fallbackMessage).catch(logger.error);
-                            }
+                            logger.warn('[Approval] Interaction expired.');
                         } else {
                             throw interactionError;
                         }
@@ -264,13 +258,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                                 });
                             } catch (interactionError: any) {
                                 if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                                    logger.warn('[Planning] Interaction expired. Responding directly in the channel.');
-                                    if (interaction.channel && 'send' in interaction.channel) {
-                                        const fallbackMessage = clicked
-                                            ? t('Proceed completed. Implementation started.')
-                                            : t('Proceed button not found.');
-                                        await (interaction.channel as any).send(fallbackMessage).catch(logger.error);
-                                    }
+                                    logger.warn('[Planning] Interaction expired.');
                                 } else {
                                     throw interactionError;
                                 }
@@ -336,13 +324,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                                 });
                             } catch (interactionError: any) {
                                 if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                                    logger.warn('[ErrorPopup] Interaction expired. Responding directly in the channel.');
-                                    if (interaction.channel && 'send' in interaction.channel) {
-                                        const fallbackMessage = clicked
-                                            ? t('Error popup dismissed.')
-                                            : t('Dismiss button not found.');
-                                        await (interaction.channel as any).send(fallbackMessage).catch(logger.error);
-                                    }
+                                    logger.warn('[ErrorPopup] Interaction expired.');
                                 } else {
                                     throw interactionError;
                                 }
@@ -418,13 +400,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                                 });
                             } catch (interactionError: any) {
                                 if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                                    logger.warn('[ErrorPopup] Interaction expired. Responding directly in the channel.');
-                                    if (interaction.channel && 'send' in interaction.channel) {
-                                        const fallbackMessage = clicked
-                                            ? t('Retry initiated.')
-                                            : t('Retry button not found.');
-                                        await (interaction.channel as any).send(fallbackMessage).catch(logger.error);
-                                    }
+                                    logger.warn('[ErrorPopup] Interaction expired.');
                                 } else {
                                     throw interactionError;
                                 }
@@ -500,13 +476,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                         }
                     } catch (interactionError: any) {
                         if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                            logger.warn('[RunCommand] Interaction expired. Responding directly in the channel.');
-                            if (interaction.channel && 'send' in interaction.channel) {
-                                const fallbackMessage = success
-                                    ? `${actionLabel} completed.`
-                                    : t('Run command button not found.');
-                                await (interaction.channel as any).send(fallbackMessage).catch(logger.error);
-                            }
+                            logger.warn('[RunCommand] Interaction expired.');
                         } else {
                             throw interactionError;
                         }

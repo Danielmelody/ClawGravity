@@ -5,7 +5,7 @@ import * as http from 'http';
 import { spawn } from 'child_process';
 import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
 import WebSocket from 'ws';
-import { GrpcCascadeClient, discoverLSConnection } from './grpcCascadeClient';
+import { GrpcCascadeClient, ModelId, discoverLSConnection } from './grpcCascadeClient';
 
 export interface CdpServiceOptions {
     portsToScan?: number[];
@@ -31,6 +31,7 @@ export interface InjectResult {
     ok: boolean;
     method?: string;
     contextId?: number;
+    cascadeId?: string;
     error?: string;
 }
 
@@ -224,7 +225,6 @@ export class CdpService extends EventEmitter {
         try {
             await this.call('Network.enable', {});
         } catch {
-            // Network.enable failure is non-fatal; polling fallback still works
             logger.warn('[CdpService] Network.enable failed — network event detection disabled');
         }
     }
@@ -501,8 +501,7 @@ export class CdpService extends EventEmitter {
         workspacePath: string,
     ): Promise<boolean> {
         try {
-            // Instead of DOM/document.title, check folder parameter in page URL or
-            // folder name in explorer view
+            // Instead of DOM/document.title, inspect folder-related UI state directly.
             const expression = `(() => {
                 // Method 1: Check window title data attribute
                 const titleEl = document.querySelector('title');
@@ -551,19 +550,6 @@ export class CdpService extends EventEmitter {
                 }
             }
 
-            // Additional fallback: check URL params (VS Code-based editors may have folder parameter)
-            const urlResult = await this.call('Runtime.evaluate', {
-                expression: 'window.location.href',
-                returnByValue: true,
-            });
-            const pageUrl = (urlResult?.result?.value || '').toLowerCase();
-            const normalizedWorkspaceUri = encodeURIComponent(workspacePath).toLowerCase();
-            if (pageUrl.includes(normalizedWorkspaceUri) || pageUrl.includes(projectName.toLowerCase())) {
-                this.currentWorkspaceName = projectName;
-                logger.debug(`[CdpService] URL parameter match success: "${projectName}"`);
-                return true;
-            }
-
         } catch (e) {
             logger.warn(`[CdpService] Folder path probe failed:`, e);
         }
@@ -579,22 +565,11 @@ export class CdpService extends EventEmitter {
         projectName: string,
     ): Promise<boolean> {
         // Open as folder using Antigravity CLI (not as workspace mode).
-        // `open -a Antigravity` may open as workspace, resulting in title "Untitled (Workspace)".
         // CLI --new-window opens as folder, immediately reflecting directory name in title.
         const antigravityCli = getAntigravityCliPath();
 
         logger.debug(`[CdpService] Launching Antigravity: ${antigravityCli} --new-window ${workspacePath}`);
-        try {
-            await this.runCommand(antigravityCli, ['--new-window', workspacePath]);
-        } catch (error: any) {
-            // Fall back to open -a if CLI not found (macOS only)
-            logger.warn(`[CdpService] CLI launch failed, falling back to open -a (if macOS): ${error?.message || String(error)}`);
-            if (process.platform === 'darwin') {
-                await this.runCommand('open', ['-a', 'Antigravity', workspacePath]);
-            } else {
-                throw error;
-            }
-        }
+        await this.runCommand(antigravityCli, ['--new-window', workspacePath]);
 
         // Poll until a new workbench page appears (max 30 seconds)
         const maxWaitMs = 30000;
@@ -1079,14 +1054,15 @@ export class CdpService extends EventEmitter {
 
         // If we have an explicit cascade ID (e.g. from a previous createCascade), try to reuse it
         let cascadeId = overrideCascadeId || this.cachedCascadeId;
+        const modelId = await this.resolveSelectedModelId();
 
         if (cascadeId) {
             // Send to existing cascade
-            logger.warn(`[CdpService] injectViaGrpc: sending to existing cascade=${cascadeId.slice(0, 16)}... text="${text.slice(0, 50)}"`);
-            const result = await client.sendMessage(cascadeId, text);
+            logger.warn(`[CdpService] injectViaGrpc: sending to existing cascade=${cascadeId.slice(0, 16)}... model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
+            const result = await client.sendMessage(cascadeId, text, modelId || undefined);
             if (result.ok) {
                 logger.warn(`[CdpService] sendMessage OK, response: ${JSON.stringify(result.data)?.slice(0, 200)}`);
-                return { ok: true, method: 'grpc' };
+                return { ok: true, method: 'grpc', cascadeId };
             }
             // If existing cascade failed, fall through to create a new one
             logger.warn(`[CdpService] sendMessage to existing cascade failed: ${result.error}, creating new cascade`);
@@ -1094,12 +1070,12 @@ export class CdpService extends EventEmitter {
         }
 
         // Create a new Antigravity cascade and send the message
-        logger.warn(`[CdpService] injectViaGrpc: creating new cascade with text="${text.slice(0, 50)}"`);
-        const newCascadeId = await client.createCascade(text);
+        logger.warn(`[CdpService] injectViaGrpc: creating new cascade with model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
+        const newCascadeId = await client.createCascade(text, modelId || undefined);
         if (newCascadeId) {
             this.cachedCascadeId = newCascadeId;
             logger.warn(`[CdpService] New cascade created: ${newCascadeId.slice(0, 16)}...`);
-            return { ok: true, method: 'grpc' };
+            return { ok: true, method: 'grpc', cascadeId: newCascadeId };
         }
 
         logger.error('[CdpService] createCascade returned null — cannot inject');
@@ -1118,7 +1094,7 @@ export class CdpService extends EventEmitter {
             return grpcResult;
         }
 
-        return { ok: false, error: grpcResult?.error || 'gRPC injection failed — no DOM fallback available' };
+        return { ok: false, error: grpcResult?.error || 'gRPC injection failed' };
     }
 
     /**
@@ -1190,11 +1166,15 @@ export class CdpService extends EventEmitter {
 
             const status = await client.getUserStatus();
             const configs = status?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
-            this.cachedModelConfigs = configs.map((cfg: any) => ({
-                label: cfg.label || 'Unknown',
-                model: cfg.modelOrAlias?.model || 'unknown',
-                supportsImages: cfg.supportsImages,
-            }));
+            this.cachedModelConfigs = configs.map((cfg: any) => {
+                const label = cfg.label || cfg.displayName || cfg.modelName || cfg.model || 'Unknown';
+                const modelId = cfg.modelOrAlias?.model || cfg.model || cfg.modelId || 'unknown';
+                return {
+                    label,
+                    model: String(modelId),
+                    supportsImages: !!cfg.supportsImages,
+                };
+            });
             return this.cachedModelConfigs.map(c => c.label);
         } catch (err: any) {
             logger.error('[CdpService] getUiModels via gRPC failed:', err.message);
@@ -1204,34 +1184,158 @@ export class CdpService extends EventEmitter {
 
     /**
      * Get the currently selected model label.
-     * If no model has been explicitly set, fetches from gRPC and returns the first recommended model.
+     *
+     * Priority:
+     *   1. Explicitly set model (via setUiModel / /model command)
+     *   2. Read from Antigravity UI DOM (the model selector button)
+     *   3. null if both fail
+     *
+     * Also refreshes the cached model config list from gRPC as a side effect.
      */
     async getCurrentModel(): Promise<string | null> {
-        if (this.cachedModelLabel) return this.cachedModelLabel;
-
-        // Try to fetch from gRPC
-        try {
-            const client = await this.ensureGrpcClient();
-            if (!client) return null;
-
-            const status = await client.getUserStatus();
-            const configs = status?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
-            if (configs.length > 0) {
-                // Find first recommended model, or fall back to first
-                const recommended = configs.find((c: any) => c.isRecommended);
-                this.cachedModelLabel = (recommended || configs[0]).label || null;
-                // Cache all configs
-                this.cachedModelConfigs = configs.map((cfg: any) => ({
-                    label: cfg.label || 'Unknown',
-                    model: cfg.modelOrAlias?.model || 'unknown',
-                    supportsImages: cfg.supportsImages,
-                }));
-                return this.cachedModelLabel;
+        // 1. If the bot explicitly set a model (via /model command), return it
+        if (this.cachedModelLabel) {
+            if (this.cachedModelConfigs.length === 0) {
+                await this.refreshModelConfigs();
             }
-        } catch (err: any) {
-            logger.debug(`[CdpService] getCurrentModel via gRPC failed: ${err.message}`);
+            const matched = this.findModelConfigByLabel(this.cachedModelLabel);
+            if (matched) {
+                this.cachedModelLabel = matched.label;
+            }
+            return this.cachedModelLabel;
+        }
+
+        // 2. Try reading the model from the Antigravity UI DOM
+        const uiModel = await this.readModelFromUI();
+        if (uiModel) {
+            this.cachedModelLabel = uiModel;
+            if (this.cachedModelConfigs.length === 0) {
+                await this.refreshModelConfigs();
+            }
+            const matched = this.findModelConfigByLabel(uiModel);
+            if (matched) {
+                this.cachedModelLabel = matched.label;
+            }
+            return this.cachedModelLabel;
+        }
+
+        // 3. Refresh model configs from gRPC (side effect for /model command)
+        await this.refreshModelConfigs();
+
+        return this.cachedModelLabel;
+    }
+
+    /**
+     * Read the currently selected model name directly from the Antigravity UI DOM.
+     * The model selector is a div[role="button"] in the cascade panel toolbar
+     * whose text matches a known model name pattern.
+     */
+    private async readModelFromUI(): Promise<string | null> {
+        if (!this.ws || this.ws.readyState !== 1 /* OPEN */) return null;
+
+        // Known model name substrings to identify the model selector element
+        const script = `(() => {
+            const modelKeywords = ['Claude', 'Gemini', 'GPT', 'Opus', 'Sonnet', 'Flash', 'Pro', 'Thinking'];
+            const buttons = document.querySelectorAll('div[role="button"]');
+            for (const btn of buttons) {
+                const text = btn.textContent?.trim();
+                if (!text || text.length > 60) continue;
+                if (modelKeywords.some(k => text.includes(k))) {
+                    return text;
+                }
+            }
+            return null;
+        })()`;
+
+        for (const ctx of this.contexts) {
+            try {
+                const res = await this.call('Runtime.evaluate', {
+                    expression: script,
+                    returnByValue: true,
+                    contextId: ctx.id,
+                });
+                const value = res?.result?.value;
+                if (typeof value === 'string' && value.length > 0) {
+                    logger.debug(`[CdpService] Model from UI: ${value}`);
+                    return value;
+                }
+            } catch {
+                // Try next context
+            }
         }
         return null;
+    }
+
+    /**
+     * Refresh the cached model config list from gRPC GetUserStatus.
+     * Does NOT set cachedModelLabel — only populates cachedModelConfigs
+     * for use by setUiModel/getSelectedModelId.
+     */
+    private async refreshModelConfigs(): Promise<void> {
+        try {
+            const client = await this.ensureGrpcClient();
+            if (!client) return;
+
+            const status = await client.getUserStatus();
+            const data = status?.userStatus?.cascadeModelConfigData;
+            const configs = data?.clientModelConfigs || [];
+            if (configs.length > 0) {
+                this.cachedModelConfigs = configs.map((cfg: any) => {
+                    const label = cfg.label || cfg.displayName || cfg.modelName || cfg.model || 'Unknown';
+                    const modelId = cfg.modelOrAlias?.model || cfg.model || cfg.modelId || 'unknown';
+                    return {
+                        label,
+                        model: String(modelId),
+                        supportsImages: !!cfg.supportsImages,
+                    };
+                });
+            }
+        } catch (err: any) {
+            logger.debug(`[CdpService] refreshModelConfigs failed: ${err.message}`);
+        }
+    }
+
+    private normalizeModelLabel(label: string): string {
+        return label.toLowerCase().replace(/\s+/g, ' ').trim();
+    }
+
+    private findModelConfigByLabel(modelName: string | null): { label: string; model: string; supportsImages?: boolean } | null {
+        if (!modelName) return null;
+
+        const normalized = this.normalizeModelLabel(modelName);
+        const exact = this.cachedModelConfigs.find(
+            c => this.normalizeModelLabel(c.label) === normalized,
+        );
+        if (exact) return exact;
+
+        return this.cachedModelConfigs.find((c) => {
+            const candidate = this.normalizeModelLabel(c.label);
+            return candidate.includes(normalized) || normalized.includes(candidate);
+        }) ?? null;
+    }
+
+    private async resolveSelectedModelId(): Promise<ModelId | null> {
+        if (this.cachedModelConfigs.length === 0) {
+            await this.refreshModelConfigs();
+        }
+
+        let found = this.findModelConfigByLabel(this.cachedModelLabel);
+        if (!found) {
+            const uiModel = await this.readModelFromUI();
+            if (uiModel) {
+                this.cachedModelLabel = uiModel;
+                if (this.cachedModelConfigs.length === 0) {
+                    await this.refreshModelConfigs();
+                }
+                found = this.findModelConfigByLabel(uiModel);
+            }
+        }
+
+        if (!found || found.model === 'unknown') return null;
+        this.cachedModelLabel = found.label;
+
+        const num = parseInt(found.model, 10);
+        return isNaN(num) ? found.model : num;
     }
 
     /**
@@ -1246,26 +1350,11 @@ export class CdpService extends EventEmitter {
             await this.getUiModels();
         }
 
-        // Find by label (case-insensitive)
-        const normalized = modelName.toLowerCase().trim();
-        const found = this.cachedModelConfigs.find(
-            c => c.label.toLowerCase().trim() === normalized,
-        );
-
+        const found = this.findModelConfigByLabel(modelName);
         if (found) {
             this.cachedModelLabel = found.label;
             logger.info(`[CdpService] Model set to '${found.label}' (${found.model})`);
             return { ok: true, model: found.label };
-        }
-
-        // Try partial match
-        const partial = this.cachedModelConfigs.find(
-            c => c.label.toLowerCase().includes(normalized) || normalized.includes(c.label.toLowerCase()),
-        );
-        if (partial) {
-            this.cachedModelLabel = partial.label;
-            logger.info(`[CdpService] Model set to '${partial.label}' (partial match for '${modelName}')`);
-            return { ok: true, model: partial.label };
         }
 
         const available = this.cachedModelConfigs.map(c => c.label).join(', ');
@@ -1273,15 +1362,15 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Get the model enum value for the currently selected model.
+     * Get the current model identifier for the currently selected model.
      * Used internally when building SendUserCascadeMessage payloads.
      */
-    getSelectedModelEnum(): string | null {
-        if (!this.cachedModelLabel) return null;
-        const found = this.cachedModelConfigs.find(
-            c => c.label === this.cachedModelLabel,
-        );
-        return found?.model || null;
+    getSelectedModelId(): ModelId | null {
+        const found = this.findModelConfigByLabel(this.cachedModelLabel);
+        if (!found || found.model === 'unknown') return null;
+        this.cachedModelLabel = found.label;
+        const num = parseInt(found.model, 10);
+        return isNaN(num) ? found.model : num;
     }
 
     /**
@@ -1341,18 +1430,13 @@ export class CdpService extends EventEmitter {
         return { ok: false, error: 'Command execution failed in all contexts' };
     }
 
-    // ─── Cascade ID (gRPC-based) ───────────────────────────────────────
+    // ─── Session Info (gRPC-based) ───────────────────────────────────
 
     /**
-     * Get the currently active cascade (conversation) ID.
-     * Uses gRPC GetAllCascadeTrajectories to find the most recent cascade.
-     *
-     * @returns The active cascade ID string, or null if not found
+     * Get information about the currently active session.
+     * @returns { id: string, title: string, summary: string } or null
      */
-    async getActiveCascadeId(): Promise<string | null> {
-        // Return cached if available
-        if (this.cachedCascadeId) return this.cachedCascadeId;
-
+    async getActiveSessionInfo(): Promise<{ id: string, title: string, summary: string } | null> {
         try {
             const client = await this.ensureGrpcClient();
             if (!client) return null;
@@ -1360,12 +1444,14 @@ export class CdpService extends EventEmitter {
             const summaries = await client.listCascades();
             if (!summaries || typeof summaries !== 'object') return null;
 
-            // Diagnostic: dump cascade IDs
-            const allIds = Object.keys(summaries);
-            logger.warn(`[CdpService] listCascades returned ${allIds.length} cascades: ${allIds.map(id => id.slice(0, 12) + '...').join(', ')}`);
-            for (const [id, s] of Object.entries(summaries).slice(0, 3)) {
-                const ss = s as any;
-                logger.warn(`[CdpService]   cascade=${id.slice(0, 16)} title=${ss.title?.slice(0, 40) || 'N/A'} mod=${ss.lastModifiedTimestamp || 'N/A'}`);
+            const toSessionInfo = (id: string, summary: any) => ({
+                id,
+                title: summary?.title || summary?.summary || 'Untitled Session',
+                summary: summary?.summary || '',
+            });
+
+            if (this.cachedCascadeId && summaries[this.cachedCascadeId]) {
+                return toSessionInfo(this.cachedCascadeId, summaries[this.cachedCascadeId]);
             }
 
             // Find the most recently modified cascade
@@ -1374,8 +1460,8 @@ export class CdpService extends EventEmitter {
 
             for (const [id, summary] of Object.entries(summaries)) {
                 const s = summary as any;
-                const modTime = s.lastModifiedTimestamp
-                    ? new Date(s.lastModifiedTimestamp).getTime()
+                const modTime = s.lastModifiedTimestamp || s.lastModifiedTime
+                    ? new Date(s.lastModifiedTimestamp || s.lastModifiedTime).getTime()
                     : 0;
                 if (modTime > latestTime) {
                     latestTime = modTime;
@@ -1385,20 +1471,116 @@ export class CdpService extends EventEmitter {
 
             if (latestId) {
                 this.cachedCascadeId = latestId;
-                return latestId;
+                return toSessionInfo(latestId, summaries[latestId]);
             }
 
-            // Fallback: just take the first key
+            // Fallback: first key
             const ids = Object.keys(summaries);
             if (ids.length > 0) {
-                this.cachedCascadeId = ids[0];
-                return ids[0];
+                const firstId = ids[0];
+                this.cachedCascadeId = firstId;
+                return toSessionInfo(firstId, summaries[firstId]);
             }
         } catch (err: any) {
-            logger.debug(`[CdpService] getActiveCascadeId via gRPC failed: ${err.message}`);
+            logger.debug(`[CdpService] getActiveSessionInfo via gRPC failed: ${err.message}`);
         }
-
         return null;
     }
-}
 
+    /**
+     * Get the currently active cascade (conversation) ID.
+     * Uses gRPC GetAllCascadeTrajectories to find the most recent cascade.
+     *
+     * @returns The active cascade ID string, or null if not found
+     */
+    async getActiveCascadeId(): Promise<string | null> {
+        const info = await this.getActiveSessionInfo();
+        return info?.id || null;
+    }
+
+    /**
+     * Set the currently active cascade ID (manual override).
+     */
+    setCachedCascadeId(id: string | null): void {
+        this.cachedCascadeId = id;
+    }
+
+    // ─── Gateway Restart (OpenClaw-style) ────────────────────────────
+
+    /**
+     * Perform a full gateway restart — the OpenClaw standard restart sequence.
+     *
+     * Steps:
+     *   1. Cancel any active cascade (stop running generation)
+     *   2. Tear down gRPC client (force re-discovery on next use)
+     *   3. Clear cached cascade ID and model configs
+     *   4. Reconnect CDP (refresh browser connection)
+     *   5. Re-discover the LS process and establish a new gRPC client
+     *
+     * @returns Result object with success status and details
+     */
+    async resetGateway(): Promise<{ ok: boolean; steps: string[]; error?: string }> {
+        const steps: string[] = [];
+
+        try {
+            // Step 1: Cancel active cascade (if one is running)
+            if (this.cachedCascadeId && this.grpcClient?.isReady()) {
+                try {
+                    await this.grpcClient.cancelCascade(this.cachedCascadeId);
+                    steps.push(`Cancelled cascade ${this.cachedCascadeId.slice(0, 12)}...`);
+                } catch (err: any) {
+                    // Not fatal — cascade may have already ended
+                    steps.push(`Cascade cancel skipped: ${err?.message || 'already ended'}`);
+                }
+            } else {
+                steps.push('No active cascade to cancel');
+            }
+
+            // Step 2: Tear down gRPC client
+            this.grpcClient = null;
+            this.grpcAuthAttempted = false;
+            steps.push('gRPC client reset');
+
+            // Step 3: Clear cached state
+            this.cachedCascadeId = null;
+            this.cachedModelLabel = null;
+            this.cachedModelConfigs = [];
+            steps.push('Cached state cleared (cascade, model, configs)');
+
+            // Step 4: Reconnect CDP
+            if (this.currentWorkspacePath) {
+                const projectName = this.currentWorkspaceName || 'unknown';
+                try {
+                    this.disconnectQuietly();
+                    await this.discoverAndConnectForWorkspace(this.currentWorkspacePath);
+                    steps.push(`CDP reconnected to "${projectName}"`);
+                } catch (err: any) {
+                    steps.push(`CDP reconnect warning: ${err?.message || 'failed'}`);
+                    // Not fatal — gRPC-only mode can still work
+                }
+            } else {
+                steps.push('CDP: no workspace path cached (skipped reconnect)');
+            }
+
+            // Step 5: Re-discover gRPC client
+            try {
+                const client = await this.ensureGrpcClient();
+                if (client?.isReady()) {
+                    steps.push('gRPC client re-established');
+                } else {
+                    steps.push('gRPC client discovery returned null (will retry on next message)');
+                }
+            } catch (err: any) {
+                steps.push(`gRPC re-discovery warning: ${err?.message || 'failed'}`);
+            }
+
+            logger.info(`[CdpService] Gateway restart completed: ${steps.length} steps`);
+            return { ok: true, steps };
+
+        } catch (err: any) {
+            const error = err?.message || String(err);
+            logger.error(`[CdpService] Gateway restart failed: ${error}`);
+            return { ok: false, steps, error };
+        }
+    }
+}

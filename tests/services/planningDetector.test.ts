@@ -24,6 +24,7 @@ describe('PlanningDetector - planning button detection and remote execution', ()
         jest.useFakeTimers();
         mockCdpService = new MockedCdpService() as jest.Mocked<CdpService>;
         mockCdpService.getPrimaryContextId = jest.fn().mockReturnValue(42);
+        mockCdpService.executeVscodeCommand = jest.fn();
         jest.clearAllMocks();
     });
 
@@ -208,12 +209,10 @@ describe('PlanningDetector - planning button detection and remote execution', ()
     });
 
     // ──────────────────────────────────────────────────────
-    // Test 5: clickProceedButton() can click the Proceed button
+    // Test 5: clickProceedButton() uses the backend command
     // ──────────────────────────────────────────────────────
-    it('executes a click script via CDP when clickProceedButton() is called', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: { ok: true } },
-        });
+    it('executes the backend command when clickProceedButton() is called', async () => {
+        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
 
         detector = new PlanningDetector({
             cdpService: mockCdpService,
@@ -224,14 +223,8 @@ describe('PlanningDetector - planning button detection and remote execution', ()
         const result = await detector.clickProceedButton('Proceed');
 
         expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Proceed'),
-                returnByValue: true,
-                contextId: 42,
-            }),
-        );
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.command.accept');
+        expect(mockCdpService.call).not.toHaveBeenCalled();
     });
 
     // ──────────────────────────────────────────────────────
@@ -413,33 +406,20 @@ describe('PlanningDetector - planning button detection and remote execution', ()
     });
 
     // ──────────────────────────────────────────────────────
-    // Test 13: clickProceedButton() without arguments uses detected proceedText
+    // Test 13: clickProceedButton() returns false when the backend command is unavailable
     // ──────────────────────────────────────────────────────
-    it('clickProceedButton() without arguments uses the detected proceedText', async () => {
-        const mockInfo = makePlanningInfo({ proceedText: 'Start Implementation' });
-
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })
-            .mockResolvedValueOnce({ result: { value: { ok: true } } });
+    it('clickProceedButton() returns false when the backend command is unavailable', async () => {
+        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: false } as any);
 
         detector = new PlanningDetector({
             cdpService: mockCdpService,
             pollIntervalMs: 500,
             onPlanningRequired: jest.fn(),
         });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500); // detection
-
         const result = await detector.clickProceedButton();
 
-        expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenLastCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Start Implementation'),
-            }),
-        );
+        expect(result).toBe(false);
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.command.accept');
     });
 
     // ──────────────────────────────────────────────────────

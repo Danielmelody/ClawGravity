@@ -34,6 +34,11 @@ program
     .action((_opts, cmd) => startAction(cmd.parent.opts(), cmd.parent));
 
 program
+    .command('restart')
+    .description('Fully restart the bot process')
+    .action((_opts, cmd) => startAction(cmd.parent.opts(), cmd.parent));
+
+program
     .command('doctor')
     .description('Check environment and dependencies')
     .action(doctorAction);

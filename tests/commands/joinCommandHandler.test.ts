@@ -15,9 +15,9 @@ jest.mock('../../src/services/cdpBridgeManager', () => ({
     getCurrentChatTitle: jest.fn().mockResolvedValue(null),
 }));
 
-// Mock ResponseMonitor to prevent real polling in tests
-jest.mock('../../src/services/responseMonitor', () => ({
-    ResponseMonitor: jest.fn().mockImplementation(() => ({
+// Mock GrpcResponseMonitor to prevent real monitoring in tests
+jest.mock('../../src/services/grpcResponseMonitor', () => ({
+    GrpcResponseMonitor: jest.fn().mockImplementation(() => ({
         startPassive: jest.fn().mockResolvedValue(undefined),
         stop: jest.fn().mockResolvedValue(undefined),
         isActive: jest.fn().mockReturnValue(false),

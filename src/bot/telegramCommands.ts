@@ -22,7 +22,7 @@ import type { PlatformMessage, MessagePayload } from '../platform/types';
 import type { CdpBridge } from '../services/cdpBridgeManager';
 import type { WorkspaceService } from '../services/workspaceService';
 import { getCurrentCdp } from '../services/cdpBridgeManager';
-import type { ResponseMonitor } from '../services/responseMonitor';
+import type { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import type { ModeService } from '../services/modeService';
 import type { ModelService } from '../services/modelService';
 import type { TelegramBindingRepository } from '../database/telegramBindingRepository';
@@ -40,12 +40,13 @@ import { escapeHtml } from '../platform/telegram/telegramFormatter';
 import { logger } from '../utils/logger';
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
 import { handleTelegramJoinCommand } from './telegramJoinCommand';
+import { restartCurrentProcess } from '../services/processRestartService';
 
 // ---------------------------------------------------------------------------
 // Known commands (used by both parser and /help output)
 // ---------------------------------------------------------------------------
 
-const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'history', 'schedule', 'schedule_add', 'schedule_remove'] as const;
+const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'history', 'schedule', 'schedule_add', 'schedule_remove'] as const;
 type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
@@ -96,9 +97,9 @@ export interface TelegramCommandDeps {
     readonly workspaceService?: WorkspaceService;
     readonly chatSessionService?: ChatSessionService;
     readonly fetchQuota?: () => Promise<any[]>;
-    /** Shared map of active ResponseMonitors keyed by project name.
+    /** Shared map of active response monitors keyed by project name.
      *  Used by /stop to halt monitoring and prevent stale re-sends. */
-    readonly activeMonitors?: Map<string, ResponseMonitor>;
+    readonly activeMonitors?: Map<string, GrpcResponseMonitor>;
     readonly sessionStateStore?: TelegramSessionStateStore;
     /** Schedule service for managing cron-based tasks */
     readonly scheduleService?: ScheduleService;
@@ -134,6 +135,9 @@ export async function handleTelegramCommand(
             break;
         case 'stop':
             await handleStop(deps, message);
+            break;
+        case 'restart':
+            await handleRestart(deps, message);
             break;
         case 'ping':
             await handlePing(message);
@@ -227,6 +231,7 @@ async function handleHelp(message: PlatformMessage): Promise<void> {
         '/schedule_remove — Remove a scheduled task',
         '/logs — Show recent log entries',
         '/stop — Interrupt active LLM generation',
+        '/restart — Fully restart the bot process',
         '/ping — Check bot latency',
         '/help — Show this help message',
         '',
@@ -253,7 +258,7 @@ async function handleStatus(deps: TelegramCommandDeps, message: PlatformMessage)
         ? deps.modeService.getCurrentMode()
         : 'unknown';
 
-    const currentModel = deps.modelService?.getDefaultModel() ?? 'unknown';
+    const currentModel = deps.modelService?.getDefaultModel() || deps.modelService?.getCurrentModel() || 'Auto (UI)';
 
     const lines = [
         '<b>Bot Status</b>',
@@ -298,24 +303,8 @@ async function handleStatus(deps: TelegramCommandDeps, message: PlatformMessage)
 
 async function handleStop(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
     const workspace = deps.bridge.lastActiveWorkspace;
-
-    // Try to use the active ResponseMonitor first (it stops monitoring + clicks stop)
-    if (workspace && deps.activeMonitors) {
-        const monitor = deps.activeMonitors.get(workspace);
-        if (monitor && monitor.isActive()) {
-            logger.info(`[TelegramCommand:stop] Stopping active monitor for ${workspace}...`);
-            const result = await monitor.clickStopButton();
-            if (result.ok) {
-                logger.done(`[TelegramCommand:stop] Stopped via monitor (method=${result.method})`);
-                await message.reply({ text: 'Generation stopped.' }).catch(logger.error);
-                return;
-            }
-            logger.warn(`[TelegramCommand:stop] Monitor clickStopButton failed: ${result.error}`);
-        }
-    }
-
-    // Fallback: try direct CDP call (no active monitor, or monitor click failed)
     const cdp = getCurrentCdp(deps.bridge);
+
     if (!cdp) {
         logger.warn('[TelegramCommand:stop] No CDP — lastActiveWorkspace:', workspace ?? '(null)');
         await message.reply({ text: 'No active workspace connection.' }).catch(logger.error);
@@ -323,33 +312,46 @@ async function handleStop(deps: TelegramCommandDeps, message: PlatformMessage): 
     }
 
     try {
-        logger.info('[TelegramCommand:stop] Stopping via VS Code command...');
-        // Try VS Code command first
-        const cmdResult = await cdp.executeVscodeCommand('antigravity.cancelCascadeInvocation');
-        if (cmdResult?.ok) {
-            logger.done(`[TelegramCommand:stop] Stopped via VS Code command`);
-            await message.reply({ text: 'Generation stopped.' }).catch(logger.error);
+        const grpcClient = await cdp.getGrpcClient();
+        const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
+        if (!grpcClient || !cascadeId) {
+            await message.reply({ text: 'No active backend stream to stop.' }).catch(logger.error);
             return;
         }
 
-        // DOM fallback
-        logger.info('[TelegramCommand:stop] VS Code command failed, trying DOM fallback...');
-        const { RESPONSE_SELECTORS } = await import('../services/responseMonitor');
-        const result = await cdp.call(
-            'Runtime.evaluate',
-            { expression: RESPONSE_SELECTORS.CLICK_STOP_BUTTON, returnByValue: true },
-        );
-        const value = result?.result?.value;
-        if (value && typeof value === 'object' && value.ok) {
-            logger.done(`[TelegramCommand:stop] Stop button clicked (method=${value.method})`);
-            await message.reply({ text: 'Generation stopped.' }).catch(logger.error);
-        } else {
-            logger.warn('[TelegramCommand:stop] Stop button not found — value:', JSON.stringify(value));
-            await message.reply({ text: 'Stop button not found (generation may have already finished).' }).catch(logger.error);
+        logger.info(`[TelegramCommand:stop] Cancelling cascade ${cascadeId.slice(0, 12)}...`);
+        await grpcClient.cancelCascade(cascadeId);
+
+        if (workspace && deps.activeMonitors) {
+            const monitor = deps.activeMonitors.get(workspace);
+            if (monitor?.isActive()) {
+                await monitor.stop().catch(() => { });
+            }
+            deps.activeMonitors.delete(workspace);
         }
+
+        logger.done('[TelegramCommand:stop] Cancelled via gRPC');
+        await message.reply({ text: 'Generation stopped.' }).catch(logger.error);
     } catch (err: any) {
         logger.error('[TelegramCommand:stop]', err?.message || err);
-        await message.reply({ text: 'Failed to click stop button.' }).catch(logger.error);
+        await message.reply({ text: 'Failed to stop generation.' }).catch(logger.error);
+    }
+}
+
+async function handleRestart(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
+    try {
+        logger.info('[TelegramCommand:restart] Restarting bot process...');
+        await message.reply({ text: '🔄 Restarting bot process...' }).catch(logger.error);
+
+        const result = await restartCurrentProcess();
+        if (!result.ok) {
+            throw new Error(result.error || 'unknown error');
+        }
+
+        logger.done(`[TelegramCommand:restart] Replacement process launched (pid=${result.pid ?? 'unknown'})`);
+    } catch (err: any) {
+        logger.error('[TelegramCommand:restart]', err?.message || err);
+        await message.reply({ text: `Failed to restart bot: ${escapeHtml(err?.message || 'unknown error')}` }).catch(logger.error);
     }
 }
 

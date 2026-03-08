@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 const LOCK_FILE = path.resolve(process.cwd(), '.bot.lock');
+let currentReleaseLock: (() => void) | null = null;
 
 /**
  * Check if a process with the given PID is running
@@ -91,6 +92,8 @@ export function acquireLock(): () => void {
         }
     };
 
+    currentReleaseLock = releaseLock;
+
     // Auto cleanup on process exit
     process.on('exit', releaseLock);
     process.on('SIGINT', () => {
@@ -108,4 +111,9 @@ export function acquireLock(): () => void {
     });
 
     return releaseLock;
+}
+
+export function releaseCurrentLock(): void {
+    currentReleaseLock?.();
+    currentReleaseLock = null;
 }

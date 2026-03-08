@@ -100,6 +100,7 @@ Just type in any bound channel:
 - `🔗 /join` — Join an existing Antigravity session (shows up to 20 recent sessions)
 - `🔗 /mirror` — Toggle PC→Discord message mirroring for the current session
 - `🛑 /stop` — Force-stop a running Antigravity task
+- `🔄 /restart` — Fully restart the bot process
 - `📸 /screenshot` — Capture and send Antigravity's current screen
 - `🔧 /status` — Show bot connection status, current mode, and active project
 - `✅ /autoaccept [on|off|status]` — Toggle auto-approval of file edit dialogs
@@ -125,6 +126,7 @@ Telegram commands use underscores instead of subcommand syntax (Telegram does no
 - `/autoaccept [on|off]` — Toggle auto-accept mode
 - `/logs [count]` — Show recent log entries
 - `/stop` — Interrupt active LLM generation
+- `/restart` — Fully restart the bot process
 - `/status` — Show bot status and connections
 - `/ping` — Check bot latency
 - `/help` — Show available commands
@@ -136,6 +138,7 @@ claw-gravity              # Auto: runs setup if unconfigured, otherwise starts t
 claw-gravity setup        # Interactive setup wizard
 claw-gravity open         # Open Antigravity with CDP (auto-selects available port)
 claw-gravity start        # Start the Discord bot
+claw-gravity restart      # Fully restart the bot process
 claw-gravity doctor       # Check environment and dependencies
 claw-gravity --verbose    # Show debug-level logs (CDP details, detector events, etc.)
 claw-gravity --quiet      # Only show errors

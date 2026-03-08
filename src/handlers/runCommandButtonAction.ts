@@ -81,12 +81,7 @@ export function createRunCommandButtonAction(
                 await interaction
                     .update({ text: `${action === 'run' ? '▶️' : '⛔'} ${actionLabel} completed`, components: [] as any[] })
                     .catch((err) => {
-                        logger.warn('[RunCommandAction] update failed, trying editReply:', err);
-                        interaction.editReply({ text: `${action === 'run' ? '▶️' : '⛔'} ${actionLabel} completed`, components: [] as any[] })
-                            .catch((editErr) => {
-                                logger.warn('[RunCommandAction] editReply failed, sending followUp:', editErr);
-                                interaction.followUp({ text: `${action === 'run' ? '▶️' : '⛔'} ${actionLabel} completed` }).catch(() => {});
-                            });
+                        logger.warn('[RunCommandAction] update failed:', err);
                     });
             } else {
                 await interaction
