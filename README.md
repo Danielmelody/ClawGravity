@@ -44,12 +44,6 @@ claw-gravity open     # Launch Antigravity with CDP enabled
 claw-gravity start    # Start the bot (Discord by default, or both platforms)
 ```
 
-Or run directly without installing:
-
-```bash
-npx claw-gravity
-```
-
 ---
 
 ## Features

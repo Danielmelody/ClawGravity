@@ -290,8 +290,15 @@ export function wrapTelegramChannel(
 
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            const sent = await api.sendMessage(chatId, text, rest);
-            return wrapTelegramSentMessage(sent, api, chatId);
+            try {
+                const sent = await api.sendMessage(chatId, text, rest);
+                return wrapTelegramSentMessage(sent, api, chatId);
+            } catch (htmlErr: any) {
+                // HTML parse error — retry with raw text, no parse_mode
+                const rawText = payload.text || text;
+                const sent = await api.sendMessage(chatId, rawText, {});
+                return wrapTelegramSentMessage(sent, api, chatId);
+            }
         },
     };
 }
@@ -334,12 +341,12 @@ export function wrapTelegramMessage(
     const author = msg.from
         ? wrapTelegramUser(msg.from)
         : {
-              id: '0',
-              platform: 'telegram' as const,
-              username: 'unknown',
-              displayName: 'Unknown',
-              isBot: false,
-          };
+            id: '0',
+            platform: 'telegram' as const,
+            username: 'unknown',
+            displayName: 'Unknown',
+            isBot: false,
+        };
 
     const channel = wrapTelegramChannel(api, msg.chat.id, toInputFile);
 
@@ -365,7 +372,7 @@ export function wrapTelegramMessage(
                     msg.chat.id,
                     msg.message_id,
                     [{ type: 'emoji', emoji }],
-                ).catch(() => {});
+                ).catch(() => { });
             }
         },
         async reply(payload: MessagePayload): Promise<PlatformSentMessage> {
@@ -486,8 +493,15 @@ export function wrapTelegramSentMessage(
         async edit(payload: MessagePayload): Promise<PlatformSentMessage> {
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            const edited = await api.editMessageText(chatId, Number(msgId), text, rest);
-            return wrapTelegramSentMessage(edited, api, chatId);
+            try {
+                const edited = await api.editMessageText(chatId, Number(msgId), text, rest);
+                return wrapTelegramSentMessage(edited, api, chatId);
+            } catch (htmlErr: any) {
+                // HTML parse error — retry with raw text, no parse_mode
+                const rawText = payload.text || text;
+                const edited = await api.editMessageText(chatId, Number(msgId), rawText, {});
+                return wrapTelegramSentMessage(edited, api, chatId);
+            }
         },
         async delete(): Promise<void> {
             await api.deleteMessage(chatId, Number(msgId));

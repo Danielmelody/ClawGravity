@@ -47,6 +47,10 @@ export class ErrorPopupDetector {
     private lastNotifiedAt: number = 0;
     /** Cooldown period in ms to suppress duplicate notifications (10s for error popups) */
     private static readonly COOLDOWN_MS = 10000;
+    /** Set of keys that have already been notified (prevents cross-session re-fires) */
+    private notifiedKeys: Set<string> = new Set();
+    /** Maximum size of notifiedKeys before pruning oldest entries */
+    private static readonly MAX_NOTIFIED_KEYS = 50;
 
     constructor(options: ErrorPopupDetectorOptions) {
         this.cdpService = options.cdpService;
@@ -170,13 +174,20 @@ export class ErrorPopupDetector {
             const info = this.extractErrorFromTrajectory(steps, runStatus);
 
             if (info) {
-                const key = `${info.title}::${info.body.slice(0, 100)}`;
+                // Include cascadeId in the key to prevent cross-session re-fires
+                const key = `${cascadeId}::${info.title}::${info.body.slice(0, 100)}`;
                 const now = Date.now();
                 const withinCooldown = (now - this.lastNotifiedAt) < ErrorPopupDetector.COOLDOWN_MS;
-                if (key !== this.lastDetectedKey && !withinCooldown) {
+                if (key !== this.lastDetectedKey && !withinCooldown && !this.notifiedKeys.has(key)) {
                     this.lastDetectedKey = key;
                     this.lastDetectedInfo = info;
                     this.lastNotifiedAt = now;
+                    this.notifiedKeys.add(key);
+                    // Prune oldest entries if set grows too large
+                    if (this.notifiedKeys.size > ErrorPopupDetector.MAX_NOTIFIED_KEYS) {
+                        const first = this.notifiedKeys.values().next().value;
+                        if (first) this.notifiedKeys.delete(first);
+                    }
                     this.onErrorPopup(info);
                 } else if (key === this.lastDetectedKey) {
                     this.lastDetectedInfo = info;

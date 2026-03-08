@@ -556,11 +556,23 @@ async function deliverFinalTelegramText(
     }
 
     if (statusMsg) {
-        await statusMsg.edit({ text: chunks[0] }).catch(() => { });
-        for (const chunk of chunks.slice(1)) {
-            await channel.send({ text: chunk }).catch(logger.error);
+        let editOk = false;
+        try {
+            await statusMsg.edit({ text: chunks[0] });
+            editOk = true;
+        } catch (editErr: any) {
+            logger.warn(`[TelegramDeliver] statusMsg.edit failed: ${editErr?.message || editErr}`);
+            // Edit failed (e.g. HTML parse error) — delete the stale streaming card
+            // and fall through to send all chunks as new messages.
+            await statusMsg.delete().catch(() => { });
         }
-        return;
+
+        if (editOk) {
+            for (const chunk of chunks.slice(1)) {
+                await channel.send({ text: chunk }).catch(logger.error);
+            }
+            return;
+        }
     }
 
     for (const chunk of chunks) {

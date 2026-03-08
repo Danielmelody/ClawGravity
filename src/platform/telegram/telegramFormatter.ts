@@ -74,28 +74,38 @@ export function markdownToTelegramHtml(text: string): string {
     // <code>...</code>). Since the bold regex `.+?` can span text that
     // includes those prior HTML outputs, calling escapeHtml() would
     // double-escape them (e.g. &lt;code&gt;).
-    //
-    // This is safe because Telegram's Bot API HTML parser rejects unknown
-    // tags with a parse error rather than executing them, so raw `<` / `>`
-    // in user text will cause a Telegram API error, not an XSS vector.
     result = result.replace(
         /\*\*(.+?)\*\*/g,
         (_match, content: string) => `<b>${content}</b>`,
     );
 
     // Italic *text* (single asterisk, not inside bold)
-    // Same HTML escaping rationale as bold above.
     result = result.replace(
         /(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g,
         (_match, content: string) => `<i>${content}</i>`,
     );
 
     // Strikethrough ~~text~~
-    // Same HTML escaping rationale as bold above.
     result = result.replace(
         /~~(.+?)~~/g,
         (_match, content: string) => `<s>${content}</s>`,
     );
+
+    // Final sanitization: escape any remaining raw '<' and '>' that are NOT
+    // part of our known safe HTML tags. Without this, stray angle brackets
+    // (e.g. TypeScript generics `Map<string, X>`) cause Telegram API parse
+    // errors, which previously caused silent failures when editing messages.
+    //
+    // Strategy: replace known safe tags with placeholders, escape all
+    // remaining '<'/'>', then restore the placeholders.
+    const tagPlaceholders: string[] = [];
+    result = result.replace(/<\/?(?:b|i|s|code|pre|a)\b[^>]*>/gi, (tag) => {
+        const idx = tagPlaceholders.length;
+        tagPlaceholders.push(tag);
+        return `\x00TAG${idx}\x00`;
+    });
+    result = result.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    result = result.replace(/\x00TAG(\d+)\x00/g, (_m, idx) => tagPlaceholders[Number(idx)]);
 
     return result;
 }

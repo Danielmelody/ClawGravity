@@ -226,13 +226,24 @@ export class GrpcCascadeClient extends EventEmitter {
         const proto = conn.useTls ? 'https' : 'http';
         const url = `${proto}://127.0.0.1:${conn.port}/exa.language_server_pb.LanguageServerService/StreamCascadeReactiveUpdates`;
 
-        // Use the same content-type format as unary RPCs (application/json)
-        // to avoid HTTP 415 from newer LS versions that reject connect+json.
-        const jsonBody = JSON.stringify({ cascadeId });
+        // StreamCascadeReactiveUpdates is a server-streaming RPC using ConnectRPC.
+        // Proto: StreamReactiveUpdatesRequest { protocol_version=1 (uint32), id (string) }
+        // Must use:
+        //   - Content-Type: application/connect+json (NOT application/json)
+        //   - Body: Connect streaming envelope (5-byte header: 0x00 flag + 4-byte BE length + JSON)
+        const payload = { protocolVersion: 1, id: cascadeId };
+        const jsonStr = JSON.stringify(payload);
+        const msgBuf = Buffer.from(jsonStr, 'utf8');
+
+        // Connect streaming envelope: flag byte (0x00=uncompressed) + uint32 BE length + message
+        const envelopedBody = Buffer.alloc(5 + msgBuf.length);
+        envelopedBody[0] = 0x00; // flags: uncompressed data frame
+        envelopedBody.writeUInt32BE(msgBuf.length, 1);
+        msgBuf.copy(envelopedBody, 5);
 
         const headers: Record<string, string | number> = {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(jsonBody),
+            'Content-Type': 'application/connect+json',
+            'Content-Length': envelopedBody.length,
             'connect-protocol-version': '1',
         };
         if (conn.csrfToken) {
@@ -248,8 +259,7 @@ export class GrpcCascadeClient extends EventEmitter {
         }
 
         const req = httpModule.request(url, reqOptions, (res) => {
-            // Diagnostic: log HTTP status and cascade ID
-            logger.warn(`[GrpcStream] HTTP ${res.statusCode} for cascade=${cascadeId.slice(0, 12)}... url=${url}`);
+            logger.info(`[GrpcStream] HTTP ${res.statusCode} for cascade=${cascadeId.slice(0, 12)}... (reactive stream)`);
             if (res.statusCode && res.statusCode !== 200) {
                 let errBody = '';
                 res.on('data', (chunk: Buffer) => { errBody += chunk.toString(); });
@@ -262,91 +272,67 @@ export class GrpcCascadeClient extends EventEmitter {
 
             let totalBytesReceived = 0;
             let rawBuffer = Buffer.alloc(0);
+            let frameCount = 0;
 
             res.on('data', (chunk: Buffer) => {
-                // Skip processing if stream was aborted — prevents stale events
-                // from bleeding into a new monitor's listeners on the same EventEmitter.
+                // Skip processing if stream was aborted
                 if (controller.signal.aborted) return;
                 totalBytesReceived += chunk.length;
-                // Diagnostic: log first chunk
+
                 if (totalBytesReceived === chunk.length) {
-                    logger.warn(`[GrpcStream] First chunk: ${chunk.length} bytes, hex=${chunk.slice(0, 50).toString('hex')}`);
+                    logger.info(`[GrpcStream] First chunk: ${chunk.length} bytes (reactive stream connected)`);
                 }
 
-                // Accumulate raw binary buffer for parsing
+                // Accumulate raw binary buffer for parsing Connect streaming envelopes
                 rawBuffer = Buffer.concat([rawBuffer, chunk]);
 
-                // Detect format: Connect streaming envelope (binary frames) vs plain JSON
-                // Connect envelopes start with flag byte (0x00 data, 0x02 trailer)
-                // Plain JSON starts with '{' (0x7B)
-                if (rawBuffer.length > 0 && (rawBuffer[0] === 0x00 || rawBuffer[0] === 0x02)) {
-                    // Connect streaming envelope format
-                    while (rawBuffer.length >= 5) {
-                        const flags = rawBuffer[0];
-                        const messageLength = rawBuffer.readUInt32BE(1);
+                // Parse Connect streaming envelope frames
+                // Each frame: 1-byte flags + 4-byte BE length + message body
+                while (rawBuffer.length >= 5) {
+                    const flags = rawBuffer[0];
+                    const messageLength = rawBuffer.readUInt32BE(1);
 
-                        if (rawBuffer.length < 5 + messageLength) {
-                            break; // Need more data
-                        }
-
-                        const messageData = rawBuffer.slice(5, 5 + messageLength);
-                        rawBuffer = rawBuffer.slice(5 + messageLength);
-
-                        if (flags === 2 || (flags & 0x02)) { // Trailer flag
-                            try {
-                                const trailer = JSON.parse(messageData.toString('utf8'));
-                                if (trailer.error) {
-                                    logger.warn(`[GrpcStream] Trailer error: ${JSON.stringify(trailer.error).slice(0, 300)}`);
-                                }
-                            } catch { /* ignore */ }
-                            continue;
-                        }
-
-                        try {
-                            const text = messageData.toString('utf8');
-                            const parsed = JSON.parse(text);
-                            this.emit('data', this.parseStreamEvent(parsed));
-                        } catch (e) {
-                            logger.warn(`[GrpcStream] Parse failure: ${e}`);
-                        }
+                    if (rawBuffer.length < 5 + messageLength) {
+                        break; // Need more data
                     }
-                } else {
-                    // Plain JSON format (newline-delimited or single object)
-                    const bufStr = rawBuffer.toString('utf8');
-                    const lines = bufStr.split('\n');
 
-                    // Keep the last potentially incomplete line in the buffer
-                    const lastLine = lines.pop() ?? '';
-                    rawBuffer = Buffer.from(lastLine, 'utf8');
+                    const messageData = rawBuffer.slice(5, 5 + messageLength);
+                    rawBuffer = rawBuffer.slice(5 + messageLength);
+                    frameCount++;
 
-                    for (const line of lines) {
-                        const trimmed = line.trim();
-                        if (!trimmed) continue;
+                    // Trailer frame (flags & 0x02)
+                    if (flags & 0x02) {
                         try {
-                            const parsed = JSON.parse(trimmed);
-                            this.emit('data', this.parseStreamEvent(parsed));
-                        } catch (e) {
-                            logger.warn(`[GrpcStream] JSON line parse failure: ${e}`);
-                        }
+                            const trailer = JSON.parse(messageData.toString('utf8'));
+                            if (trailer.error) {
+                                logger.warn(`[GrpcStream] Trailer error: ${JSON.stringify(trailer.error).slice(0, 300)}`);
+                                this.emit('error', new Error(trailer.error.message || 'Stream trailer error'));
+                            }
+                        } catch { /* ignore */ }
+                        continue;
+                    }
+
+                    // Data frame — reactive diff update
+                    // Format: { version: "N", diff: { fieldDiffs: [...] } }
+                    try {
+                        const text = messageData.toString('utf8');
+                        const parsed = JSON.parse(text);
+
+                        // The reactive stream sends protobuf-level diffs.
+                        // Rather than trying to apply diffs, emit a 'data' event
+                        // so GrpcResponseMonitor can fetch a fresh trajectory snapshot.
+                        // This turns polling into event-driven updates.
+                        const event = this.parseReactiveDiffEvent(parsed);
+                        this.emit('data', event);
+                    } catch (e) {
+                        logger.warn(`[GrpcStream] Parse failure: ${e}`);
                     }
                 }
             });
 
             res.on('end', () => {
-                // Skip if aborted — prevents stale 'complete' from reaching a new monitor.
                 if (controller.signal.aborted) return;
-                // Try parsing any remaining buffer
-                if (rawBuffer.length > 0) {
-                    const remaining = rawBuffer.toString('utf8').trim();
-                    if (remaining) {
-                        try {
-                            const parsed = JSON.parse(remaining);
-                            this.emit('data', this.parseStreamEvent(parsed));
-                        } catch { /* ignore partial data */ }
-                    }
-                }
-
-                logger.warn(`[GrpcStream] Stream ended, total bytes=${totalBytesReceived}`);
+                logger.info(`[GrpcStream] Reactive stream ended, total bytes=${totalBytesReceived}, frames=${frameCount}`);
                 this.emit('complete');
             });
 
@@ -363,10 +349,90 @@ export class GrpcCascadeClient extends EventEmitter {
         });
 
         controller.signal.addEventListener('abort', () => req.destroy());
-        req.write(jsonBody);
+        req.write(envelopedBody);
         req.end();
 
         return controller;
+    }
+
+    /**
+     * Parse a reactive diff update into a CascadeStreamEvent.
+     *
+     * The reactive stream returns incremental protobuf diffs in the format:
+     * { version: "N", diff: { fieldDiffs: [...] } }
+     *
+     * We inspect the diff to detect status changes (e.g. cascadeRunStatus
+     * transitioning to IDLE) and emit appropriate events. For text updates
+     * and tool calls, we emit a generic 'status' event so the monitor can
+     * fetch the full trajectory snapshot.
+     */
+    private parseReactiveDiffEvent(raw: any): CascadeStreamEvent {
+        const diff = raw?.diff;
+
+        if (!diff || !diff.fieldDiffs) {
+            // Non-diff message (maybe a version-only heartbeat)
+            return { type: 'status', raw };
+        }
+
+        // Scan field diffs for known trajectory fields
+        // Trajectory proto field numbers (from extension analysis):
+        //   field 1: cascadeId (string)
+        //   field 2: trajectory data (message)
+        //   ...status fields are nested
+        //
+        // Rather than fully decoding, look for string values that match
+        // known status strings to detect completion.
+        const statusStrings = this.extractStatusFromDiff(diff);
+        for (const status of statusStrings) {
+            if (status.includes('IDLE') || status.includes('idle')) {
+                return { type: 'status', text: 'CASCADE_RUN_STATUS_IDLE', raw };
+            }
+            if (status.includes('RUNNING') || status.includes('running')) {
+                return { type: 'status', text: 'CASCADE_RUN_STATUS_RUNNING', raw };
+            }
+            if (status.includes('QUOTA') || status.includes('quota')) {
+                return { type: 'error', text: 'Quota reached', raw };
+            }
+        }
+
+        // Generic update — trajectory changed, fetch fresh snapshot
+        return { type: 'status', raw };
+    }
+
+    /**
+     * Recursively extract string values from a protobuf diff that look like
+     * status indicators (e.g. CASCADE_RUN_STATUS_IDLE).
+     */
+    private extractStatusFromDiff(diff: any): string[] {
+        const results: string[] = [];
+        if (!diff) return results;
+
+        const fieldDiffs = diff.fieldDiffs || [];
+        for (const fd of fieldDiffs) {
+            // Check updateSingular for string values
+            const sv = fd?.updateSingular?.stringValue;
+            if (typeof sv === 'string' && sv.includes('CASCADE_RUN_STATUS')) {
+                results.push(sv);
+            }
+            // Recurse into nested message diffs
+            const msgValue = fd?.updateSingular?.messageValue;
+            if (msgValue) {
+                results.push(...this.extractStatusFromDiff(msgValue));
+            }
+            // Check repeated field updates
+            const repeatedDiff = fd?.updateRepeated;
+            if (repeatedDiff?.pushBack) {
+                for (const item of repeatedDiff.pushBack) {
+                    if (item?.messageValue) {
+                        results.push(...this.extractStatusFromDiff(item.messageValue));
+                    }
+                    if (typeof item?.stringValue === 'string' && item.stringValue.includes('CASCADE_RUN_STATUS')) {
+                        results.push(item.stringValue);
+                    }
+                }
+            }
+        }
+        return results;
     }
 
     /**

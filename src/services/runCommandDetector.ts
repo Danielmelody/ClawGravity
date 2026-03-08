@@ -45,6 +45,10 @@ export class RunCommandDetector {
     private lastDetectedKey: string | null = null;
     /** Full RunCommandInfo from the last detection */
     private lastDetectedInfo: RunCommandInfo | null = null;
+    /** Set of keys that have already been notified (prevents cross-session re-fires) */
+    private notifiedKeys: Set<string> = new Set();
+    /** Maximum size of notifiedKeys before pruning oldest entries */
+    private static readonly MAX_NOTIFIED_KEYS = 50;
 
     constructor(options: RunCommandDetectorOptions) {
         this.cdpService = options.cdpService;
@@ -59,6 +63,8 @@ export class RunCommandDetector {
         this.isRunning = true;
         this.lastDetectedKey = null;
         this.lastDetectedInfo = null;
+        // Note: notifiedKeys is NOT cleared on start — it persists across
+        // stop/start cycles to prevent stale cross-session re-notifications.
         this.schedulePoll();
     }
 
@@ -116,10 +122,20 @@ export class RunCommandDetector {
             const info = this.extractRunCommandFromTrajectory(steps, runStatus);
 
             if (info) {
-                const key = `${info.commandText}::${info.workingDirectory}`;
-                if (key !== this.lastDetectedKey) {
+                // Include cascadeId in the key to prevent cross-session re-fires:
+                // When cascade changes (new conversation), old detections won't match.
+                // When the same cascade transiently resolves then re-enters IDLE,
+                // notifiedKeys prevents duplicate notifications.
+                const key = `${cascadeId}::${info.commandText}::${info.workingDirectory}`;
+                if (key !== this.lastDetectedKey && !this.notifiedKeys.has(key)) {
                     this.lastDetectedKey = key;
                     this.lastDetectedInfo = info;
+                    this.notifiedKeys.add(key);
+                    // Prune oldest entries if set grows too large
+                    if (this.notifiedKeys.size > RunCommandDetector.MAX_NOTIFIED_KEYS) {
+                        const first = this.notifiedKeys.values().next().value;
+                        if (first) this.notifiedKeys.delete(first);
+                    }
                     this.onRunCommandRequired(info);
                 }
             } else {
@@ -167,19 +183,25 @@ export class RunCommandDetector {
                     const isTerminal = TERMINAL_TOOL_PATTERNS.some(p => toolName.includes(p));
                     if (!isTerminal) continue;
 
-                    // Check if pending
+                    // Require an explicit pending/awaiting status.
+                    // Tool calls without a status field are NOT assumed pending
+                    // — they may be already executed or purely informational.
                     const status = tc?.status || tc?.toolCallStatus;
-                    if (status && status !== 'pending' && status !== 'awaiting_confirmation') continue;
+                    if (!status || (status !== 'pending' && status !== 'awaiting_confirmation')) continue;
 
                     // Extract command text from tool call arguments
                     const args = tc?.arguments || tc?.function?.arguments || tc?.input || {};
                     const commandText = typeof args === 'string'
                         ? args
-                        : args?.command || args?.cmd || args?.script || JSON.stringify(args);
+                        : args?.command || args?.cmd || args?.script || '';
                     const workingDirectory = args?.cwd || args?.workingDirectory || args?.directory || '';
 
+                    // Skip if we couldn't extract a meaningful command
+                    const trimmedCommand = String(commandText).trim();
+                    if (!trimmedCommand) continue;
+
                     return {
-                        commandText: String(commandText).trim(),
+                        commandText: trimmedCommand,
                         workingDirectory: String(workingDirectory).trim(),
                         runText: 'Run',
                         rejectText: 'Reject',

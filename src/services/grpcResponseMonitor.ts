@@ -150,7 +150,7 @@ interface TrajectoryRecoverySnapshot {
     anchorMatched: boolean;
     latestRole: 'user' | 'assistant' | null;
     latestResponseText: string | null;
-    /** True if the latest assistant step contains tool calls (i.e. still working) */
+    /** True if the latest assistant step contains PENDING tool calls (no result yet — model is mid-turn) */
     latestAssistantHasToolCalls: boolean;
     latestAssistantSignature: string | null;
 }
@@ -222,6 +222,7 @@ export class GrpcResponseMonitor {
 
     // Global timers
     private safetyTimer: NodeJS.Timeout | null = null;
+    private reactiveSnapshotTimer: NodeJS.Timeout | null = null;
     private recoveryPromise: Promise<void> | null = null;
 
     constructor(options: GrpcResponseMonitorOptions) {
@@ -278,6 +279,10 @@ export class GrpcResponseMonitor {
         if (this.safetyTimer) {
             clearTimeout(this.safetyTimer);
             this.safetyTimer = null;
+        }
+        if (this.reactiveSnapshotTimer) {
+            clearTimeout(this.reactiveSnapshotTimer);
+            this.reactiveSnapshotTimer = null;
         }
 
         this.teardownStream();
@@ -387,9 +392,6 @@ export class GrpcResponseMonitor {
             const status = evt.text || '';
             if (status === 'CASCADE_RUN_STATUS_IDLE') {
                 if (this.hasSeenActivity) {
-                    // If we've seen tool calls during this session, the IDLE
-                    // may be a transient pause between tool-call rounds.
-                    // Verify via trajectory before completing.
                     if (this.hasSeenToolCall) {
                         void this.verifyIdleAndComplete();
                     } else {
@@ -401,8 +403,31 @@ export class GrpcResponseMonitor {
                 if (this.currentPhase === 'waiting') {
                     this.setPhase('thinking', null);
                 }
+            } else {
+                // Generic reactive diff update (no specific status string).
+                // The reactive stream sends protobuf diffs which we can't fully
+                // decode into text/tool_call events. Schedule a debounced
+                // trajectory snapshot fetch to extract the latest content.
+                this.hasSeenActivity = true;
+                this.scheduleReactiveSnapshotFetch();
             }
         }
+    }
+
+    /**
+     * Schedule a debounced trajectory snapshot fetch.
+     * Called when the reactive stream sends a diff update without a specific
+     * status string. Coalesces rapid diffs into a single trajectory fetch.
+     */
+    private scheduleReactiveSnapshotFetch(): void {
+        if (this.reactiveSnapshotTimer) return; // Already scheduled
+        this.reactiveSnapshotTimer = setTimeout(async () => {
+            this.reactiveSnapshotTimer = null;
+            if (!this.isRunning) return;
+            const snapshot = await this.readTrajectorySnapshot();
+            if (!this.isRunning) return;
+            this.applyTrajectorySnapshot(snapshot);
+        }, 200); // 200ms debounce — much faster than 3s polling
     }
 
     private handleStreamComplete(): void {
@@ -428,6 +453,7 @@ export class GrpcResponseMonitor {
         }
         void this.recoverFromSilentStreamClosure(`Stream error: ${msg.slice(0, 100)}`);
     }
+
 
     // ─── Common Logic ──────────────────────────────────────────────
 
@@ -540,9 +566,33 @@ export class GrpcResponseMonitor {
 
                 if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
                     latestRole = 'assistant';
-                    latestResponseText = extractAssistantStepText(step);
-                    latestAssistantHasToolCalls = Array.isArray(step?.plannerResponse?.toolCalls)
-                        && step.plannerResponse.toolCalls.length > 0;
+                    const stepText = extractAssistantStepText(step);
+                    // Accumulate all assistant step texts (not just the last one)
+                    // so the streaming preview shows the full multi-step output.
+                    if (stepText) {
+                        latestResponseText = latestResponseText
+                            ? latestResponseText + '\n\n' + stepText
+                            : stepText;
+                    }
+                    // Only count PENDING tool calls (no result yet) as "still working".
+                    // Resolved tool calls (with results/output) should not block completion.
+                    if (Array.isArray(step?.plannerResponse?.toolCalls) && step.plannerResponse.toolCalls.length > 0) {
+                        const pendingToolCalls = step.plannerResponse.toolCalls.filter((tc: any) => {
+                            // A tool call is pending if it has no result/output
+                            const hasResult = tc?.result !== undefined
+                                || tc?.output !== undefined
+                                || tc?.toolCallResult !== undefined;
+                            const status = tc?.status || tc?.toolCallStatus || '';
+                            const isCompleted = status === 'completed'
+                                || status === 'done'
+                                || status === 'success'
+                                || status === 'error';
+                            return !hasResult && !isCompleted;
+                        });
+                        latestAssistantHasToolCalls = pendingToolCalls.length > 0;
+                    } else {
+                        latestAssistantHasToolCalls = false;
+                    }
                     latestAssistantSignature = buildAssistantSignature(step, i);
                 }
             }

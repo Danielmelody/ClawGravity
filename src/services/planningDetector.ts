@@ -51,6 +51,10 @@ export class PlanningDetector {
     private lastNotifiedAt: number = 0;
     /** Cooldown period in ms to suppress duplicate notifications */
     private static readonly COOLDOWN_MS = 5000;
+    /** Set of keys that have already been notified (prevents cross-session re-fires) */
+    private notifiedKeys: Set<string> = new Set();
+    /** Maximum size of notifiedKeys before pruning oldest entries */
+    private static readonly MAX_NOTIFIED_KEYS = 50;
 
     constructor(options: PlanningDetectorOptions) {
         this.cdpService = options.cdpService;
@@ -204,13 +208,20 @@ export class PlanningDetector {
             const info = this.extractPlanningFromTrajectory(steps, runStatus);
 
             if (info) {
-                const key = `${info.planTitle}::${info.planSummary?.slice(0, 50)}`;
+                // Include cascadeId in the key to prevent cross-session re-fires
+                const key = `${cascadeId}::${info.planTitle}::${info.planSummary?.slice(0, 50)}`;
                 const now = Date.now();
                 const withinCooldown = (now - this.lastNotifiedAt) < PlanningDetector.COOLDOWN_MS;
-                if (key !== this.lastDetectedKey && !withinCooldown) {
+                if (key !== this.lastDetectedKey && !withinCooldown && !this.notifiedKeys.has(key)) {
                     this.lastDetectedKey = key;
                     this.lastDetectedInfo = info;
                     this.lastNotifiedAt = now;
+                    this.notifiedKeys.add(key);
+                    // Prune oldest entries if set grows too large
+                    if (this.notifiedKeys.size > PlanningDetector.MAX_NOTIFIED_KEYS) {
+                        const first = this.notifiedKeys.values().next().value;
+                        if (first) this.notifiedKeys.delete(first);
+                    }
                     this.onPlanningRequired(info);
                 } else if (key === this.lastDetectedKey) {
                     this.lastDetectedInfo = info;
@@ -249,14 +260,15 @@ export class PlanningDetector {
                 if (!plannerResponse) continue;
 
                 const toolCalls = plannerResponse?.toolCalls;
-                const responseText = plannerResponse?.response || '';
 
-                // Planning mode is indicated by a planner response with planned tool calls
-                // and/or a substantial plan text in the response
+                // Planning mode requires actual planned tool calls — the agent proposes
+                // a set of actions and waits for user approval before executing.
+                // A long response text alone is NOT sufficient; that's just a normal reply.
                 const hasToolPlan = Array.isArray(toolCalls) && toolCalls.length > 0;
-                const hasPlanText = responseText.length > 100;
 
-                if (!hasToolPlan && !hasPlanText) continue;
+                if (!hasToolPlan) continue;
+
+                const responseText = plannerResponse?.response || '';
 
                 // Build plan summary from tool calls
                 const toolNames = hasToolPlan
