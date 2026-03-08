@@ -1980,6 +1980,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 { command: 'template_delete', description: 'Delete a prompt template' },
                 { command: 'project_create', description: 'Create a new workspace' },
                 { command: 'new', description: 'Start a new chat session' },
+                { command: 'clear', description: 'Clear conversation history' },
                 { command: 'history', description: 'View a history session' },
                 { command: 'schedule', description: 'List scheduled tasks' },
                 { command: 'schedule_add', description: 'Add a scheduled task' },
@@ -2162,6 +2163,7 @@ async function handleSlashInteraction(
                 {
                     name: '💬 Chat', value: [
                         '`/new` — Start a new chat session',
+                        '`/clear` — Clear conversation history',
                         '`/chat` — Show current session info + list',
                     ].join('\n')
                 },
@@ -2438,6 +2440,11 @@ async function handleSlashInteraction(
 
         case 'new': {
             await chatHandler.handleNew(interaction);
+            break;
+        }
+
+        case 'clear': {
+            await chatHandler.handleClear(interaction);
             break;
         }
 

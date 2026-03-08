@@ -15,6 +15,7 @@
  *   /template   — List and execute prompt templates
  *   /logs       — Show recent log entries
  *   /new        — Start a new chat session
+ *   /clear      — Clear current conversation history
  */
 
 import fs from 'fs';
@@ -46,7 +47,7 @@ import { restartCurrentProcess } from '../services/processRestartService';
 // Known commands (used by both parser and /help output)
 // ---------------------------------------------------------------------------
 
-const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'history', 'schedule', 'schedule_add', 'schedule_remove'] as const;
+const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'history', 'schedule', 'schedule_add', 'schedule_remove'] as const;
 type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
@@ -172,6 +173,9 @@ export async function handleTelegramCommand(
         case 'new':
             await handleNew(deps, message);
             break;
+        case 'clear':
+            await handleClear(deps, message);
+            break;
         case 'history':
             await handleHistory(deps, message);
             break;
@@ -225,6 +229,7 @@ async function handleHelp(message: PlatformMessage): Promise<void> {
         '/template_delete — Delete a prompt template',
         '/project_create — Create a new workspace',
         '/new — Start a new chat session',
+        '/clear — Clear conversation history',
         '/history — View a history session',
         '/schedule — List scheduled tasks',
         '/schedule_add — Add a scheduled task',
@@ -593,6 +598,53 @@ async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): P
     } catch (err: any) {
         logger.error('[TelegramCommand:new] startNewChat threw:', err?.message || err);
         await message.reply({ text: 'Failed to start new chat.' }).catch(logger.error);
+    }
+}
+
+async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
+    if (!deps.chatSessionService) {
+        await message.reply({ text: 'Chat session service not available.' }).catch(logger.error);
+        return;
+    }
+
+    // Resolve workspace binding for this chat
+    const chatId = message.channel.id;
+    const binding = deps.telegramBindingRepo?.findByChatId(chatId);
+    if (!binding) {
+        await message.reply({
+            text: 'No project is linked to this chat. Use /project to bind a workspace first.',
+        }).catch(logger.error);
+        return;
+    }
+
+    // Resolve workspace path and connect to CDP
+    let cdp;
+    try {
+        const workspacePath = deps.workspaceService
+            ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
+            : binding.workspacePath;
+        cdp = await deps.bridge.pool.getOrConnect(workspacePath);
+    } catch (err: any) {
+        logger.error('[TelegramCommand:clear] CDP connection failed:', err?.message || err);
+        await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
+        return;
+    }
+
+    // Start a new chat session (effectively clearing the history)
+    try {
+        const result = await deps.chatSessionService.startNewChat(cdp);
+        if (result.ok) {
+            deps.sessionStateStore?.clearSelectedSession(message.channel.id);
+            await message.reply({ text: '🗑️ Conversation history cleared. Starting fresh.' }).catch(logger.error);
+        } else {
+            logger.warn('[TelegramCommand:clear] startNewChat failed:', result.error);
+            await message.reply({
+                text: `Failed to clear history: ${escapeHtml(result.error || 'unknown error')}`,
+            }).catch(logger.error);
+        }
+    } catch (err: any) {
+        logger.error('[TelegramCommand:clear] startNewChat threw:', err?.message || err);
+        await message.reply({ text: 'Failed to clear conversation history.' }).catch(logger.error);
     }
 }
 
