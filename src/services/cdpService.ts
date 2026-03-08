@@ -1310,7 +1310,7 @@ export class CdpService extends EventEmitter {
     }
 
     private normalizeModelLabel(label: string): string {
-        return label.toLowerCase().replace(/\s+/g, ' ').trim();
+        return label.toLowerCase().replace(/\s+/g, ' ').replace(/[()]/g, '').trim();
     }
 
     private findModelConfigByLabel(modelName: string | null): { label: string; model: string; supportsImages?: boolean } | null {
@@ -1324,6 +1324,14 @@ export class CdpService extends EventEmitter {
 
         return this.cachedModelConfigs.find((c) => {
             const candidate = this.normalizeModelLabel(c.label);
+            // When user has Opus explicitly selected we might have normalized="claude opus 4.6 thinking"
+            // And candidate="claude 3.5 opus" - neither direct inclusion works.
+            // A better fuzzy match for these typical models:
+            const nParts = normalized.split(' ');
+            const cParts = candidate.split(' ');
+            if (nParts.every(p => candidate.includes(p)) || cParts.every(p => normalized.includes(p))) {
+                return true;
+            }
             return candidate.includes(normalized) || normalized.includes(candidate);
         }) ?? null;
     }
