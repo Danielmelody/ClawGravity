@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { logger } from '../utils/logger';
 import { releaseCurrentLock } from '../utils/lockfile';
 
@@ -180,7 +180,46 @@ export function spawnReplacementProcess(options?: {
     }
 }
 
+/**
+ * Run `tsc` to compile the TypeScript project before restart.
+ * Returns null on success or an error message on failure.
+ */
+function buildProject(): string | null {
+    const cwd = process.cwd();
+    const tsconfigPath = path.resolve(cwd, 'tsconfig.json');
+
+    if (!fs.existsSync(tsconfigPath)) {
+        logger.warn('[ProcessRestart] No tsconfig.json found, skipping build step.');
+        return null;
+    }
+
+    logger.info('[ProcessRestart] Compiling TypeScript (tsc)...');
+    try {
+        execSync('npx tsc', {
+            cwd,
+            stdio: 'pipe',
+            timeout: 60_000,
+        });
+        logger.done('[ProcessRestart] Build completed successfully.');
+        return null;
+    } catch (err: any) {
+        const output = (err?.stdout?.toString() || '') + (err?.stderr?.toString() || '');
+        const trimmed = output.trim().slice(0, 2000);
+        logger.error('[ProcessRestart] Build failed:\n' + trimmed);
+        return trimmed || err?.message || 'Unknown build error';
+    }
+}
+
 export async function restartCurrentProcess(): Promise<RestartResult> {
+    // Build before restart so code changes take effect
+    const buildError = buildProject();
+    if (buildError) {
+        return {
+            ok: false,
+            error: `Build failed:\n${buildError}`,
+        };
+    }
+
     const result = spawnReplacementProcess({ detached: true, stdio: 'ignore' });
     if (!result.ok) {
         return result;

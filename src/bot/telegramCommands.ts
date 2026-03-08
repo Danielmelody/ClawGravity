@@ -354,8 +354,8 @@ async function handleStop(deps: TelegramCommandDeps, message: PlatformMessage): 
 
 async function handleRestart(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
     try {
-        logger.info('[TelegramCommand:restart] Restarting bot process...');
-        await message.reply({ text: '🔄 Restarting bot process...' }).catch(logger.error);
+        logger.info('[TelegramCommand:restart] Compiling & restarting bot process...');
+        await message.reply({ text: '� Compiling code & restarting bot...' }).catch(logger.error);
 
         const result = await restartCurrentProcess();
         if (!result.ok) {
@@ -365,7 +365,7 @@ async function handleRestart(deps: TelegramCommandDeps, message: PlatformMessage
         logger.done(`[TelegramCommand:restart] Replacement process launched (pid=${result.pid ?? 'unknown'})`);
     } catch (err: any) {
         logger.error('[TelegramCommand:restart]', err?.message || err);
-        await message.reply({ text: `Failed to restart bot: ${escapeHtml(err?.message || 'unknown error')}` }).catch(logger.error);
+        await message.reply({ text: `❌ Restart failed:\n<pre>${escapeHtml(err?.message || 'unknown error')}</pre>` }).catch(logger.error);
     }
 }
 

@@ -51,6 +51,37 @@ export interface TelegramBotLike {
     toInputFile?: (data: Buffer, filename?: string) => unknown;
 }
 
+// ---------------------------------------------------------------------------
+// 429 Rate-limit retry helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap an async Telegram API call with automatic retry on 429 (Too Many Requests).
+ * Extracts `retry_after` from the grammy error and waits before retrying.
+ * Falls back to 5s if the delay can't be parsed. Retries up to `maxRetries` times.
+ */
+async function withRetry429<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await fn();
+        } catch (err: any) {
+            const msg = err?.message || err?.description || '';
+            const is429 = err?.error_code === 429
+                || msg.includes('429')
+                || msg.includes('Too Many Requests');
+
+            if (!is429 || attempt >= maxRetries) {
+                throw err;
+            }
+
+            // Extract retry_after seconds from error message
+            const match = msg.match(/retry after (\d+)/i);
+            const delaySec = match ? Math.min(Number(match[1]), 60) : 5;
+            await new Promise(r => setTimeout(r, delaySec * 1000));
+        }
+    }
+}
+
 export interface TelegramFrom {
     id: number;
     first_name: string;
@@ -291,12 +322,12 @@ export function wrapTelegramChannel(
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
             try {
-                const sent = await api.sendMessage(chatId, text, rest);
+                const sent = await withRetry429(() => api.sendMessage(chatId, text, rest));
                 return wrapTelegramSentMessage(sent, api, chatId);
             } catch (htmlErr: any) {
                 // HTML parse error — retry with raw text, no parse_mode
                 const rawText = payload.text || text;
-                const sent = await api.sendMessage(chatId, rawText, {});
+                const sent = await withRetry429(() => api.sendMessage(chatId, rawText, {}));
                 return wrapTelegramSentMessage(sent, api, chatId);
             }
         },
@@ -448,27 +479,29 @@ export function wrapTelegramCallbackQuery(
             assertValidChatId(chatId);
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            await api.sendMessage(chatId, text, rest);
+            await withRetry429(() => api.sendMessage(chatId, text, rest));
         },
         async update(payload: MessagePayload): Promise<void> {
             if (!query.message) return;
             assertValidChatId(chatId);
+            const messageId = query.message.message_id;
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            await api.editMessageText(chatId, query.message.message_id, text, rest);
+            await withRetry429(() => api.editMessageText(chatId, messageId, text, rest));
         },
         async editReply(payload: MessagePayload): Promise<void> {
             if (!query.message) return;
             assertValidChatId(chatId);
+            const messageId = query.message.message_id;
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            await api.editMessageText(chatId, query.message.message_id, text, rest);
+            await withRetry429(() => api.editMessageText(chatId, messageId, text, rest));
         },
         async followUp(payload: MessagePayload): Promise<PlatformSentMessage> {
             assertValidChatId(chatId);
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            const sent = await api.sendMessage(chatId, text, rest);
+            const sent = await withRetry429(() => api.sendMessage(chatId, text, rest));
             return wrapTelegramSentMessage(sent, api, chatId);
         },
     };
@@ -494,12 +527,12 @@ export function wrapTelegramSentMessage(
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
             try {
-                const edited = await api.editMessageText(chatId, Number(msgId), text, rest);
+                const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), text, rest));
                 return wrapTelegramSentMessage(edited, api, chatId);
             } catch (htmlErr: any) {
                 // HTML parse error — retry with raw text, no parse_mode
                 const rawText = payload.text || text;
-                const edited = await api.editMessageText(chatId, Number(msgId), rawText, {});
+                const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), rawText, {}));
                 return wrapTelegramSentMessage(edited, api, chatId);
             }
         },

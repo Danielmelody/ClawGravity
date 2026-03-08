@@ -4,6 +4,7 @@ jest.mock('fs', () => ({
 
 jest.mock('child_process', () => ({
     spawn: jest.fn(),
+    execSync: jest.fn(),
 }));
 
 jest.mock('../../src/utils/lockfile', () => ({

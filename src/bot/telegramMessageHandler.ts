@@ -326,9 +326,12 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             const headerLines = buildModeModelLines(currentModeName, currentModel, currentModel);
 
             let sessionLines: string[] = [];
+            let lastStatusEditTime = 0;
+            const STATUS_EDIT_MIN_INTERVAL_MS = 2000;
             const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout') => {
                 if (!statusMsg) return;
-                const elapsed = Math.round((Date.now() - startTime) / 1000);
+                const now = Date.now();
+                const elapsed = Math.round((now - startTime) / 1000);
                 const nextText = buildTelegramStatusText({
                     activityLogText: lastActivityLogText,
                     previewText: mode === 'streaming' ? latestPreviewText : '',
@@ -340,7 +343,12 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 if (!nextText || nextText === lastStatusRender) {
                     return;
                 }
+                // Throttle: skip if last edit was too recent (unless it's a terminal state)
+                if (mode === 'streaming' && (now - lastStatusEditTime) < STATUS_EDIT_MIN_INTERVAL_MS) {
+                    return;
+                }
                 lastStatusRender = nextText;
+                lastStatusEditTime = now;
                 statusMsg.edit({ text: nextText }).catch(() => { });
             };
 
