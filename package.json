@@ -49,11 +49,13 @@
   "homepage": "https://github.com/Danielmelody/ClawGravity#readme",
   "dependencies": {
     "@inquirer/select": "^4.4.2",
+    "@types/marked": "^5.0.2",
     "better-sqlite3": "^12.6.2",
     "commander": "^14.0.3",
     "discord.js": "^14.25.1",
     "dotenv": "^17.3.1",
     "grammy": "^1.41.1",
+    "marked": "^15.0.12",
     "node-cron": "^4.2.1",
     "ws": "^8.19.0"
   },

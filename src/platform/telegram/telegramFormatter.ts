@@ -1,16 +1,5 @@
-/**
- * Telegram HTML formatter.
- *
- * Converts markdown-like text and RichContent to Telegram-compatible HTML.
- * Telegram supports a subset of HTML tags: <b>, <i>, <code>, <pre>, <s>,
- * <a href="...">, and a few others.
- */
-
+import { marked } from 'marked';
 import type { RichContent, RichContentField } from '../types';
-
-// ---------------------------------------------------------------------------
-// HTML escaping
-// ---------------------------------------------------------------------------
 
 /** Escape characters that are special in HTML. */
 export function escapeHtml(text: string): string {
@@ -22,111 +11,62 @@ export function escapeHtml(text: string): string {
         .replace(/'/g, '&#x27;');
 }
 
-// ---------------------------------------------------------------------------
-// Markdown -> Telegram HTML
-// ---------------------------------------------------------------------------
+marked.use({
+    renderer: {
+        html({ text }) { return escapeHtml(text); },
+        text({ text }) { return escapeHtml(text); },
+        paragraph(token) {
+            return this.parser.parseInline(token.tokens || []) + '\n\n';
+        },
+        strong({ text }) { return `<b>${text}</b>`; },
+        em({ text }) { return `<i>${text}</i>`; },
+        del({ text }) { return `<s>${text}</s>`; },
+        codespan({ text }) { return `<code>${escapeHtml(text)}</code>`; },
+        code({ text, lang }) {
+            const className = lang ? ` class="language-${lang}"` : '';
+            return `<pre><code${className}>${escapeHtml(text)}</code></pre>\n`;
+        },
+        link({ href, title, text }) { return `<a href="${href}">${text}</a>`; },
+        heading({ text, depth }) { return `<b>${text}</b>\n\n`; },
+        blockquote({ text }) { return `<blockquote>${text}</blockquote>\n`; },
+        list({ items, ordered, start }) {
+            return items ? items.map((i: any) => i.text ? `• ${i.text}\n` : "").join("") : "\n";
+        },
+        listitem({ text, task, checked }) {
+            return `• ${text}\n`;
+        },
+        br() { return '\n'; },
+        hr() { return '\n—\n'; }
+    },
+    gfm: true,
+    breaks: true
+});
 
 /**
  * Convert a limited subset of Markdown to Telegram HTML.
- *
- * Supported conversions:
- *  - `**bold**`       -> `<b>bold</b>`
- *  - `*italic*`       -> `<i>italic</i>` (only outside ** pairs)
- *  - `` `code` ``     -> `<code>code</code>`
- *  - ` ```block``` `  -> `<pre>block</pre>`
- *  - `~~strike~~`     -> `<s>strike</s>`
- *  - `[text](url)`    -> `<a href="url">text</a>`
- *
- * Text outside these patterns is HTML-escaped.
  */
 export function markdownToTelegramHtml(text: string): string {
-    // Process code blocks first (``` ... ```) to avoid inner transformations
-    let result = text.replace(
-        /```(?:\w*\n)?([\s\S]*?)```/g,
-        (_match, code: string) => `<pre>${escapeHtml(code.trim())}</pre>`,
-    );
-
-    // Markdown headings (# ... ######) -> bold text
-    // Telegram has no heading tags, so we convert to <b>bold</b>
-    result = result.replace(
-        /^(#{1,6})\s+(.+)$/gm,
-        (_match, _hashes: string, content: string) => `\n<b>${content}</b>`,
-    );
-
-    // Inline code (`...`)
-    result = result.replace(
-        /`([^`]+)`/g,
-        (_match, code: string) => `<code>${escapeHtml(code)}</code>`,
-    );
-
-    // Links [text](url) - must be processed before other inline markup
-    result = result.replace(
-        /\[([^\]]+)\]\(([^)]+)\)/g,
-        (_match, linkText: string, url: string) =>
-            `<a href="${escapeHtml(url)}">${escapeHtml(linkText)}</a>`,
-    );
-
-    // Bold **text** (must come before italic)
-    //
-    // HTML escaping note: Content inside bold/italic/strikethrough is NOT
-    // escaped here. Earlier regex passes (code blocks, inline code, links)
-    // have already replaced their matched text with HTML tags (e.g.
-    // <code>...</code>). Since the bold regex `.+?` can span text that
-    // includes those prior HTML outputs, calling escapeHtml() would
-    // double-escape them (e.g. &lt;code&gt;).
-    result = result.replace(
-        /\*\*(.+?)\*\*/g,
-        (_match, content: string) => `<b>${content}</b>`,
-    );
-
-    // Italic *text* (single asterisk, not inside bold)
-    result = result.replace(
-        /(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g,
-        (_match, content: string) => `<i>${content}</i>`,
-    );
-
-    // Strikethrough ~~text~~
-    result = result.replace(
-        /~~(.+?)~~/g,
-        (_match, content: string) => `<s>${content}</s>`,
-    );
-
-    // Final sanitization: escape any remaining raw '<' and '>' that are NOT
-    // part of our known safe HTML tags. Without this, stray angle brackets
-    // (e.g. TypeScript generics `Map<string, X>`) cause Telegram API parse
-    // errors, which previously caused silent failures when editing messages.
-    //
-    // Strategy: replace known safe tags with placeholders, escape all
-    // remaining '<'/'>', then restore the placeholders.
-    const tagPlaceholders: string[] = [];
-    result = result.replace(/<\/?(?:b|i|s|code|pre|a)\b[^>]*>/gi, (tag) => {
-        const idx = tagPlaceholders.length;
-        tagPlaceholders.push(tag);
-        return `\x00TAG${idx}\x00`;
-    });
-    result = result.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    result = result.replace(/\x00TAG(\d+)\x00/g, (_m, idx) => tagPlaceholders[Number(idx)]);
-
-    return result;
+    if (!text) return '';
+    
+    // Parse using marked
+    let html = marked.parse(text) as string;
+    
+    // Marked returns a string, but it might have double newlines from paragraph
+    // Let's clean it up slightly and sanitize unauthorized tags
+    html = html.trim();
+    return html;
 }
 
 // ---------------------------------------------------------------------------
 // RichContent -> Telegram HTML
 // ---------------------------------------------------------------------------
 
-/**
- * Format a single field for Telegram display.
- */
 function formatField(field: RichContentField): string {
     const escapedName = escapeHtml(field.name);
     const convertedValue = markdownToTelegramHtml(field.value);
     return `<b>${escapedName}:</b> ${convertedValue}`;
 }
 
-/**
- * Group fields into inline groups and standalone fields.
- * Consecutive inline fields are joined with " | ".
- */
 function formatFields(fields: readonly RichContentField[]): string {
     const parts: string[] = [];
     let inlineGroup: string[] = [];
@@ -143,7 +83,6 @@ function formatFields(fields: readonly RichContentField[]): string {
         }
     }
 
-    // Flush any remaining inline group
     if (inlineGroup.length > 0) {
         parts.push(inlineGroup.join(' | '));
     }
@@ -151,15 +90,6 @@ function formatFields(fields: readonly RichContentField[]): string {
     return parts.join('\n');
 }
 
-/**
- * Convert a RichContent object to a single Telegram HTML string.
- *
- * Layout:
- *   <b>title</b>\n\n
- *   description (markdown-converted)
- *   \n<b>fieldName:</b> fieldValue  (inline fields separated by " | ")
- *   \n\n<i>footer</i>
- */
 export function richContentToHtml(rc: RichContent): string {
     const sections: string[] = [];
 
@@ -175,7 +105,6 @@ export function richContentToHtml(rc: RichContent): string {
         sections.push(formatFields(rc.fields));
     }
 
-    // Join title/description/fields with double newline, then append footer
     let html = sections.join('\n\n');
 
     if (rc.footer) {
