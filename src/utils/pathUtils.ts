@@ -54,7 +54,7 @@ export function getAntigravityCdpHint(port: number = 9222): string {
         case 'darwin':
             return `open -a ${APP_NAME} --args --remote-debugging-port=${port}`;
         case 'win32':
-            return `antigravity --remote-debugging-port=${port}`;
+            return `${APP_NAME}.exe --remote-debugging-port=${port}`;
         default:
             return `${APP_NAME.toLowerCase()} --remote-debugging-port=${port}`;
     }

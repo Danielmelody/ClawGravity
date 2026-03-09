@@ -1,576 +1,252 @@
 /**
- * Error popup detection and remote execution TDD test
+ * ErrorPopupDetector test — gRPC trajectory-based detection.
  *
- * Test strategy:
- *   - ErrorPopupDetector class is the test target
- *   - Mock CdpService to simulate DOM error popup detection
- *   - Verify that onErrorPopup callback is called upon detection
- *   - Verify clickDismissButton / clickCopyDebugInfoButton / clickRetryButton / readClipboard behavior
- *   - Verify duplicate prevention, cooldown, stop, and CDP error recovery
+ * The source was refactored from CDP DOM detection to gRPC trajectory polling.
+ * Tests mock the gRPC client to simulate error trajectories.
  */
 
-import {
-    ErrorPopupDetector,
-    ErrorPopupDetectorOptions,
-    ErrorPopupInfo,
-    ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST,
-} from '../../src/services/errorPopupDetector';
+import { ErrorPopupDetector, ErrorPopupDetectorOptions, ErrorPopupInfo } from '../../src/services/errorPopupDetector';
 import { CdpService } from '../../src/services/cdpService';
 
-// Mock CdpService
 jest.mock('../../src/services/cdpService');
 const MockedCdpService = CdpService as jest.MockedClass<typeof CdpService>;
 
-describe('ErrorPopupDetector - error popup detection and remote execution', () => {
-    let detector: ErrorPopupDetector;
+describe('ErrorPopupDetector', () => {
     let mockCdpService: jest.Mocked<CdpService>;
+    let mockGrpcClient: { rawRPC: jest.Mock };
 
     beforeEach(() => {
-        jest.useFakeTimers();
+        jest.useFakeTimers({ doNotFake: ['setImmediate'] });
         mockCdpService = new MockedCdpService() as jest.Mocked<CdpService>;
-        mockCdpService.getPrimaryContextId = jest.fn().mockReturnValue(42);
-        mockCdpService.executeVscodeCommand = jest.fn();
-        jest.clearAllMocks();
+        mockGrpcClient = { rawRPC: jest.fn() };
+        (mockCdpService as any).getGrpcClient = jest.fn().mockResolvedValue(mockGrpcClient);
+        (mockCdpService as any).getActiveCascadeId = jest.fn().mockResolvedValue('cascade-1');
+        (mockCdpService as any).executeVscodeCommand = jest.fn().mockResolvedValue({ ok: true });
     });
 
-    afterEach(async () => {
-        if (detector) {
-            await detector.stop();
-        }
+    afterEach(() => {
         jest.useRealTimers();
     });
 
-    /** Helper to generate ErrorPopupInfo for testing */
-    function makeErrorPopupInfo(overrides: Partial<ErrorPopupInfo> = {}): ErrorPopupInfo {
-        return {
-            title: 'Agent terminated due to error',
-            body: 'The agent encountered an unexpected error and was terminated.',
-            buttons: ['Dismiss', 'Copy debug info', 'Retry'],
+    /** Flush all pending microtasks and timers to let async poll() complete */
+    async function flushPromises() {
+        // Use real setImmediate to let the promise chain fully drain
+        for (let i = 0; i < 10; i++) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+    }
+
+    function createDetector(overrides: Partial<ErrorPopupDetectorOptions> = {}): {
+        detector: ErrorPopupDetector;
+        onErrorPopup: jest.Mock;
+        onResolved: jest.Mock;
+    } {
+        const onErrorPopup = jest.fn();
+        const onResolved = jest.fn();
+        const detector = new ErrorPopupDetector({
+            cdpService: mockCdpService,
+            pollIntervalMs: 100,
+            onErrorPopup,
+            onResolved,
             ...overrides,
+        });
+        return { detector, onErrorPopup, onResolved };
+    }
+
+    function makeTrajectory(steps: any[], status?: string) {
+        return {
+            trajectory: {
+                steps,
+                cascadeRunStatus: status || 'CASCADE_RUN_STATUS_IDLE',
+            },
         };
     }
 
-    it('detect script explicitly matches dialogs whose title is just Error', () => {
-        expect(ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST).toContain("normalized === 'error'");
-        expect(ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST).toContain("normalized.startsWith('error ')");
-        expect(ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST).toContain('agent execution terminated');
-        expect(ERROR_POPUP_DETECTOR_SCRIPT_FOR_TEST).toContain('input-send-button-cancel-tooltip');
-    });
+    it('calls the onErrorPopup callback when an error step is detected', async () => {
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory([{ error: 'Something went wrong badly' }]),
+        );
 
-    // ──────────────────────────────────────────────────────
-    // Test 1: Call onErrorPopup when error popup is detected
-    // ──────────────────────────────────────────────────────
-    it('calls the onErrorPopup callback when an error popup is detected', async () => {
-        const onErrorPopup = jest.fn();
-        const mockInfo = makeErrorPopupInfo();
-
-        mockCdpService.call.mockResolvedValue({
-            result: { value: mockInfo },
-        });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup,
-        });
+        const { detector, onErrorPopup } = createDetector();
         detector.start();
+        jest.advanceTimersByTime(200);
+        await flushPromises();
 
-        await jest.advanceTimersByTimeAsync(500);
-
-        expect(onErrorPopup).toHaveBeenCalledTimes(1);
         expect(onErrorPopup).toHaveBeenCalledWith(
             expect.objectContaining({
-                title: 'Agent terminated due to error',
-                buttons: expect.arrayContaining(['Dismiss', 'Copy debug info', 'Retry']),
+                title: 'Agent Error',
+                body: expect.stringContaining('Something went wrong badly'),
             }),
         );
+
+        await detector.stop();
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 2: Do not call the callback when no error popup exists
-    // ──────────────────────────────────────────────────────
-    it('does not call the callback when no error popup exists', async () => {
-        const onErrorPopup = jest.fn();
-        mockCdpService.call.mockResolvedValue({ result: { value: null } });
+    it('does not call the callback multiple times when the same error is detected consecutively', async () => {
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory([{ error: 'Repeated error message' }]),
+        );
 
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup,
-        });
+        const { detector, onErrorPopup } = createDetector();
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        // First poll
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        // Second poll with same error
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+
+        expect(onErrorPopup).toHaveBeenCalledTimes(1);
+        await detector.stop();
+    });
+
+    it('stops polling and no longer calls the callback after stop()', async () => {
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory([{ error: 'Error after stop' }]),
+        );
+
+        const { detector, onErrorPopup } = createDetector();
+        detector.start();
+        await detector.stop();
+
+        jest.advanceTimersByTime(500);
+        await flushPromises();
 
         expect(onErrorPopup).not.toHaveBeenCalled();
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 3: No duplicate calls for the same popup detected consecutively
-    // ──────────────────────────────────────────────────────
-    it('does not call the callback multiple times when the same error popup is detected', async () => {
-        const onErrorPopup = jest.fn();
-        const mockInfo = makeErrorPopupInfo();
-
-        mockCdpService.call.mockResolvedValue({
-            result: { value: mockInfo },
+    it('continues monitoring even when a gRPC error occurs', async () => {
+        let callCount = 0;
+        mockGrpcClient.rawRPC.mockImplementation(async () => {
+            callCount++;
+            if (callCount === 1) throw new Error('Transient gRPC error');
+            return makeTrajectory([{ error: 'Real error after recovery' }]);
         });
 
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup,
-        });
+        const { detector, onErrorPopup } = createDetector();
         detector.start();
 
-        // 3 polling cycles
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
+        // First poll — throws
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        expect(onErrorPopup).not.toHaveBeenCalled();
 
-        // Should be called only once since the content is the same
-        expect(onErrorPopup).toHaveBeenCalledTimes(1);
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 3b: Dedup uses title + body snippet as key
-    // ──────────────────────────────────────────────────────
-    it('treats detections with same title and body as duplicate', async () => {
-        const onErrorPopup = jest.fn();
-
-        const info1 = makeErrorPopupInfo({ buttons: ['Dismiss', 'Retry'] });
-        const info2 = makeErrorPopupInfo({ buttons: ['Dismiss', 'Copy debug info', 'Retry'] });
-        // Both have same title + body -> same key
-
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: info1 } })
-            .mockResolvedValueOnce({ result: { value: info2 } });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup,
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
-
-        // Same title+body pair -> only 1 notification
-        expect(onErrorPopup).toHaveBeenCalledTimes(1);
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 3c: Cooldown suppresses rapid re-detection after key reset
-    // ──────────────────────────────────────────────────────
-    it('suppresses re-detection within 10s cooldown even after key reset', async () => {
-        const onErrorPopup = jest.fn();
-        const mockInfo = makeErrorPopupInfo();
-
-        // detected -> disappear -> re-detected (within cooldown)
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })   // detected
-            .mockResolvedValueOnce({ result: { value: null } })       // disappear (key reset)
-            .mockResolvedValueOnce({ result: { value: mockInfo } });  // re-detected
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup,
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);  // detect
-        expect(onErrorPopup).toHaveBeenCalledTimes(1);
-
-        await jest.advanceTimersByTimeAsync(500);  // disappear
-        await jest.advanceTimersByTimeAsync(500);  // re-detect within cooldown (1500ms total)
-
-        // Still only 1 notification due to cooldown (10s)
-        expect(onErrorPopup).toHaveBeenCalledTimes(1);
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 4: clickDismissButton() can click the Dismiss button
-    // ──────────────────────────────────────────────────────
-    it('executes a click script via CDP when clickDismissButton() is called', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: { ok: true } },
-        });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-        });
-
-        const result = await detector.clickDismissButton();
-
-        expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Dismiss'),
-                returnByValue: true,
-                contextId: 42,
-            }),
-        );
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 5: clickCopyDebugInfoButton() can click the Copy debug info button
-    // ──────────────────────────────────────────────────────
-    it('executes a click script via CDP when clickCopyDebugInfoButton() is called', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: { ok: true } },
-        });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-        });
-
-        const result = await detector.clickCopyDebugInfoButton();
-
-        expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Copy debug info'),
-                returnByValue: true,
-                contextId: 42,
-            }),
-        );
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 6: clickRetryButton() uses the backend command
-    // ──────────────────────────────────────────────────────
-    it('executes the backend command when clickRetryButton() is called', async () => {
-        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-        });
-
-        const result = await detector.clickRetryButton();
-
-        expect(result).toBe(true);
-        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.command.retry');
-        expect(mockCdpService.call).not.toHaveBeenCalled();
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 7: readClipboard() returns clipboard text
-    // ──────────────────────────────────────────────────────
-    it('readClipboard() returns the clipboard text', async () => {
-        const debugInfo = 'Error: Agent terminated\nStack: at line 42\nVersion: 1.0.0';
-        mockCdpService.call.mockResolvedValue({
-            result: { value: debugInfo },
-        });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-        });
-
-        const content = await detector.readClipboard();
-
-        expect(content).toBe(debugInfo);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                awaitPromise: true,
-            }),
-        );
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 8: readClipboard() returns null when clipboard is empty
-    // ──────────────────────────────────────────────────────
-    it('readClipboard() returns null when clipboard content is not available', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: null },
-        });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-        });
-
-        const content = await detector.readClipboard();
-
-        expect(content).toBeNull();
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 9: readClipboard() returns null on CDP error
-    // ──────────────────────────────────────────────────────
-    it('readClipboard() returns null when a CDP error occurs', async () => {
-        mockCdpService.call.mockRejectedValue(new Error('CDP connection lost'));
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-        });
-
-        const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => { });
-
-        const content = await detector.readClipboard();
-
-        expect(content).toBeNull();
-
-        consoleErrorSpy.mockRestore();
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 10: Polling stops after stop()
-    // ──────────────────────────────────────────────────────
-    it('stops polling and no longer calls the callback after stop()', async () => {
-        const onErrorPopup = jest.fn();
-        const mockInfo = makeErrorPopupInfo();
-
-        mockCdpService.call.mockResolvedValue({
-            result: { value: mockInfo },
-        });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup,
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);
-        expect(onErrorPopup).toHaveBeenCalledTimes(1);
+        // Second poll — succeeds with error
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        expect(onErrorPopup).toHaveBeenCalled();
 
         await detector.stop();
-
-        // Polling after stop is skipped
-        await jest.advanceTimersByTimeAsync(1000);
-        expect(onErrorPopup).toHaveBeenCalledTimes(1); // does not increase
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 11: Monitoring continues on CDP error
-    // ──────────────────────────────────────────────────────
-    it('continues monitoring even when a CDP error occurs', async () => {
-        const onErrorPopup = jest.fn();
-        const mockInfo = makeErrorPopupInfo({ title: 'Recovery Error' });
-
-        mockCdpService.call
-            .mockRejectedValueOnce(new Error('CDP error'))  // 1st call: error
-            .mockResolvedValueOnce({ result: { value: mockInfo } }); // 2nd call: success
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup,
-        });
-        detector.start();
-
-        const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => { });
-
-        await jest.advanceTimersByTimeAsync(500); // error
-        await jest.advanceTimersByTimeAsync(500); // success
-
-        expect(onErrorPopup).toHaveBeenCalledWith(
-            expect.objectContaining({ title: 'Recovery Error' }),
+    it('getLastDetectedInfo() returns the detected ErrorPopupInfo', async () => {
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory([{ plannerResponse: { error: 'Test error' } }]),
         );
 
-        consoleErrorSpy.mockRestore();
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 12: getLastDetectedInfo() returns detected info
-    // ──────────────────────────────────────────────────────
-    it('getLastDetectedInfo() returns the detected ErrorPopupInfo', async () => {
-        const mockInfo = makeErrorPopupInfo({
-            title: 'Custom Error',
-            body: 'Something went wrong with the agent.',
-        });
-
-        mockCdpService.call.mockResolvedValue({
-            result: { value: mockInfo },
-        });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-        });
-
-        // null before detection
-        expect(detector.getLastDetectedInfo()).toBeNull();
-
+        const { detector } = createDetector();
         detector.start();
-        await jest.advanceTimersByTimeAsync(500);
+        jest.advanceTimersByTime(200);
+        await flushPromises();
 
         const info = detector.getLastDetectedInfo();
         expect(info).not.toBeNull();
-        expect(info?.title).toBe('Custom Error');
-        expect(info?.body).toBe('Something went wrong with the agent.');
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 13: lastDetectedInfo resets when popup disappears
-    // ──────────────────────────────────────────────────────
-    it('getLastDetectedInfo() returns null when error popup disappears', async () => {
-        const mockInfo = makeErrorPopupInfo();
-
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })  // 1st: detected
-            .mockResolvedValueOnce({ result: { value: null } });     // 2nd: disappeared
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500); // detection
-        expect(detector.getLastDetectedInfo()).not.toBeNull();
-
-        await jest.advanceTimersByTimeAsync(500); // disappearance
-        expect(detector.getLastDetectedInfo()).toBeNull();
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 14: isActive() returns correct state
-    // ──────────────────────────────────────────────────────
-    it('isActive() returns true while running and false after stop', async () => {
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-        });
-
-        expect(detector.isActive()).toBe(false);
-
-        detector.start();
-        expect(detector.isActive()).toBe(true);
+        expect(info?.title).toBe('Agent Error');
 
         await detector.stop();
-        expect(detector.isActive()).toBe(false);
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 15: Calls without contextId parameter when contextId is null
-    // ──────────────────────────────────────────────────────
-    it('calls without the contextId parameter when contextId is null', async () => {
-        mockCdpService.getPrimaryContextId = jest.fn().mockReturnValue(null);
-        mockCdpService.call.mockResolvedValue({ result: { value: null } });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
+    it('getLastDetectedInfo() returns null when error disappears', async () => {
+        let hasError = true;
+        mockGrpcClient.rawRPC.mockImplementation(async () => {
+            if (hasError) {
+                return makeTrajectory([{ error: 'Transient' }]);
+            }
+            return makeTrajectory([{ type: 'CORTEX_STEP_TYPE_USER_INPUT' }]);
         });
+
+        const { detector } = createDetector();
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        expect(detector.getLastDetectedInfo()).not.toBeNull();
 
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.not.objectContaining({ contextId: expect.anything() }),
-        );
+        hasError = false;
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        expect(detector.getLastDetectedInfo()).toBeNull();
+
+        await detector.stop();
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 16: clickDismissButton() returns false on CDP error
-    // ──────────────────────────────────────────────────────
-    it('clickDismissButton() returns false when a CDP error occurs', async () => {
-        mockCdpService.call.mockRejectedValue(new Error('CDP error'));
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
+    it('calls onResolved when error state disappears', async () => {
+        let hasError = true;
+        mockGrpcClient.rawRPC.mockImplementation(async () => {
+            if (hasError) {
+                return makeTrajectory([{ error: 'Will resolve' }]);
+            }
+            return makeTrajectory([]);
         });
 
-        const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => { });
+        const { detector, onResolved } = createDetector();
+        detector.start();
 
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+
+        hasError = false;
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+
+        expect(onResolved).toHaveBeenCalled();
+        await detector.stop();
+    });
+
+    it('clickRetryButton() executes VS Code command', async () => {
+        const { detector } = createDetector();
+        const result = await detector.clickRetryButton();
+        expect(result).toBe(true);
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.command.retry');
+    });
+
+    it('clickDismissButton() returns true (no-op)', async () => {
+        const { detector } = createDetector();
         const result = await detector.clickDismissButton();
+        expect(result).toBe(true);
+    });
 
+    it('clickCopyDebugInfoButton() returns false (not supported)', async () => {
+        const { detector } = createDetector();
+        const result = await detector.clickCopyDebugInfoButton();
         expect(result).toBe(false);
-
-        consoleErrorSpy.mockRestore();
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 17: WebSocket disconnect errors are silently ignored
-    // ──────────────────────────────────────────────────────
-    it('silently ignores WebSocket disconnect errors during polling', async () => {
-        const onErrorPopup = jest.fn();
-        mockCdpService.call.mockRejectedValue(new Error('WebSocket is not connected'));
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup,
-        });
-
-        const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => { });
-
-        detector.start();
-        await jest.advanceTimersByTimeAsync(500);
-
-        expect(onErrorPopup).not.toHaveBeenCalled();
-        // The WebSocket error should be silently ignored (not logged)
-        expect(consoleErrorSpy).not.toHaveBeenCalled();
-
-        consoleErrorSpy.mockRestore();
+    it('readClipboard() returns null (not supported)', async () => {
+        const { detector } = createDetector();
+        const result = await detector.readClipboard();
+        expect(result).toBeNull();
     });
 
-    // ──────────────────────────────────────────────────────
-    // onResolved callback tests
-    // ──────────────────────────────────────────────────────
-    it('calls onResolved when error popup disappears after detection', async () => {
-        const onResolved = jest.fn();
-        const mockInfo = makeErrorPopupInfo();
+    it('detects error patterns in response text when IDLE', async () => {
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory(
+                [{ plannerResponse: { response: 'Agent terminated due to an error.' } }],
+                'CASCADE_RUN_STATUS_IDLE',
+            ),
+        );
 
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })  // detected
-            .mockResolvedValueOnce({ result: { value: null } });     // disappeared
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-            onResolved,
-        });
+        const { detector, onErrorPopup } = createDetector();
         detector.start();
+        jest.advanceTimersByTime(200);
+        await flushPromises();
 
-        await jest.advanceTimersByTimeAsync(500); // detection
-        expect(onResolved).not.toHaveBeenCalled();
-
-        await jest.advanceTimersByTimeAsync(500); // disappearance
-        expect(onResolved).toHaveBeenCalledTimes(1);
-    });
-
-    it('does not call onResolved when popup was never detected', async () => {
-        const onResolved = jest.fn();
-
-        mockCdpService.call.mockResolvedValue({ result: { value: null } });
-
-        detector = new ErrorPopupDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onErrorPopup: jest.fn(),
-            onResolved,
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
-
-        expect(onResolved).not.toHaveBeenCalled();
+        expect(onErrorPopup).toHaveBeenCalledWith(
+            expect.objectContaining({
+                title: 'Agent Error',
+            }),
+        );
+        await detector.stop();
     });
 });

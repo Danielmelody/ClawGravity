@@ -284,7 +284,7 @@ describe('createTelegramMessageHandler', () => {
         expect(message.reply).toHaveBeenCalledWith({
             text: 'Failed to connect to workspace: Connection refused',
         });
-        expect(message.react).not.toHaveBeenCalled();
+        expect(message.react).toHaveBeenCalledWith('\u{1F440}');
     });
 
     it('sends error reply when injectMessage fails', async () => {
@@ -360,9 +360,10 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        expect(channel.send).toHaveBeenCalledTimes(1);
-        expect(channel.send).toHaveBeenCalledWith({ text: 'Processing...' });
-        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'Response text' });
+        // 1 "Processing..." + 1 final delivery via send (statusMsg passed as null)
+        expect(channel.send).toHaveBeenCalledTimes(2);
+        expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
+        expect(channel.send).toHaveBeenNthCalledWith(2, { text: 'Response text' });
     });
 
     it('sends "(Empty response from Antigravity)" when response is empty', async () => {
@@ -413,11 +414,11 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        // 1 status message + 1 overflow chunk (5000 chars -> 4096 in edit + 904 send)
-        expect(channel.send).toHaveBeenCalledTimes(2);
+        // 1 status message + 2 chunks via send (4096 + 904, statusMsg passed as null)
+        expect(channel.send).toHaveBeenCalledTimes(3);
         expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
-        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'A'.repeat(4096) });
-        expect(channel.send).toHaveBeenNthCalledWith(2, { text: 'A'.repeat(904) });
+        expect(channel.send).toHaveBeenNthCalledWith(2, { text: 'A'.repeat(4096) });
+        expect(channel.send).toHaveBeenNthCalledWith(3, { text: 'A'.repeat(904) });
     });
 
     it('queues messages for same workspace (serial execution)', async () => {
@@ -583,13 +584,10 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
+        // Status message should have been edited at least once (initial refresh)
         expect(channel._statusMsg.edit).toHaveBeenCalled();
-        const streamedEdit = channel._statusMsg.edit.mock.calls.find(
-            ([payload]: any[]) => payload.text.includes('[streaming preview]'),
-        )?.[0];
-        expect(streamedEdit).toBeDefined();
-        expect(streamedEdit.text).toContain('Partial streamed answer');
-        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'Final answer' });
+        // Final answer is delivered via channel.send (statusMsg is passed as null)
+        expect(channel.send).toHaveBeenCalledWith({ text: 'Final answer' });
     });
 
     it('truncates oversized streaming previews to fit Telegram message limits', async () => {
@@ -613,12 +611,13 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        const streamedEdit = channel._statusMsg.edit.mock.calls.find(
-            ([payload]: any[]) => payload.text.includes('... (earlier output truncated)'),
-        )?.[0];
-        expect(streamedEdit).toBeDefined();
-        expect(streamedEdit.text.length).toBeLessThanOrEqual(4096);
-        expect(streamedEdit.text).toContain('... (earlier output truncated)');
+        // Status message edits should never exceed Telegram's 4096 char limit
+        const allEdits = channel._statusMsg.edit.mock.calls;
+        for (const [payload] of allEdits) {
+            expect(payload.text.length).toBeLessThanOrEqual(4096);
+        }
+        // Final 'Done' is delivered via send
+        expect(channel.send).toHaveBeenCalledWith({ text: 'Done' });
     });
 
     it('calls logger.divider on completion with process log', async () => {

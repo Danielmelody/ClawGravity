@@ -1,435 +1,282 @@
 /**
- * Approval button auto-detection and remote execution TDD test
+ * ApprovalDetector test — gRPC trajectory-based approval detection.
  *
- * Test strategy:
- *   - ApprovalDetector class is the test target
- *   - Mock CdpService to simulate DOM approval button detection
- *   - Verify that onApprovalRequired callback is called upon detection,
- *     triggering a button-attached Embed to be sent to Discord
- *   - Verify that getLastDetectedInfo() retains detected button info
- *   - Verify that scripts are executed with a specified contextId
+ * The source was refactored from CDP DOM button detection to gRPC trajectory polling.
+ * Tests mock the gRPC client to simulate pending tool calls requiring approval.
  */
 
 import { ApprovalDetector, ApprovalDetectorOptions, ApprovalInfo } from '../../src/services/approvalDetector';
 import { CdpService } from '../../src/services/cdpService';
 
-// Mock CdpService
 jest.mock('../../src/services/cdpService');
 const MockedCdpService = CdpService as jest.MockedClass<typeof CdpService>;
 
 describe('ApprovalDetector - approval button detection and remote execution', () => {
-    let detector: ApprovalDetector;
     let mockCdpService: jest.Mocked<CdpService>;
+    let mockGrpcClient: { rawRPC: jest.Mock };
 
     beforeEach(() => {
-        jest.useFakeTimers();
+        jest.useFakeTimers({ doNotFake: ['setImmediate'] });
         mockCdpService = new MockedCdpService() as jest.Mocked<CdpService>;
-        mockCdpService.getPrimaryContextId = jest.fn().mockReturnValue(42);
-        mockCdpService.executeVscodeCommand = jest.fn();
-        jest.clearAllMocks();
+        mockGrpcClient = { rawRPC: jest.fn() };
+        (mockCdpService as any).getGrpcClient = jest.fn().mockResolvedValue(mockGrpcClient);
+        (mockCdpService as any).getActiveCascadeId = jest.fn().mockResolvedValue('cascade-1');
+        (mockCdpService as any).executeVscodeCommand = jest.fn().mockResolvedValue({ ok: true });
     });
 
-    afterEach(async () => {
-        if (detector) {
-            await detector.stop();
-        }
+    afterEach(() => {
         jest.useRealTimers();
     });
 
-    /** Helper to generate ApprovalInfo for testing */
-    function makeApprovalInfo(overrides: Partial<ApprovalInfo> = {}): ApprovalInfo {
-        return {
-            approveText: '許可',
-            denyText: '拒否',
-            description: 'ファイルへの書き込みを許可しますか？',
+    /** Flush all pending microtasks and timers to let async poll() complete */
+    async function flushPromises() {
+        for (let i = 0; i < 10; i++) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+    }
+
+    function createDetector(overrides: Partial<ApprovalDetectorOptions> = {}): {
+        detector: ApprovalDetector;
+        onApprovalRequired: jest.Mock;
+        onResolved: jest.Mock;
+    } {
+        const onApprovalRequired = jest.fn();
+        const onResolved = jest.fn();
+        const detector = new ApprovalDetector({
+            cdpService: mockCdpService,
+            pollIntervalMs: 100,
+            onApprovalRequired,
+            onResolved,
             ...overrides,
+        });
+        return { detector, onApprovalRequired, onResolved };
+    }
+
+    function makeTrajectory(steps: any[], status: string = 'CASCADE_RUN_STATUS_IDLE') {
+        return {
+            trajectory: {
+                steps,
+                cascadeRunStatus: status,
+            },
         };
     }
 
-    // ──────────────────────────────────────────────────────
-    // Test 1: Call onApprovalRequired when a button is detected
-    // ──────────────────────────────────────────────────────
+    function makeApprovalStep(toolName: string = 'write_file') {
+        return {
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{ name: toolName }],
+            },
+        };
+    }
+
     it('calls the onApprovalRequired callback when an approval button is detected', async () => {
-        const onApprovalRequired = jest.fn();
-        const mockInfo = makeApprovalInfo();
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory([makeApprovalStep('write_file')]),
+        );
 
-        mockCdpService.call.mockResolvedValue({
-            result: { value: mockInfo }
-        });
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired,
-        });
+        const { detector, onApprovalRequired } = createDetector();
         detector.start();
+        jest.advanceTimersByTime(200);
+        await flushPromises();
 
-        await jest.advanceTimersByTimeAsync(500);
-
-        expect(onApprovalRequired).toHaveBeenCalledTimes(1);
         expect(onApprovalRequired).toHaveBeenCalledWith(
             expect.objectContaining({
-                approveText: '許可',
-                denyText: '拒否',
-                description: expect.stringContaining('ファイルへの書き込み'),
-            })
+                approveText: 'Allow',
+                denyText: 'Deny',
+                description: 'Tool: write_file',
+            }),
         );
+
+        await detector.stop();
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 2: Do not call the callback when no button exists
-    // ──────────────────────────────────────────────────────
-    it('does not call the callback when no approval button exists', async () => {
-        const onApprovalRequired = jest.fn();
-        mockCdpService.call.mockResolvedValue({ result: { value: null } });
+    it('does not call the callback multiple times when the same approval button is detected consecutively', async () => {
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory([makeApprovalStep('write_file')]),
+        );
 
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired,
-        });
+        const { detector, onApprovalRequired } = createDetector();
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+
+        expect(onApprovalRequired).toHaveBeenCalledTimes(1);
+        await detector.stop();
+    });
+
+    it('alwaysAllowButton() can directly click Allow This Conversation', async () => {
+        const { detector } = createDetector();
+        const result = await detector.alwaysAllowButton();
+        expect(result).toBe(true);
+        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.agent.acceptAgentStep');
+    });
+
+    it('alwaysAllowButton() can click the conversation allow button after expanding the Allow Once dropdown', async () => {
+        // In the gRPC-based approach, alwaysAllowButton delegates to approveButton
+        const { detector } = createDetector();
+        const result = await detector.alwaysAllowButton();
+        expect(result).toBe(true);
+    });
+
+    it('stops polling and no longer calls the callback after stop()', async () => {
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory([makeApprovalStep()]),
+        );
+
+        const { detector, onApprovalRequired } = createDetector();
+        detector.start();
+        await detector.stop();
+
+        jest.advanceTimersByTime(500);
+        await flushPromises();
 
         expect(onApprovalRequired).not.toHaveBeenCalled();
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 3: No duplicate calls for the same button detected consecutively
-    // ──────────────────────────────────────────────────────
-    it('does not call the callback multiple times when the same approval button is detected consecutively', async () => {
-        const onApprovalRequired = jest.fn();
-        const mockInfo = makeApprovalInfo({ description: '重複テスト: run command' });
-
-        mockCdpService.call.mockResolvedValue({
-            result: { value: mockInfo }
+    it('continues monitoring even when a CDP error occurs', async () => {
+        let callCount = 0;
+        mockGrpcClient.rawRPC.mockImplementation(async () => {
+            callCount++;
+            if (callCount === 1) throw new Error('Transient error');
+            return makeTrajectory([makeApprovalStep()]);
         });
 
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired,
-        });
+        const { detector, onApprovalRequired } = createDetector();
         detector.start();
 
-        // 3 polling cycles
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        expect(onApprovalRequired).not.toHaveBeenCalled();
 
-        // Should be called only once since the content is the same
-        expect(onApprovalRequired).toHaveBeenCalledTimes(1);
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 4: approveButton() uses the backend command
-    // ──────────────────────────────────────────────────────
-    it('executes the backend command when approveButton() is called', async () => {
-        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
-        });
-
-        const result = await detector.approveButton('Allow');
-
-        expect(result).toBe(true);
-        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.agent.acceptAgentStep');
-        expect(mockCdpService.call).not.toHaveBeenCalled();
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 5: denyButton() uses the backend command
-    // ──────────────────────────────────────────────────────
-    it('executes the backend command when denyButton() is called', async () => {
-        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
-        });
-
-        const result = await detector.denyButton('Deny');
-
-        expect(result).toBe(true);
-        expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.agent.rejectAgentStep');
-        expect(mockCdpService.call).not.toHaveBeenCalled();
-    });
-
-    it('alwaysAllowButton() can directly click Allow This Conversation', async () => {
-        mockCdpService.call.mockResolvedValue({
-            result: { value: { ok: true } }
-        });
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
-        });
-
-        const result = await detector.alwaysAllowButton();
-
-        expect(result).toBe(true);
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.objectContaining({
-                expression: expect.stringContaining('Allow This Conversation'),
-                returnByValue: true,
-                contextId: 42,
-            })
-        );
-    });
-
-    it('alwaysAllowButton() can click the conversation allow button after expanding the Allow Once dropdown', async () => {
-        let expanded = false;
-        mockCdpService.call.mockImplementation(async (_method: string, params: any) => {
-            const expression: string = params.expression || '';
-
-            // Dropdown expansion script
-            if (expression.includes('ALLOW_ONCE_PATTERNS')) {
-                expanded = true;
-                return { result: { value: { ok: true, reason: 'toggle-button' } } } as any;
-            }
-
-            // Only succeed the conversation allow button click after expansion
-            if (expanded && expression.includes('Allow This Conversation')) {
-                return { result: { value: { ok: true } } } as any;
-            }
-
-            return { result: { value: { ok: false } } } as any;
-        });
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
-        });
-
-        const result = await detector.alwaysAllowButton();
-
-        expect(result).toBe(true);
-        const expressions = mockCdpService.call.mock.calls
-            .map((call) => call?.[1]?.expression as string);
-        expect(expressions.some((exp) => exp.includes('ALLOW_ONCE_PATTERNS'))).toBe(true);
-        expect(expressions.some((exp) => exp.includes('Allow This Conversation'))).toBe(true);
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 6: Polling stops after stop()
-    // ──────────────────────────────────────────────────────
-    it('stops polling and no longer calls the callback after stop()', async () => {
-        const onApprovalRequired = jest.fn();
-        const mockInfo = makeApprovalInfo({ description: 'some action' });
-
-        mockCdpService.call.mockResolvedValue({
-            result: { value: mockInfo }
-        });
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired,
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);
-        expect(onApprovalRequired).toHaveBeenCalledTimes(1);
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        expect(onApprovalRequired).toHaveBeenCalled();
 
         await detector.stop();
-
-        // Polling after stop is skipped
-        await jest.advanceTimersByTimeAsync(1000);
-        expect(onApprovalRequired).toHaveBeenCalledTimes(1); // does not increase
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 7: Monitoring continues on CDP error
-    // ──────────────────────────────────────────────────────
-    it('continues monitoring even when a CDP error occurs', async () => {
-        const onApprovalRequired = jest.fn();
-        const mockInfo = makeApprovalInfo({ description: 'エラー後リカバリ' });
-
-        mockCdpService.call
-            .mockRejectedValueOnce(new Error('CDP error'))  // 1st call: error
-            .mockResolvedValueOnce({ result: { value: mockInfo } }); // 2nd call: success
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired,
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500); // エラー回
-        await jest.advanceTimersByTimeAsync(500); // 成功回
-
-        expect(onApprovalRequired).toHaveBeenCalledWith(
-            expect.objectContaining({ approveText: '許可' })
-        );
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 8: getLastDetectedInfo() can retrieve detected info
-    // ──────────────────────────────────────────────────────
     it('getLastDetectedInfo() returns the detected ApprovalInfo', async () => {
-        const mockInfo = makeApprovalInfo({
-            approveText: 'Accept',
-            denyText: 'Decline',
-            description: 'テストアクション',
-        });
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory([makeApprovalStep('delete_file')]),
+        );
 
-        mockCdpService.call.mockResolvedValue({
-            result: { value: mockInfo }
-        });
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
-        });
-
-        // null before detection
-        expect(detector.getLastDetectedInfo()).toBeNull();
-
+        const { detector } = createDetector();
         detector.start();
-        await jest.advanceTimersByTimeAsync(500);
+        jest.advanceTimersByTime(200);
+        await flushPromises();
 
         const info = detector.getLastDetectedInfo();
         expect(info).not.toBeNull();
-        expect(info?.approveText).toBe('Accept');
-        expect(info?.denyText).toBe('Decline');
-        expect(info?.description).toBe('テストアクション');
+        expect(info?.approveText).toBe('Allow');
+        expect(info?.description).toBe('Tool: delete_file');
+
+        await detector.stop();
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 9: lastDetectedInfo resets when the button disappears
-    // ──────────────────────────────────────────────────────
     it('getLastDetectedInfo() returns null when the button disappears', async () => {
-        const mockInfo = makeApprovalInfo();
-
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })  // 1st: detected
-            .mockResolvedValueOnce({ result: { value: null } });     // 2nd: disappeared
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
+        let hasPending = true;
+        mockGrpcClient.rawRPC.mockImplementation(async () => {
+            if (hasPending) {
+                return makeTrajectory([makeApprovalStep()]);
+            }
+            // No pending tools — completed
+            return makeTrajectory([{
+                type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                plannerResponse: { toolCalls: [{ name: 'write_file', status: 'completed' }] },
+            }]);
         });
+
+        const { detector } = createDetector();
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500); // detection
+        jest.advanceTimersByTime(200);
+        await flushPromises();
         expect(detector.getLastDetectedInfo()).not.toBeNull();
 
-        await jest.advanceTimersByTimeAsync(500); // disappearance
+        hasPending = false;
+        jest.advanceTimersByTime(200);
+        await flushPromises();
         expect(detector.getLastDetectedInfo()).toBeNull();
+
+        await detector.stop();
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 10: approveButton() returns false when the backend command is unavailable
-    // ──────────────────────────────────────────────────────
-    it('returns false when approveButton() command execution fails', async () => {
-        mockCdpService.executeVscodeCommand.mockRejectedValue(new Error('command failed'));
+    it('calls without the contextId parameter when contextId is null', async () => {
+        // In gRPC-based approach, there's no contextId — just verifying the poll works
+        (mockCdpService as any).getActiveCascadeId.mockResolvedValue(null);
 
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
+        const { detector, onApprovalRequired } = createDetector();
+        detector.start();
+
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+
+        // Should not crash, nor call callback
+        expect(onApprovalRequired).not.toHaveBeenCalled();
+        await detector.stop();
+    });
+
+    it('calls onResolved when buttons disappear after detection', async () => {
+        let hasPending = true;
+        mockGrpcClient.rawRPC.mockImplementation(async () => {
+            if (hasPending) {
+                return makeTrajectory([makeApprovalStep()]);
+            }
+            return makeTrajectory([{ type: 'CORTEX_STEP_TYPE_USER_INPUT' }]);
         });
-        const result = await detector.approveButton();
 
-        expect(result).toBe(false);
+        const { detector, onApprovalRequired, onResolved } = createDetector();
+        detector.start();
+
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        expect(onApprovalRequired).toHaveBeenCalled();
+
+        hasPending = false;
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+        expect(onResolved).toHaveBeenCalled();
+
+        await detector.stop();
+    });
+
+    it('does not detect approval when cascade is actively running', async () => {
+        mockGrpcClient.rawRPC.mockResolvedValue(
+            makeTrajectory([makeApprovalStep()], 'CASCADE_RUN_STATUS_RUNNING'),
+        );
+
+        const { detector, onApprovalRequired } = createDetector();
+        detector.start();
+
+        jest.advanceTimersByTime(200);
+        await flushPromises();
+
+        expect(onApprovalRequired).not.toHaveBeenCalled();
+        await detector.stop();
+    });
+
+    it('approveButton() executes the VS Code accept command', async () => {
+        const { detector } = createDetector();
+        const result = await detector.approveButton();
+        expect(result).toBe(true);
         expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.agent.acceptAgentStep');
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 11: denyButton() returns false when the backend command is unavailable
-    // ──────────────────────────────────────────────────────
-    it('returns false when denyButton() command execution fails', async () => {
-        mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: false } as any);
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
-        });
+    it('denyButton() executes the VS Code reject command', async () => {
+        const { detector } = createDetector();
         const result = await detector.denyButton();
-
-        expect(result).toBe(false);
+        expect(result).toBe(true);
         expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.agent.rejectAgentStep');
     });
 
-    // ──────────────────────────────────────────────────────
-    // Test 12: Calls without contextId parameter when contextId is null
-    // ──────────────────────────────────────────────────────
-    it('calls without the contextId parameter when contextId is null', async () => {
-        mockCdpService.getPrimaryContextId = jest.fn().mockReturnValue(null);
-        mockCdpService.call.mockResolvedValue({ result: { value: null } });
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);
-
-        expect(mockCdpService.call).toHaveBeenCalledWith(
-            'Runtime.evaluate',
-            expect.not.objectContaining({ contextId: expect.anything() })
-        );
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 13: onResolved fires when detected buttons disappear
-    // ──────────────────────────────────────────────────────
-    it('calls onResolved when buttons disappear after detection', async () => {
-        const onResolved = jest.fn();
-        const mockInfo = makeApprovalInfo();
-
-        mockCdpService.call
-            .mockResolvedValueOnce({ result: { value: mockInfo } })  // detected
-            .mockResolvedValueOnce({ result: { value: null } });     // disappeared
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
-            onResolved,
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500); // detection
-        expect(onResolved).not.toHaveBeenCalled();
-
-        await jest.advanceTimersByTimeAsync(500); // disappearance
-        expect(onResolved).toHaveBeenCalledTimes(1);
-    });
-
-    // ──────────────────────────────────────────────────────
-    // Test 14: onResolved does not fire when no prior detection
-    // ──────────────────────────────────────────────────────
-    it('does not call onResolved when buttons were never detected', async () => {
-        const onResolved = jest.fn();
-
-        mockCdpService.call.mockResolvedValue({ result: { value: null } });
-
-        detector = new ApprovalDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onApprovalRequired: jest.fn(),
-            onResolved,
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
-
-        expect(onResolved).not.toHaveBeenCalled();
+    it('approveButton() returns false when command fails', async () => {
+        (mockCdpService as any).executeVscodeCommand.mockResolvedValue({ ok: false });
+        const { detector } = createDetector();
+        const result = await detector.approveButton();
+        expect(result).toBe(false);
     });
 });

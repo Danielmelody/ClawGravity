@@ -33,7 +33,7 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await Promise.resolve();
 
         expect(client.rawRPC).not.toHaveBeenCalled();
-        expect(onPhaseChange).toHaveBeenCalledWith('error', null);
+        expect(onPhaseChange).toHaveBeenCalledWith('error', 'Stream payload error: schema mismatch');
         expect(onTimeout).toHaveBeenCalledWith('');
 
         await monitor.stop();

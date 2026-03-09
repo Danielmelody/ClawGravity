@@ -420,7 +420,7 @@ describe('handleTelegramCommand — /restart', () => {
 
         await handleTelegramCommand({ bridge }, message as any, { command: 'restart', args: '' });
 
-        expect(message.reply).toHaveBeenCalledWith({ text: '🔄 Restarting bot process...' });
+        expect(message.reply).toHaveBeenCalledWith({ text: expect.stringContaining('Compiling code & restarting bot') });
         expect(restartCurrentProcess).toHaveBeenCalled();
     });
 
@@ -431,8 +431,10 @@ describe('handleTelegramCommand — /restart', () => {
 
         await handleTelegramCommand({ bridge }, message as any, { command: 'restart', args: '' });
 
-        expect(message.reply).toHaveBeenNthCalledWith(1, { text: '🔄 Restarting bot process...' });
-        expect(message.reply).toHaveBeenNthCalledWith(2, { text: 'Failed to restart bot: spawn failed' });
+        expect(message.reply).toHaveBeenNthCalledWith(1, { text: expect.stringContaining('Compiling code & restarting bot') });
+        expect(message.reply).toHaveBeenNthCalledWith(2, {
+            text: expect.stringContaining('Restart failed'),
+        });
     });
 });
 

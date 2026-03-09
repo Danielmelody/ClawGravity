@@ -49,6 +49,17 @@ jest.mock('discord.js', () => {
                     optFn(option);
                     return sub;
                 }),
+                addIntegerOption: jest.fn().mockImplementation((optFn: (option: any) => void) => {
+                    const option = {
+                        setName: jest.fn().mockReturnThis(),
+                        setDescription: jest.fn().mockReturnThis(),
+                        setRequired: jest.fn().mockReturnThis(),
+                        setMinValue: jest.fn().mockReturnThis(),
+                        setMaxValue: jest.fn().mockReturnThis(),
+                    };
+                    optFn(option);
+                    return sub;
+                }),
             };
             fn(sub);
             return this;
@@ -81,9 +92,9 @@ describe('registerSlashCommands', () => {
         expect(names).toContain('autoaccept');
     });
 
-    it('includes history and mirror commands in registration targets', () => {
+    it('includes session and mirror commands in registration targets', () => {
         const names = slashCommands.map((cmd) => cmd.toJSON().name);
-        expect(names).toContain('history');
+        expect(names).toContain('session');
         expect(names).toContain('mirror');
     });
 

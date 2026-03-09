@@ -49,7 +49,7 @@ import type { TelegramMessageTracker } from '../services/telegramMessageTracker'
 // Known commands (used by both parser and /help output)
 // ---------------------------------------------------------------------------
 
-const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'session', 'debug', 'schedule', 'schedule_add', 'schedule_remove'] as const;
+const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'session', 'history', 'debug', 'schedule', 'schedule_add', 'schedule_remove'] as const;
 type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
@@ -183,6 +183,7 @@ export async function handleTelegramCommand(
             await handleClear(deps, message);
             break;
         case 'session':
+        case 'history':
             await handleSession(deps, message);
             break;
         case 'debug':
@@ -239,6 +240,7 @@ async function handleHelp(message: PlatformMessage): Promise<void> {
         '/new — Start a new chat session',
         '/clear — Clear conversation history',
         '/session — Switch to an existing session',
+        '/history — Browse chat history (alias for /session)',
         '/debug — Send conversation to Antigravity for analysis',
         '/schedule — List scheduled tasks',
         '/schedule_add — Add a scheduled task',

@@ -10,11 +10,28 @@ jest.mock('../../src/utils/logger', () => ({
         error: jest.fn(),
         warn: jest.fn(),
         debug: jest.fn(),
+        done: jest.fn(),
     }
 }));
 
 // Mock child_process for spawn
 jest.mock('child_process');
+
+// Mock ws to prevent actual WebSocket connections
+jest.mock('ws', () => {
+    return jest.fn().mockImplementation(() => {
+        const emitter = new (require('events').EventEmitter)();
+        Object.assign(emitter, {
+            close: jest.fn(),
+            send: jest.fn(),
+            readyState: 1, // OPEN
+            removeAllListeners: jest.fn().mockReturnThis(),
+        });
+        // Immediately trigger 'open' event
+        process.nextTick(() => emitter.emit('open'));
+        return emitter;
+    });
+});
 
 describe('CdpService - Cross-Platform Workspace Launching', () => {
     let service: CdpService;
@@ -29,14 +46,15 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
 
         service = new CdpService({ portsToScan: [9999], maxReconnectAttempts: 0 });
 
-        // Mock internal implementation to avoid actual CDP port scanning and connection
+        // Mock internal methods — getJson must be mocked to prevent real HTTP calls
         mockGetJson = jest.spyOn(service as any, 'getJson').mockRejectedValue(new Error('Connection refused'));
-        jest.spyOn(service as any, 'connect').mockResolvedValue(undefined);
-
-        // We want to spy on runCommand, but let it resolve immediately so we don't have to wait 30s
         mockRunCommand = jest.spyOn(service as any, 'runCommand').mockResolvedValue(undefined);
 
-        // Mock probeWorkbenchPages to return false so it forces a launch if ports somehow matched
+        // Mock connect to avoid real WebSocket connections
+        jest.spyOn(service as any, 'connect').mockResolvedValue(undefined);
+        // Mock call for CDP calls
+        jest.spyOn(service as any, 'call').mockResolvedValue({ result: { value: '' } });
+        // Mock probeWorkbenchPages to return false (no existing pages match)
         jest.spyOn(service as any, 'probeWorkbenchPages').mockResolvedValue(false);
     });
 
@@ -46,26 +64,33 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
         jest.resetAllMocks();
     });
 
-    // Helper to mock the platform
     const setPlatform = (platform: NodeJS.Platform) => {
         Object.defineProperty(process, 'platform', { value: platform });
     };
+
+    /**
+     * Helper: first getJson call returns a non-workbench page (so respondingPort is set),
+     * then subsequent calls return the new workbench page. This avoids the "ports not responding" error.
+     */
+    function setupGetJsonForLaunch(page: any) {
+        mockGetJson
+            // First scan: port responds with a non-workbench page (e.g. extension host)
+            .mockResolvedValueOnce([{ id: 'ext-host', type: 'other', url: 'chrome-extension://foo' }])
+            // Poll after launch: resolves with the new workbench page
+            .mockResolvedValue([page]);
+    }
 
     describe('launchAndConnectWorkspace (Mac)', () => {
         it('should launch Antigravity using the Mac application path', async () => {
             setPlatform('darwin');
 
-            // To prevent hanging on the 30-second poll loop in launchAndConnectWorkspace
-            // we will make the second call to getJson return a fake new workbench page
-            mockGetJson
-                .mockRejectedValueOnce(new Error('Initial pre-launch port scan fails'))
-                .mockResolvedValue([{
-                    id: 'new-id',
-                    type: 'page',
-                    title: 'MyProject',
-                    webSocketDebuggerUrl: 'ws://debug',
-                    url: 'file:///workbench'
-                }]);
+            setupGetJsonForLaunch({
+                id: 'new-id',
+                type: 'page',
+                title: 'MyProject',
+                webSocketDebuggerUrl: 'ws://debug',
+                url: 'file:///workbench'
+            });
 
             const workspacePath = '/Users/test/Documents/MyProject';
             await service.discoverAndConnectForWorkspace(workspacePath);
@@ -78,6 +103,14 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
 
         it('throws when the CLI launch fails on Mac', async () => {
             setPlatform('darwin');
+
+            setupGetJsonForLaunch({
+                id: 'new-id',
+                type: 'page',
+                title: 'MyProject',
+                webSocketDebuggerUrl: 'ws://debug',
+                url: 'file:///workbench'
+            });
 
             mockRunCommand.mockRejectedValueOnce(new Error('Command not found'));
 
@@ -97,21 +130,19 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
             setPlatform('win32');
             process.env.LOCALAPPDATA = 'C:\\Users\\TestUser\\AppData\\Local';
 
-            mockGetJson
-                .mockRejectedValueOnce(new Error('Initial pre-launch port scan fails'))
-                .mockResolvedValue([{
-                    id: 'new-id',
-                    type: 'page',
-                    title: 'MyProject',
-                    webSocketDebuggerUrl: 'ws://debug',
-                    url: 'file:///workbench'
-                }]);
+            setupGetJsonForLaunch({
+                id: 'new-id',
+                type: 'page',
+                title: 'MyProject',
+                webSocketDebuggerUrl: 'ws://debug',
+                url: 'file:///workbench'
+            });
 
             const workspacePath = 'C:\\Source\\MyProject';
             await service.discoverAndConnectForWorkspace(workspacePath);
 
             expect(mockRunCommand).toHaveBeenCalledWith(
-                'C:\\Users\\TestUser\\AppData\\Local\\Programs\\Antigravity\\Antigravity.exe',
+                'C:\\Users\\TestUser\\AppData\\Local\\Programs\\Antigravity\\bin\\antigravity.cmd',
                 ['--new-window', workspacePath]
             );
         });
@@ -120,21 +151,19 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
             setPlatform('win32');
             delete process.env.LOCALAPPDATA;
 
-            mockGetJson
-                .mockRejectedValueOnce(new Error('Initial pre-launch port scan fails'))
-                .mockResolvedValue([{
-                    id: 'new-id',
-                    type: 'page',
-                    title: 'MyProject',
-                    webSocketDebuggerUrl: 'ws://debug',
-                    url: 'file:///workbench'
-                }]);
+            setupGetJsonForLaunch({
+                id: 'new-id',
+                type: 'page',
+                title: 'MyProject',
+                webSocketDebuggerUrl: 'ws://debug',
+                url: 'file:///workbench'
+            });
 
             const workspacePath = 'C:\\Source\\MyProject';
             await service.discoverAndConnectForWorkspace(workspacePath);
 
             expect(mockRunCommand).toHaveBeenCalledWith(
-                'Antigravity.exe',
+                'antigravity',
                 ['--new-window', workspacePath]
             );
         });
@@ -145,15 +174,13 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
             setPlatform('linux');
             delete process.env.ANTIGRAVITY_PATH;
 
-            mockGetJson
-                .mockRejectedValueOnce(new Error('Initial pre-launch port scan fails'))
-                .mockResolvedValue([{
-                    id: 'new-id',
-                    type: 'page',
-                    title: 'MyProject',
-                    webSocketDebuggerUrl: 'ws://debug',
-                    url: 'file:///workbench'
-                }]);
+            setupGetJsonForLaunch({
+                id: 'new-id',
+                type: 'page',
+                title: 'MyProject',
+                webSocketDebuggerUrl: 'ws://debug',
+                url: 'file:///workbench'
+            });
 
             const workspacePath = '/home/user/MyProject';
             await service.discoverAndConnectForWorkspace(workspacePath);
@@ -168,15 +195,13 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
             setPlatform('linux');
             process.env.ANTIGRAVITY_PATH = '/opt/custom/antigravity.AppImage';
 
-            mockGetJson
-                .mockRejectedValueOnce(new Error('Initial pre-launch port scan fails'))
-                .mockResolvedValue([{
-                    id: 'new-id',
-                    type: 'page',
-                    title: 'MyProject',
-                    webSocketDebuggerUrl: 'ws://debug',
-                    url: 'file:///workbench'
-                }]);
+            setupGetJsonForLaunch({
+                id: 'new-id',
+                type: 'page',
+                title: 'MyProject',
+                webSocketDebuggerUrl: 'ws://debug',
+                url: 'file:///workbench'
+            });
 
             const workspacePath = '/home/user/MyProject';
             await service.discoverAndConnectForWorkspace(workspacePath);
@@ -193,35 +218,30 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
             setPlatform('win32');
             process.env.LOCALAPPDATA = 'C:\\Users\\TestUser\\AppData\\Local';
 
-            mockGetJson
-                .mockRejectedValueOnce(new Error('Initial pre-launch port scan fails'))
-                .mockResolvedValue([{
-                    id: 'new-id',
-                    type: 'page',
-                    title: 'LazyGravity',
-                    webSocketDebuggerUrl: 'ws://debug',
-                    url: 'file:///workbench'
-                }]);
+            setupGetJsonForLaunch({
+                id: 'new-id',
+                type: 'page',
+                title: 'LazyGravity',
+                webSocketDebuggerUrl: 'ws://debug',
+                url: 'file:///workbench'
+            });
 
             const workspacePath = 'C:\\Source\\LazyGravity';
             await service.discoverAndConnectForWorkspace(workspacePath);
 
-            // Access the private property workspaceName to see if it correctly parsed LazyGravity
             expect(service.getCurrentWorkspaceName()).toBe('LazyGravity');
         });
 
         it('should extract the project name from a Mac/Linux path with forward slashes', async () => {
             setPlatform('darwin');
 
-            mockGetJson
-                .mockRejectedValueOnce(new Error('Initial pre-launch port scan fails'))
-                .mockResolvedValue([{
-                    id: 'new-id',
-                    type: 'page',
-                    title: 'my-cool-project',
-                    webSocketDebuggerUrl: 'ws://debug',
-                    url: 'file:///workbench'
-                }]);
+            setupGetJsonForLaunch({
+                id: 'new-id',
+                type: 'page',
+                title: 'my-cool-project',
+                webSocketDebuggerUrl: 'ws://debug',
+                url: 'file:///workbench'
+            });
 
             const workspacePath = '/Users/test/Documents/my-cool-project';
             await service.discoverAndConnectForWorkspace(workspacePath);
@@ -232,15 +252,13 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
         it('should extract the project name from a path with trailing slashes', async () => {
             setPlatform('linux');
 
-            mockGetJson
-                .mockRejectedValueOnce(new Error('Initial pre-launch port scan fails'))
-                .mockResolvedValue([{
-                    id: 'new-id',
-                    type: 'page',
-                    title: 'trailing-slash-proj',
-                    webSocketDebuggerUrl: 'ws://debug',
-                    url: 'file:///workbench'
-                }]);
+            setupGetJsonForLaunch({
+                id: 'new-id',
+                type: 'page',
+                title: 'trailing-slash-proj',
+                webSocketDebuggerUrl: 'ws://debug',
+                url: 'file:///workbench'
+            });
 
             const workspacePath = '/home/user/trailing-slash-proj/';
             await service.discoverAndConnectForWorkspace(workspacePath);

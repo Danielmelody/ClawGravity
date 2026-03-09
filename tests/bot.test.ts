@@ -50,6 +50,16 @@ jest.mock('discord.js', () => {
                     optFn(opt);
                     return sub;
                 });
+                sub.addIntegerOption = jest.fn().mockImplementation((optFn: any) => {
+                    const opt: any = {};
+                    opt.setName = jest.fn().mockReturnValue(opt);
+                    opt.setDescription = jest.fn().mockReturnValue(opt);
+                    opt.setRequired = jest.fn().mockReturnValue(opt);
+                    opt.setMinValue = jest.fn().mockReturnValue(opt);
+                    opt.setMaxValue = jest.fn().mockReturnValue(opt);
+                    optFn(opt);
+                    return sub;
+                });
                 fn(sub);
                 return builder;
             });
@@ -112,7 +122,7 @@ jest.mock('better-sqlite3', () => {
     return jest.fn().mockImplementation(() => {
         return {
             exec: jest.fn(),
-            prepare: jest.fn().mockReturnValue({ run: jest.fn(), get: jest.fn(), all: jest.fn() }),
+            prepare: jest.fn().mockReturnValue({ run: jest.fn(), get: jest.fn(), all: jest.fn().mockReturnValue([]) }),
             close: jest.fn(),
         };
     });

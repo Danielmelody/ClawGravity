@@ -198,6 +198,15 @@ export class RunCommandDetector {
 
                     if (isCompleted) continue;
 
+                    // Require an explicit pending-like status to avoid false positives
+                    // on tool calls that are completed but missing a status field.
+                    const isPending = status === 'pending'
+                        || status === 'waiting'
+                        || status === 'needs_approval'
+                        || status === 'awaiting_confirmation';
+
+                    if (!isPending) continue;
+
                     // Extract command text from tool call arguments
                     const args = tc?.arguments || tc?.function?.arguments || tc?.input || {};
                     const commandText = typeof args === 'string'
