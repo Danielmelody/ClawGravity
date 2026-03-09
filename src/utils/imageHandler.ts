@@ -36,7 +36,7 @@ export function sanitizeFileName(fileName: string): string {
     return sanitized || `image-${Date.now()}.png`;
 }
 
-export function buildPromptWithAttachmentUrls(prompt: string, attachments: InboundImageAttachment[]): string {
+function buildPromptWithAttachmentUrls(prompt: string, attachments: InboundImageAttachment[]): string {
     const base = prompt.trim() || 'Please review the attached images and respond accordingly.';
     if (attachments.length === 0) return base;
 

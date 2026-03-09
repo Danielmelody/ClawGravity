@@ -24,7 +24,6 @@ const VOID_CONTENT_TAGS = new Set(['style', 'script', 'svg', 'noscript']);
 const TG_ALLOWED_TAGS = new Set([
     'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del',
     'a', 'code', 'pre', 'blockquote',
-    'span',       // only when class="tg-spoiler"
     'tg-spoiler', 'tg-emoji',
 ]);
 
@@ -41,24 +40,14 @@ const TAG_ALIASES: Record<string, string> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-export function escapeHtmlEntities(text: string): string {
+function escapeHtmlEntities(text: string): string {
     return text
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
 }
 
-/** Decode common HTML entities back to characters. */
-function decodeEntities(text: string): string {
-    return text
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&#x27;/g, "'")
-        .replace(/&nbsp;/g, ' ');
-}
+import { decodeHtmlEntities } from '../../utils/htmlEntities';
 
 // ---------------------------------------------------------------------------
 // Core sanitizer
@@ -141,6 +130,12 @@ export function htmlToTelegramHtml(html: string): string {
         return href ? `<a href="${href}">${metaPrefix}` : `<a>${metaPrefix}`;
     });
 
+    // Preserve Telegram spoilers without letting generic span handling
+    // leak orphan </span> tags into the output.
+    result = result.replace(/<span\b[^>]*class=["']tg-spoiler["'][^>]*>([\s\S]*?)<\/span>/gi, (_m, content) => {
+        return `<tg-spoiler>${content}</tg-spoiler>`;
+    });
+
     // ── Phase 2b: Checkboxes (BEFORE list processing so stripNonTgTags doesn't eat them)
     result = result.replace(/<input[^>]*type=["']checkbox["'][^>]*checked[^>]*\/?>/gi, '✅ ');
     result = result.replace(/<input[^>]*checked[^>]*type=["']checkbox["'][^>]*\/?>/gi, '✅ ');
@@ -181,6 +176,7 @@ export function htmlToTelegramHtml(html: string): string {
         const text = collapseInlineWhitespace(stripNonTgTags(content));
         return text ? `${text} ` : '';
     });
+    result = result.replace(/<\/?span\b[^>]*>/gi, '');
 
     // Common Antigravity layout wrappers often carry meaningful row boundaries.
     for (let pass = 0; pass < 5; pass++) {
@@ -229,15 +225,6 @@ export function htmlToTelegramHtml(html: string): string {
             return `<${mappedTag}>`;
         }
 
-        // For <span>, only allow if it's tg-spoiler
-        if (mappedTag === 'span') {
-            if (/class=["']tg-spoiler["']/i.test(attrs)) {
-                return `<span class="tg-spoiler">`;
-            }
-            // Not a spoiler span — unwrap
-            return '';
-        }
-
         // All other allowed tags: strip attributes
         return `<${mappedTag}>`;
     });
@@ -245,7 +232,7 @@ export function htmlToTelegramHtml(html: string): string {
     // ── Phase 4: Clean up ────────────────────────────────────────────────
     // Decode HTML entities in text nodes, then re-escape for Telegram
     // First, decode everything
-    result = decodeEntities(result);
+    result = decodeHtmlEntities(result);
 
     // Re-escape text that's NOT inside tags
     // We need to be careful not to escape the < and > that are part of our allowed tags
@@ -299,7 +286,7 @@ function normalizeBlockText(text: string): string {
  */
 function reEscapeTextNodes(html: string): string {
     // Split by allowed tags, escape text between them
-    const allowedTagPattern = /<\/?(b|i|u|s|a|code|pre|blockquote|span|tg-spoiler|tg-emoji)\b[^>]*>/gi;
+    const allowedTagPattern = /<\/?(b|i|u|s|a|code|pre|blockquote|tg-spoiler|tg-emoji)\b[^>]*>/gi;
 
     const parts: string[] = [];
     let lastIndex = 0;

@@ -95,6 +95,29 @@ export class GrpcCascadeClient extends EventEmitter {
     }
 
     /**
+     * Build standard Connect-protocol headers and request options.
+     */
+    private buildRequestOptions(
+        conn: LSConnection,
+        contentType: string,
+        contentLength: number,
+    ): { headers: Record<string, string | number>; reqOptions: any } {
+        const headers: Record<string, string | number> = {
+            'Content-Type': contentType,
+            'Content-Length': contentLength,
+            'connect-protocol-version': '1',
+        };
+        if (conn.csrfToken) {
+            headers['x-codeium-csrf-token'] = conn.csrfToken;
+        }
+        const reqOptions: any = { method: 'POST', headers };
+        if (conn.useTls) {
+            reqOptions.rejectUnauthorized = false;
+        }
+        return { headers, reqOptions };
+    }
+
+    /**
      * Set connection parameters (port + CSRF token).
      * No OAuth tokens — only the ephemeral CSRF token.
      */
@@ -263,22 +286,11 @@ export class GrpcCascadeClient extends EventEmitter {
         envelopedBody.writeUInt32BE(msgBuf.length, 1);
         msgBuf.copy(envelopedBody, 5);
 
-        const headers: Record<string, string | number> = {
-            'Content-Type': 'application/connect+json',
-            'Content-Length': envelopedBody.length,
-            'connect-protocol-version': '1',
-        };
-        if (conn.csrfToken) {
-            headers['x-codeium-csrf-token'] = conn.csrfToken;
-        }
-
-        const reqOptions: any = {
-            method: 'POST',
-            headers,
-        };
-        if (conn.useTls) {
-            reqOptions.rejectUnauthorized = false;
-        }
+        const { reqOptions } = this.buildRequestOptions(
+            conn,
+            'application/connect+json',
+            envelopedBody.length,
+        );
 
         const req = httpModule.request(url, reqOptions, (res) => {
             logger.info(`[GrpcStream] HTTP ${res.statusCode} for cascade=${cascadeId.slice(0, 12)}... (reactive stream)`);
@@ -482,22 +494,11 @@ export class GrpcCascadeClient extends EventEmitter {
             const url = `${proto}://127.0.0.1:${conn.port}/exa.language_server_pb.LanguageServerService/${method}`;
             const body = JSON.stringify(payload);
 
-            const headers: Record<string, string | number> = {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(body),
-                'connect-protocol-version': '1',
-            };
-            if (conn.csrfToken) {
-                headers['x-codeium-csrf-token'] = conn.csrfToken;
-            }
-
-            const reqOptions: any = {
-                method: 'POST',
-                headers,
-            };
-            if (conn.useTls) {
-                reqOptions.rejectUnauthorized = false;
-            }
+            const { reqOptions } = this.buildRequestOptions(
+                conn,
+                'application/json',
+                Buffer.byteLength(body),
+            );
 
             const req = httpModule.request(url, reqOptions, (res) => {
                 let data = '';
@@ -588,7 +589,7 @@ export class GrpcCascadeClient extends EventEmitter {
  *
  * NO OAuth tokens are extracted.
  */
-export async function discoverLSConnection(workspaceHint?: string): Promise<LSConnection | null> {
+async function discoverLSConnection(workspaceHint?: string): Promise<LSConnection | null> {
     try {
         const platform = process.platform;
 

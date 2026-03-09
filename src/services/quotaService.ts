@@ -26,11 +26,11 @@ export class QuotaService {
     private cachedPid: number | null = null;
 
     private extractCsrfToken(commandLine: string): string | null {
-        const tokenMatch = commandLine.match(/--csrf_token[=\s]+([a-zA-Z0-9\-]+)/);
+        const tokenMatch = commandLine.match(/--csrf_token[=\s]+([a-zA-Z0-9-]+)/);
         return tokenMatch?.[1] || null;
     }
 
-    private async getLanguageServerProcessInfo(): Promise<{pid: number, csrf_token: string} | null> {
+    private async getLanguageServerProcessInfo(): Promise<{ pid: number, csrf_token: string } | null> {
         try {
             if (process.platform === 'win32') {
                 const command = `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'language_server' } | Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress"`;
@@ -166,7 +166,7 @@ export class QuotaService {
     }
 
     public async fetchQuota(): Promise<ModelQuota[]> {
-        let processInfo = await this.getLanguageServerProcessInfo();
+        const processInfo = await this.getLanguageServerProcessInfo();
         if (!processInfo) {
             logger.error('No language_server process found.');
             return [];

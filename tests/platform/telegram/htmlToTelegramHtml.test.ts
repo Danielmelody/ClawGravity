@@ -230,4 +230,28 @@ describe('htmlToTelegramHtml', () => {
         expect(result).toMatch(/✅\s*Analyzed\s*<a href="file:\/\/\/workspace\/\.jscpd\.json">[\s\S]*\.jscpd\.json[\s\S]*#L1-26[\s\S]*json[\s\S]*<\/a>/);
         expect(result).toMatch(/package\.json[\s\S]*\n✅[\s\S]*\.jscpd\.json/);
     });
+
+    it('does not leak orphan closing span tags from nested Antigravity wrappers', () => {
+        const input = `
+            <div class="timeline-row">
+                <span class="outer">
+                    <span class="label">Analyzed</span>
+                    <span class="meta">
+                        <a href="file:///workspace/force-distribute.ts">
+                            <span>force-distribute.ts</span>
+                            <span>#L2-69</span>
+                        </a>
+                    </span>
+                </span>
+            </div>
+        `;
+
+        const result = htmlToTelegramHtml(input);
+
+        expect(result).toContain('Analyzed');
+        expect(result).toContain('force-distribute.ts');
+        expect(result).toContain('#L2-69');
+        expect(result).not.toContain('<span');
+        expect(result).not.toContain('</span>');
+    });
 });

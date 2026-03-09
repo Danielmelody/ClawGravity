@@ -83,7 +83,7 @@ export class CdpService extends EventEmitter {
     private isConnectedFlag: boolean = false;
     private ws: WebSocket | null = null;
     private contexts: CdpContext[] = [];
-    private pendingCalls = new Map<number, { resolve: Function, reject: Function, timeoutId: NodeJS.Timeout }>();
+    private pendingCalls = new Map<number, { resolve: (value: any) => void, reject: (reason?: any) => void, timeoutId: NodeJS.Timeout }>();
 
     /** Lazy-initialized gRPC client for direct API communication */
     private grpcClient: GrpcCascadeClient | null = null;
@@ -145,7 +145,7 @@ export class CdpService extends EventEmitter {
     }
 
     async discoverTarget(): Promise<string> {
-        let allPages: any[] = [];
+        const allPages: any[] = [];
         for (const port of this.ports) {
             try {
                 const list = await this.getJson(`http://127.0.0.1:${port}/json/list`);
@@ -234,7 +234,7 @@ export class CdpService extends EventEmitter {
                 if (data.method) {
                     this.emit(data.method, data.params);
                 }
-            } catch (e) { }
+            } catch { /* ignored */ }
         });
 
         this.ws.on('close', () => {
@@ -393,7 +393,7 @@ export class CdpService extends EventEmitter {
         projectName: string,
     ): Promise<boolean> {
         // Scan all ports to collect workbench pages
-        let pages: any[] = [];
+        const pages: any[] = [];
         let respondingPort: number | null = null;
 
         for (const port of this.ports) {
@@ -672,7 +672,7 @@ export class CdpService extends EventEmitter {
         const pollIntervalMs = 1000;
         const startTime = Date.now();
         /** Pre-launch workbench page IDs (for detecting new pages) */
-        let knownPageIds: Set<string> = new Set();
+        const knownPageIds: Set<string> = new Set();
         for (const port of this.ports) {
             try {
                 const preLaunchPages = await this.getJson(`http://127.0.0.1:${port}/json/list`);
@@ -687,7 +687,7 @@ export class CdpService extends EventEmitter {
         while (Date.now() - startTime < maxWaitMs) {
             await new Promise(r => setTimeout(r, pollIntervalMs));
 
-            let pages: any[] = [];
+            const pages: any[] = [];
             for (const port of this.ports) {
                 try {
                     const list = await this.getJson(`http://127.0.0.1:${port}/json/list`);
@@ -1375,7 +1375,7 @@ export class CdpService extends EventEmitter {
         }
 
         // If we have an explicit cascade ID (e.g. from a previous createCascade), try to reuse it
-        let cascadeId = overrideCascadeId || this.cachedCascadeId;
+        const cascadeId = overrideCascadeId || this.cachedCascadeId;
         const modelId = await this.resolveSelectedModelId();
 
         if (cascadeId) {
@@ -1992,7 +1992,7 @@ export class CdpService extends EventEmitter {
             let localPath = uriPath.replaceAll('\\', '/').toLowerCase();
             // Handle trailing slashes uniformly
             if (localPath.endsWith('/')) localPath = localPath.substring(0, localPath.length - 1);
-            let targetNoSlash = targetPath.endsWith('/') ? targetPath.substring(0, targetPath.length - 1) : targetPath;
+            const targetNoSlash = targetPath.endsWith('/') ? targetPath.substring(0, targetPath.length - 1) : targetPath;
 
             if (localPath === targetNoSlash || localPath.endsWith(targetNoSlash) || targetNoSlash.endsWith(localPath)) {
                 return true;

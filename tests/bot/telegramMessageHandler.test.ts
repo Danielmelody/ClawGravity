@@ -55,11 +55,23 @@ function createMockSentMessage(id = '1', channelId = 'chat-123') {
 
 function createMockChannel(id = 'chat-123') {
     const statusMsg = createMockSentMessage('status-1', id);
+    const sentMessages = [statusMsg];
+    let sendCount = 0;
+    const send = jest.fn().mockImplementation(async () => {
+        sendCount++;
+        if (sendCount === 1) {
+            return statusMsg;
+        }
+        const next = createMockSentMessage(`status-${sendCount}`, id);
+        sentMessages.push(next);
+        return next;
+    });
     return {
         id,
         platform: 'telegram' as const,
-        send: jest.fn().mockResolvedValue(statusMsg),
+        send,
         _statusMsg: statusMsg,
+        _sentMessages: sentMessages,
     };
 }
 
@@ -639,6 +651,57 @@ describe('createTelegramMessageHandler', () => {
         expect(logCall).toBeDefined();
     });
 
+    it('splits oversized rendered timelines across multiple streaming status messages without truncation', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        const longTimelineHtml = `<blockquote>${Array.from(
+            { length: 900 },
+            (_v, index) => `Step ${index + 1} - reviewing a very long Antigravity timeline row`,
+        ).join('<br>')}</blockquote>`;
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({
+                        content: longTimelineHtml,
+                        format: 'html',
+                    });
+                }
+                if (opts.onComplete) await opts.onComplete('Done response');
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        const allPayloads = [
+            ...channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text),
+            ...channel.send.mock.calls.map(([payload]: any[]) => payload.text),
+        ];
+        const streamedText = allPayloads.join('\n');
+        expect(streamedText).toContain('Step 1');
+        expect(streamedText).toContain('Step 900');
+
+        for (const payloadText of allPayloads) {
+            if (!payloadText) continue;
+            expect(payloadText.length).toBeLessThanOrEqual(4096);
+            const openBlockquotes = (payloadText.match(/<blockquote>/g) || []).length;
+            const closeBlockquotes = (payloadText.match(/<\/blockquote>/g) || []).length;
+            expect(openBlockquotes).toBe(closeBlockquotes);
+        }
+
+        expect(channel.send.mock.calls.length).toBeGreaterThan(2);
+        for (const [payload] of channel._statusMsg.edit.mock.calls) {
+            expect(payload.text.length).toBeLessThanOrEqual(4096);
+        }
+    });
+
     it('streams partial output into the status message before completion', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
@@ -693,6 +756,47 @@ describe('createTelegramMessageHandler', () => {
         }
         // Final 'Done' is delivered via send
         expect(channel.send).toHaveBeenCalledWith({ text: 'Done' });
+    });
+
+    it('coalesces bursty streaming updates down to the latest status frame', async () => {
+        jest.useFakeTimers();
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({ content: '<blockquote>Step 1</blockquote>', format: 'html' });
+                    opts.onRenderedTimeline({ content: '<blockquote>Step 2</blockquote>', format: 'html' });
+                    opts.onRenderedTimeline({ content: '<blockquote>Step 3</blockquote>', format: 'html' });
+                }
+                await new Promise((resolve) => setTimeout(resolve, 30));
+                if (opts.onComplete) await opts.onComplete('Done response');
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        const handlerPromise = handler(message as any);
+
+        await jest.advanceTimersByTimeAsync(50);
+        await handlerPromise;
+
+        const renderedFrames = channel._statusMsg.edit.mock.calls
+            .map(([payload]: any[]) => payload.text)
+            .filter((text: string) => text.includes('Step '));
+
+        expect(renderedFrames.some((text: string) => text.includes('Step 3'))).toBe(true);
+        expect(renderedFrames.some((text: string) => text.includes('Step 1'))).toBe(false);
+        expect(renderedFrames.some((text: string) => text.includes('Step 2'))).toBe(false);
+        expect(renderedFrames.length).toBeLessThanOrEqual(2);
+
+        jest.useRealTimers();
     });
 
     it('calls logger.divider on completion for final output only', async () => {

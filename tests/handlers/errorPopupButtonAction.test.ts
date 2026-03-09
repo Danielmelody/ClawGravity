@@ -305,7 +305,7 @@ describe('createErrorPopupButtonAction', () => {
             });
 
             expect(interaction.reply).toHaveBeenCalledWith({
-                text: 'Error popup detector not found.',
+                text: 'ErrorPopupAction detector not found.',
             });
         });
 
@@ -323,7 +323,7 @@ describe('createErrorPopupButtonAction', () => {
             });
 
             expect(interaction.reply).toHaveBeenCalledWith({
-                text: 'This error popup action is linked to a different session channel.',
+                text: 'This ErrorPopupAction action is linked to a different session channel.',
             });
         });
 

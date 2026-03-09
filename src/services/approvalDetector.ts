@@ -1,6 +1,12 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
 import { getPendingToolCallsFromPlannerStep } from './trajectoryToolState';
+import {
+    type NotificationTracker,
+    createNotificationTracker,
+    resetTrackerDetection,
+    processDetection,
+} from './notificationTracker';
 
 /** Approval button information */
 export interface ApprovalInfo {
@@ -41,13 +47,7 @@ export class ApprovalDetector {
     private onResolved?: () => void;
 
     private isRunning: boolean = false;
-    /** Key of the last detected approval state (for duplicate notification prevention) */
-    private lastDetectedKey: string | null = null;
-    /** Full ApprovalInfo from the last detection */
-    private lastDetectedInfo: ApprovalInfo | null = null;
-    /** Set of keys that have already been notified (prevents cross-session re-fires) */
-    private notifiedKeys: Set<string> = new Set();
-    /** Maximum size of notifiedKeys before pruning oldest entries */
+    private tracker: NotificationTracker<ApprovalInfo> = createNotificationTracker();
     private static readonly MAX_NOTIFIED_KEYS = 50;
 
     constructor(options: ApprovalDetectorOptions) {
@@ -62,8 +62,7 @@ export class ApprovalDetector {
     start(): void {
         if (this.isRunning) return;
         this.isRunning = true;
-        this.lastDetectedKey = null;
-        this.lastDetectedInfo = null;
+        resetTrackerDetection(this.tracker);
         // Note: notifiedKeys is NOT cleared on start — it persists across
         // stop/start cycles to prevent stale cross-session re-notifications.
     }
@@ -80,7 +79,7 @@ export class ApprovalDetector {
      * Returns null if nothing has been detected.
      */
     getLastDetectedInfo(): ApprovalInfo | null {
-        return this.lastDetectedInfo;
+        return this.tracker.lastDetectedInfo;
     }
 
     /**
@@ -97,31 +96,14 @@ export class ApprovalDetector {
         try {
             const info = this.extractApprovalFromTrajectory(steps, runStatus);
 
-            if (info) {
-                // Include cascadeId in the key to prevent cross-session re-fires:
-                // When cascade changes (new conversation), old detections won't match.
-                // When the same cascade transiently resolves then re-enters IDLE,
-                // notifiedKeys prevents duplicate notifications.
-                const key = `${cascadeId}::${info.approveText}::${info.description}`;
-                if (key !== this.lastDetectedKey && !this.notifiedKeys.has(key)) {
-                    this.lastDetectedKey = key;
-                    this.lastDetectedInfo = info;
-                    this.notifiedKeys.add(key);
-                    // Prune oldest entries if set grows too large
-                    if (this.notifiedKeys.size > ApprovalDetector.MAX_NOTIFIED_KEYS) {
-                        const first = this.notifiedKeys.values().next().value;
-                        if (first) this.notifiedKeys.delete(first);
-                    }
-                    this.onApprovalRequired(info);
-                }
-            } else {
-                const wasDetected = this.lastDetectedKey !== null;
-                this.lastDetectedKey = null;
-                this.lastDetectedInfo = null;
-                if (wasDetected && this.onResolved) {
-                    this.onResolved();
-                }
-            }
+            processDetection(
+                this.tracker,
+                info,
+                (i) => `${cascadeId}::${i.approveText}::${i.description}`,
+                (i) => this.onApprovalRequired(i),
+                this.onResolved,
+                ApprovalDetector.MAX_NOTIFIED_KEYS,
+            );
         } catch (error) {
             logger.error('[ApprovalDetector] Error during evaluation:', error);
         }

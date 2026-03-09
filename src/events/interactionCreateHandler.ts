@@ -41,6 +41,7 @@ import { ModelService } from '../services/modelService';
 import { AutoAcceptService } from '../services/autoAcceptService';
 import { JoinCommandHandler } from '../commands/joinCommandHandler';
 import { isSessionSelectId } from '../ui/sessionPickerUi';
+import { extractWithRetry } from '../handlers/buttonActionUtils';
 
 export interface InteractionCreateHandlerDeps {
     config: { allowedUserIds: string[] };
@@ -84,6 +85,95 @@ export interface InteractionCreateHandlerDeps {
     userPrefRepo?: UserPreferenceRepository;
 }
 
+// ---------------------------------------------------------------------------
+// Shared helpers to reduce internal duplication
+// ---------------------------------------------------------------------------
+
+/** Check if a Discord API error indicates an expired interaction. */
+function isInteractionExpired(err: any): boolean {
+    return err?.code === 10062 || err?.code === 40060;
+}
+
+/** Build an updated embed with action history for interaction updates. */
+function buildActionHistoryEmbed(
+    interaction: ButtonInteraction,
+    fallbackTitle: string,
+    actionLabel: string,
+    color: number,
+): EmbedBuilder {
+    const originalEmbed = interaction.message.embeds[0];
+    const updatedEmbed = originalEmbed
+        ? EmbedBuilder.from(originalEmbed)
+        : new EmbedBuilder().setTitle(fallbackTitle);
+    const historyText = `${actionLabel} by <@${interaction.user.id}> (${new Date().toLocaleString('ja-JP')})`;
+    updatedEmbed
+        .setColor(color)
+        .addFields({ name: 'Action History', value: historyText, inline: false })
+        .setTimestamp();
+    return updatedEmbed;
+}
+
+/** Refresh the models UI — identical pattern used in 4+ button handlers. */
+async function refreshModelsUI(
+    interaction: ButtonInteraction,
+    deps: InteractionCreateHandlerDeps,
+): Promise<void> {
+    await deps.sendModelsUI(
+        { editReply: async (data: any) => await interaction.editReply(data) },
+        {
+            getCurrentCdp: () => deps.getCurrentCdp(deps.bridge),
+            fetchQuota: async () => deps.bridge.quota.fetchQuota(),
+        },
+    );
+}
+
+/**
+ * Update the interaction with a new embed and disabled buttons.
+ * Catches (and logs as warning) any "interaction expired" errors.
+ */
+async function updateInteractionWithEmbed(
+    interaction: ButtonInteraction,
+    updatedEmbed: EmbedBuilder,
+    logTag: string,
+): Promise<void> {
+    try {
+        await interaction.update({
+            embeds: [updatedEmbed],
+            components: disableAllButtons(interaction.message.components),
+        });
+    } catch (interactionError: any) {
+        if (!isInteractionExpired(interactionError)) throw interactionError;
+        logger.warn(`[${logTag}] Interaction expired.`);
+    }
+}
+
+/** Check if a user has permission and reply if not. Returns false if denied. */
+async function checkPermission(
+    interaction: Interaction & { user: { id: string }; reply: (...args: any[]) => Promise<any> },
+    allowedUserIds: string[],
+): Promise<boolean> {
+    if (allowedUserIds.includes(interaction.user.id)) return true;
+    await interaction.reply({ content: t('You do not have permission.'), flags: MessageFlags.Ephemeral }).catch(logger.error);
+    return false;
+}
+
+/** Defer an update, returning false (so caller can bail) on expiry or error. */
+async function safeDeferUpdate(
+    interaction: { deferUpdate: () => Promise<any> },
+    logTag: string,
+): Promise<boolean> {
+    try {
+        await interaction.deferUpdate();
+        return true;
+    } catch (deferError: any) {
+        if (isInteractionExpired(deferError)) {
+            logger.warn(`[${logTag}] deferUpdate expired. Skipping.`);
+        } else {
+            logger.error(`[${logTag}] deferUpdate failed:`, deferError);
+        }
+        return false;
+    }
+}
 export function createInteractionCreateHandler(deps: InteractionCreateHandlerDeps) {
     return async (interaction: Interaction): Promise<void> => {
         if (interaction.isButton()) {
@@ -130,29 +220,17 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
 
                     try {
                         if (success) {
-                            const originalEmbed = interaction.message.embeds[0];
-                            const updatedEmbed = originalEmbed
-                                ? EmbedBuilder.from(originalEmbed)
-                                : new EmbedBuilder().setTitle('Approval Request');
-                            const historyText = `${actionLabel} by <@${interaction.user.id}> (${new Date().toLocaleString('ja-JP')})`;
-                            updatedEmbed
-                                .setColor(approvalAction.action === 'deny' ? 0xE74C3C : 0x2ECC71)
-                                .addFields({ name: 'Action History', value: historyText, inline: false })
-                                .setTimestamp();
-
-                            await interaction.update({
-                                embeds: [updatedEmbed],
-                                components: disableAllButtons(interaction.message.components),
-                            });
+                            const updatedEmbed = buildActionHistoryEmbed(
+                                interaction, 'Approval Request', actionLabel,
+                                approvalAction.action === 'deny' ? 0xE74C3C : 0x2ECC71,
+                            );
+                            await updateInteractionWithEmbed(interaction, updatedEmbed, 'Approval');
                         } else {
                             await interaction.reply({ content: 'Approval button not found.', flags: MessageFlags.Ephemeral });
                         }
                     } catch (interactionError: any) {
-                        if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                            logger.warn('[Approval] Interaction expired.');
-                        } else {
-                            throw interactionError;
-                        }
+                        if (!isInteractionExpired(interactionError)) throw interactionError;
+                        logger.warn('[Approval] Interaction expired.');
                     }
                     return;
                 }
@@ -189,27 +267,16 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                                 return;
                             }
 
-                            // Wait for DOM to update after Open click
+                            // Extract plan content with retry (initial 500ms delay for DOM)
                             await new Promise((resolve) => setTimeout(resolve, 500));
-
-                            // Extract plan content with retry
-                            let planContent: string | null = null;
-                            for (let attempt = 0; attempt < 3; attempt++) {
-                                planContent = await planDetector.extractPlanContent();
-                                if (planContent) break;
-                                await new Promise((resolve) => setTimeout(resolve, 500));
-                            }
+                            const planContent = await extractWithRetry(
+                                () => planDetector.extractPlanContent(),
+                            );
 
                             // Update original embed with action history
-                            const originalEmbed = interaction.message.embeds[0];
-                            const updatedEmbed = originalEmbed
-                                ? EmbedBuilder.from(originalEmbed)
-                                : new EmbedBuilder().setTitle('Planning Mode');
-                            const historyText = `Open by <@${interaction.user.id}> (${new Date().toLocaleString('ja-JP')})`;
-                            updatedEmbed
-                                .setColor(0x3498DB)
-                                .addFields({ name: 'Action History', value: historyText, inline: false })
-                                .setTimestamp();
+                            const updatedEmbed = buildActionHistoryEmbed(
+                                interaction, 'Planning Mode', 'Open', 0x3498DB,
+                            );
 
                             await interaction.editReply({
                                 embeds: [updatedEmbed],
@@ -241,31 +308,14 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                             // Proceed action
                             const clicked = await planDetector.clickProceedButton();
 
-                            const originalEmbed = interaction.message.embeds[0];
-                            const updatedEmbed = originalEmbed
-                                ? EmbedBuilder.from(originalEmbed)
-                                : new EmbedBuilder().setTitle('Planning Mode');
-                            const historyText = `Proceed by <@${interaction.user.id}> (${new Date().toLocaleString('ja-JP')})`;
-                            updatedEmbed
-                                .setColor(clicked ? 0x2ECC71 : 0xE74C3C)
-                                .addFields({ name: 'Action History', value: historyText, inline: false })
-                                .setTimestamp();
-
-                            try {
-                                await interaction.update({
-                                    embeds: [updatedEmbed],
-                                    components: disableAllButtons(interaction.message.components),
-                                });
-                            } catch (interactionError: any) {
-                                if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                                    logger.warn('[Planning] Interaction expired.');
-                                } else {
-                                    throw interactionError;
-                                }
-                            }
+                            const updatedEmbed = buildActionHistoryEmbed(
+                                interaction, 'Planning Mode', 'Proceed',
+                                clicked ? 0x2ECC71 : 0xE74C3C,
+                            );
+                            await updateInteractionWithEmbed(interaction, updatedEmbed, 'Planning');
                         }
                     } catch (planError: any) {
-                        if (planError?.code === 10062 || planError?.code === 40060) {
+                        if (isInteractionExpired(planError)) {
                             logger.warn('[Planning] Interaction expired.');
                         } else {
                             logger.error('[Planning] Error handling planning button:', planError);
@@ -307,28 +357,11 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                         if (errorPopupAction.action === 'dismiss') {
                             const clicked = await errorDetector.clickDismissButton();
 
-                            const originalEmbed = interaction.message.embeds[0];
-                            const updatedEmbed = originalEmbed
-                                ? EmbedBuilder.from(originalEmbed)
-                                : new EmbedBuilder().setTitle('Agent Error');
-                            const historyText = `Dismiss by <@${interaction.user.id}> (${new Date().toLocaleString('ja-JP')})`;
-                            updatedEmbed
-                                .setColor(clicked ? 0x95A5A6 : 0xE74C3C)
-                                .addFields({ name: 'Action History', value: historyText, inline: false })
-                                .setTimestamp();
-
-                            try {
-                                await interaction.update({
-                                    embeds: [updatedEmbed],
-                                    components: disableAllButtons(interaction.message.components),
-                                });
-                            } catch (interactionError: any) {
-                                if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                                    logger.warn('[ErrorPopup] Interaction expired.');
-                                } else {
-                                    throw interactionError;
-                                }
-                            }
+                            const updatedEmbed = buildActionHistoryEmbed(
+                                interaction, 'Agent Error', 'Dismiss',
+                                clicked ? 0x95A5A6 : 0xE74C3C,
+                            );
+                            await updateInteractionWithEmbed(interaction, updatedEmbed, 'ErrorPopup');
                         } else if (errorPopupAction.action === 'copy_debug') {
                             await interaction.deferUpdate();
 
@@ -344,15 +377,9 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                             const clipboardContent = await errorDetector.readClipboard();
 
                             // Update original embed with action history
-                            const originalEmbed = interaction.message.embeds[0];
-                            const updatedEmbed = originalEmbed
-                                ? EmbedBuilder.from(originalEmbed)
-                                : new EmbedBuilder().setTitle('Agent Error');
-                            const historyText = `Copy debug info by <@${interaction.user.id}> (${new Date().toLocaleString('ja-JP')})`;
-                            updatedEmbed
-                                .setColor(0x3498DB)
-                                .addFields({ name: 'Action History', value: historyText, inline: false })
-                                .setTimestamp();
+                            const updatedEmbed = buildActionHistoryEmbed(
+                                interaction, 'Agent Error', 'Copy debug info', 0x3498DB,
+                            );
 
                             await interaction.editReply({
                                 embeds: [updatedEmbed],
@@ -383,31 +410,14 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                             // Retry action
                             const clicked = await errorDetector.clickRetryButton();
 
-                            const originalEmbed = interaction.message.embeds[0];
-                            const updatedEmbed = originalEmbed
-                                ? EmbedBuilder.from(originalEmbed)
-                                : new EmbedBuilder().setTitle('Agent Error');
-                            const historyText = `Retry by <@${interaction.user.id}> (${new Date().toLocaleString('ja-JP')})`;
-                            updatedEmbed
-                                .setColor(clicked ? 0x2ECC71 : 0xE74C3C)
-                                .addFields({ name: 'Action History', value: historyText, inline: false })
-                                .setTimestamp();
-
-                            try {
-                                await interaction.update({
-                                    embeds: [updatedEmbed],
-                                    components: disableAllButtons(interaction.message.components),
-                                });
-                            } catch (interactionError: any) {
-                                if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                                    logger.warn('[ErrorPopup] Interaction expired.');
-                                } else {
-                                    throw interactionError;
-                                }
-                            }
+                            const updatedEmbed = buildActionHistoryEmbed(
+                                interaction, 'Agent Error', 'Retry',
+                                clicked ? 0x2ECC71 : 0xE74C3C,
+                            );
+                            await updateInteractionWithEmbed(interaction, updatedEmbed, 'ErrorPopup');
                         }
                     } catch (errorPopupError: any) {
-                        if (errorPopupError?.code === 10062 || errorPopupError?.code === 40060) {
+                        if (isInteractionExpired(errorPopupError)) {
                             logger.warn('[ErrorPopup] Interaction expired.');
                         } else {
                             logger.error('[ErrorPopup] Error handling error popup button:', errorPopupError);
@@ -457,29 +467,17 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
 
                     try {
                         if (success) {
-                            const originalEmbed = interaction.message.embeds[0];
-                            const updatedEmbed = originalEmbed
-                                ? EmbedBuilder.from(originalEmbed)
-                                : new EmbedBuilder().setTitle('Run Command');
-                            const historyText = `${actionLabel} by <@${interaction.user.id}> (${new Date().toLocaleString('ja-JP')})`;
-                            updatedEmbed
-                                .setColor(runCommandAction.action === 'reject' ? 0xE74C3C : 0x2ECC71)
-                                .addFields({ name: 'Action History', value: historyText, inline: false })
-                                .setTimestamp();
-
-                            await interaction.update({
-                                embeds: [updatedEmbed],
-                                components: disableAllButtons(interaction.message.components),
-                            });
+                            const updatedEmbed = buildActionHistoryEmbed(
+                                interaction, 'Run Command', actionLabel,
+                                runCommandAction.action === 'reject' ? 0xE74C3C : 0x2ECC71,
+                            );
+                            await updateInteractionWithEmbed(interaction, updatedEmbed, 'RunCommand');
                         } else {
                             await interaction.reply({ content: t('Run command button not found.'), flags: MessageFlags.Ephemeral });
                         }
                     } catch (interactionError: any) {
-                        if (interactionError?.code === 10062 || interactionError?.code === 40060) {
-                            logger.warn('[RunCommand] Interaction expired.');
-                        } else {
-                            throw interactionError;
-                        }
+                        if (!isInteractionExpired(interactionError)) throw interactionError;
+                        logger.warn('[RunCommand] Interaction expired.');
                     }
                     return;
                 }
@@ -513,13 +511,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                     if (deps.userPrefRepo) {
                         deps.userPrefRepo.setDefaultModel(interaction.user.id, currentModel);
                     }
-                    await deps.sendModelsUI(
-                        { editReply: async (data: any) => await interaction.editReply(data) },
-                        {
-                            getCurrentCdp: () => deps.getCurrentCdp(deps.bridge),
-                            fetchQuota: async () => deps.bridge.quota.fetchQuota(),
-                        },
-                    );
+                    await refreshModelsUI(interaction, deps);
                     await interaction.followUp({ content: `Default model set to **${currentModel}**.`, flags: MessageFlags.Ephemeral });
                     return;
                 }
@@ -530,26 +522,14 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                     if (deps.userPrefRepo) {
                         deps.userPrefRepo.setDefaultModel(interaction.user.id, null);
                     }
-                    await deps.sendModelsUI(
-                        { editReply: async (data: any) => await interaction.editReply(data) },
-                        {
-                            getCurrentCdp: () => deps.getCurrentCdp(deps.bridge),
-                            fetchQuota: async () => deps.bridge.quota.fetchQuota(),
-                        },
-                    );
+                    await refreshModelsUI(interaction, deps);
                     await interaction.followUp({ content: 'Default model cleared.', flags: MessageFlags.Ephemeral });
                     return;
                 }
 
                 if (interaction.customId === 'model_refresh_btn') {
                     await interaction.deferUpdate();
-                    await deps.sendModelsUI(
-                        { editReply: async (data: any) => await interaction.editReply(data) },
-                        {
-                            getCurrentCdp: () => deps.getCurrentCdp(deps.bridge),
-                            fetchQuota: async () => deps.bridge.quota.fetchQuota(),
-                        },
-                    );
+                    await refreshModelsUI(interaction, deps);
                     return;
                 }
 
@@ -569,13 +549,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                     if (!res.ok) {
                         await interaction.followUp({ content: res.error || 'Failed to change model.', flags: MessageFlags.Ephemeral });
                     } else {
-                        await deps.sendModelsUI(
-                            { editReply: async (data: any) => await interaction.editReply(data) },
-                            {
-                                getCurrentCdp: () => deps.getCurrentCdp(deps.bridge),
-                                fetchQuota: async () => deps.bridge.quota.fetchQuota(),
-                            },
-                        );
+                        await refreshModelsUI(interaction, deps);
                         await interaction.followUp({ content: `Model changed to **${res.model}**!`, flags: MessageFlags.Ephemeral });
                     }
                     return;
@@ -661,21 +635,9 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
         }
 
         if (interaction.isStringSelectMenu() && interaction.customId === 'mode_select') {
-            if (!deps.config.allowedUserIds.includes(interaction.user.id)) {
-                await interaction.reply({ content: t('You do not have permission.'), flags: MessageFlags.Ephemeral }).catch(logger.error);
-                return;
-            }
+            if (!await checkPermission(interaction, deps.config.allowedUserIds)) return;
 
-            try {
-                await interaction.deferUpdate();
-            } catch (deferError: any) {
-                if (deferError?.code === 10062 || deferError?.code === 40060) {
-                    logger.warn('[Mode] deferUpdate expired. Skipping.');
-                    return;
-                }
-                logger.error('[Mode] deferUpdate failed:', deferError);
-                return;
-            }
+            if (!await safeDeferUpdate(interaction, 'Mode')) return;
 
             try {
                 const selectedMode = interaction.values[0];
@@ -706,21 +668,9 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
         }
 
         if (interaction.isStringSelectMenu() && isSessionSelectId(interaction.customId)) {
-            if (!deps.config.allowedUserIds.includes(interaction.user.id)) {
-                await interaction.reply({ content: t('You do not have permission.'), flags: MessageFlags.Ephemeral }).catch(logger.error);
-                return;
-            }
+            if (!await checkPermission(interaction, deps.config.allowedUserIds)) return;
 
-            try {
-                await interaction.deferUpdate();
-            } catch (deferError: any) {
-                if (deferError?.code === 10062 || deferError?.code === 40060) {
-                    logger.warn('[SessionSelect] deferUpdate expired. Skipping.');
-                    return;
-                }
-                logger.error('[SessionSelect] deferUpdate failed:', deferError);
-                return;
-            }
+            if (!await safeDeferUpdate(interaction, 'SessionSelect')) return;
 
             try {
                 if (deps.joinHandler) {
@@ -733,10 +683,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
         }
 
         if (interaction.isStringSelectMenu() && isProjectSelectId(interaction.customId)) {
-            if (!deps.config.allowedUserIds.includes(interaction.user.id)) {
-                await interaction.reply({ content: t('You do not have permission.'), flags: MessageFlags.Ephemeral }).catch(logger.error);
-                return;
-            }
+            if (!await checkPermission(interaction, deps.config.allowedUserIds)) return;
 
             if (!interaction.guild) {
                 await interaction.reply({ content: 'This can only be used in a server.', flags: MessageFlags.Ephemeral }).catch(logger.error);

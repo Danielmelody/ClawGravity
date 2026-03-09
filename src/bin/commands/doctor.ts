@@ -2,6 +2,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CDP_PORTS } from '../../utils/cdpPorts';
+import { checkCdpPort } from '../../utils/portUtils';
 import { ConfigLoader } from '../../utils/configLoader';
 import { getAntigravityCdpHint } from '../../utils/pathUtils';
 import { COLORS } from '../../utils/logger';
@@ -12,27 +13,7 @@ const warn = (msg: string) => console.log(`  ${COLORS.yellow}[--]${COLORS.reset}
 const fail = (msg: string) => console.log(`  ${COLORS.red}[!!]${COLORS.reset} ${msg}`);
 const hint = (msg: string) => console.log(`       ${COLORS.dim}${msg}${COLORS.reset}`);
 
-function checkPort(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-        const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
-            let data = '';
-            res.on('data', (chunk) => (data += chunk));
-            res.on('end', () => {
-                try {
-                    const parsed = JSON.parse(data);
-                    resolve(Array.isArray(parsed));
-                } catch {
-                    resolve(false);
-                }
-            });
-        });
-        req.on('error', () => resolve(false));
-        req.setTimeout(2000, () => {
-            req.destroy();
-            resolve(false);
-        });
-    });
-}
+
 
 function checkEnvFile(): { exists: boolean; path: string } {
     const envPath = path.resolve(process.cwd(), '.env');
@@ -91,6 +72,7 @@ export async function doctorAction(): Promise<void> {
     const env = checkEnvFile();
     if (env.exists) {
         // Load .env so subsequent checks can see the variables
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         require('dotenv').config({ path: env.path });
         ok(`.env file found: ${env.path}`);
     } else {
@@ -119,7 +101,7 @@ export async function doctorAction(): Promise<void> {
     console.log(`\n  ${COLORS.dim}Checking CDP ports...${COLORS.reset}`);
     let cdpOk = false;
     for (const port of CDP_PORTS) {
-        const alive = await checkPort(port);
+        const alive = await checkCdpPort(port);
         if (alive) {
             ok(`CDP port ${port} is responding`);
             cdpOk = true;

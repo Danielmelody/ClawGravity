@@ -9,6 +9,7 @@ export interface LogEntry {
 const MAX_ENTRIES = 200;
 
 // Strip ANSI escape codes for clean buffer storage
+// eslint-disable-next-line no-control-regex
 const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
 
 function stripAnsi(text: string): string {

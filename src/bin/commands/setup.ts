@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 // @inquirer/select is ESM-only — use native import() that tsc won't rewrite to require()
-// eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
 
 type SelectFn = typeof import('@inquirer/select')['default'];
@@ -79,11 +79,7 @@ function validateAllowedUserIds(raw: string): string | null {
     return null;
 }
 
-function expandTilde(raw: string): string {
-    if (raw === '~') return os.homedir();
-    if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
-    return raw;
-}
+import { expandTilde } from '../../utils/configLoader';
 
 // ---------------------------------------------------------------------------
 // Discord API helpers
@@ -479,7 +475,7 @@ async function runTelegramSetup(rl: readline.Interface): Promise<void> {
     hint('3. Copy the token BotFather gives you');
     hintBlank();
 
-    let telegramToken = '';
+    let telegramToken: string;
     while (true) {
         const raw = await askSecret(rl, `  ${C.yellow}>${C.reset} `);
         if (!isNonEmpty(raw)) {

@@ -43,6 +43,13 @@ export class ChatCommandHandler {
         this.pool = pool ?? null;
     }
 
+    /** Resolve workspace name from the current channel. */
+    private resolveWorkspaceName(channelId: string): string | undefined {
+        const currentSession = this.chatSessionRepo.findByChannelId(channelId);
+        const binding = this.bindingRepo.findByChannelId(channelId);
+        return currentSession?.workspacePath ?? binding?.workspacePath;
+    }
+
     /**
      * /new -- Create a new session channel under the category and start a new chat in Antigravity
      */
@@ -69,10 +76,7 @@ export class ChatCommandHandler {
         }
 
         // Determine the project path
-        const currentSession = this.chatSessionRepo.findByChannelId(interaction.channelId);
-        const binding = this.bindingRepo.findByChannelId(interaction.channelId);
-
-        const workspaceName = currentSession?.workspacePath ?? binding?.workspacePath;
+        const workspaceName = this.resolveWorkspaceName(interaction.channelId);
         if (!workspaceName) {
             await interaction.editReply({
                 content: t('⚠️ Please run in a project category channel.\nUse `/project` to create a project first.'),
@@ -144,9 +148,7 @@ export class ChatCommandHandler {
      */
     async handleClear(interaction: ChatInputCommandInteraction): Promise<void> {
         // Resolve workspace from current channel
-        const currentSession = this.chatSessionRepo.findByChannelId(interaction.channelId);
-        const binding = this.bindingRepo.findByChannelId(interaction.channelId);
-        const workspaceName = currentSession?.workspacePath ?? binding?.workspacePath;
+        const workspaceName = this.resolveWorkspaceName(interaction.channelId);
 
         if (!workspaceName) {
             await interaction.editReply({

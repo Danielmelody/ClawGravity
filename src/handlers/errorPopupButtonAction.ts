@@ -5,11 +5,11 @@
  * popup dialog from both Discord and Telegram using the ButtonAction interface.
  */
 
-import type { PlatformButtonInteraction } from '../platform/types';
 import type { ButtonAction } from './buttonHandler';
 import type { CdpBridge } from '../services/cdpBridgeManager';
 import { parseErrorPopupCustomId } from '../services/cdpBridgeManager';
 import { logger } from '../utils/logger';
+import { createButtonAction, executeDetectorClick } from './buttonActionUtils';
 
 export interface ErrorPopupButtonActionDeps {
     readonly bridge: CdpBridge;
@@ -20,75 +20,30 @@ const MAX_DEBUG_CONTENT = 4096;
 export function createErrorPopupButtonAction(
     deps: ErrorPopupButtonActionDeps,
 ): ButtonAction {
-    return {
-        match(customId: string): Record<string, string> | null {
-            const parsed = parseErrorPopupCustomId(customId);
-            if (!parsed) return null;
-            return {
-                action: parsed.action,
-                projectName: parsed.projectName ?? '',
-                channelId: parsed.channelId ?? '',
-            };
-        },
-
-        async execute(
-            interaction: PlatformButtonInteraction,
-            params: Record<string, string>,
-        ): Promise<void> {
-            const { action, channelId } = params;
-
-            if (channelId && channelId !== interaction.channel.id) {
-                await interaction
-                    .reply({ text: 'This error popup action is linked to a different session channel.' })
-                    .catch(() => {});
-                return;
-            }
-
-            const projectName = params.projectName || deps.bridge.lastActiveWorkspace;
-            const detector = projectName
-                ? deps.bridge.pool.getErrorPopupDetector(projectName)
-                : undefined;
-
-            if (!detector) {
-                await interaction
-                    .reply({ text: 'Error popup detector not found.' })
-                    .catch(() => {});
-                return;
-            }
-
+    return createButtonAction({
+        parseFn: parseErrorPopupCustomId,
+        bridge: deps.bridge,
+        getDetector: (pool, name) => pool.getErrorPopupDetector(name),
+        label: 'ErrorPopupAction',
+        resolveOpts: { skipDefer: true },
+        async handler(interaction, detector, action) {
             // Acknowledge immediately so Telegram doesn't time out
-            await interaction.deferUpdate().catch(() => {});
+            await interaction.deferUpdate().catch(() => { });
 
             if (action === 'dismiss') {
-                let clicked = false;
-                try {
-                    clicked = await detector.clickDismissButton();
-                } catch (err: unknown) {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    logger.error(`[ErrorPopupAction] CDP click failed: ${msg}`);
-                    await interaction.reply({ text: `Dismiss failed: ${msg}` }).catch(() => {});
-                    return;
-                }
-                if (clicked) {
-                    await interaction
-                        .update({
-                            text: '🗑️ Dismissed',
-                            components: [],
-                        })
-                        .catch((err) => {
-                            logger.warn('[ErrorPopupAction] update failed:', err);
-                        });
-                } else {
-                    await interaction
-                        .reply({ text: 'Dismiss button not found.' })
-                        .catch(() => {});
-                }
+                await executeDetectorClick(
+                    interaction,
+                    () => detector.clickDismissButton(),
+                    { text: '🗑️ Dismissed' },
+                    'Dismiss button not found.',
+                    'ErrorPopupAction',
+                );
             } else if (action === 'copy_debug') {
                 const clicked = await detector.clickCopyDebugInfoButton();
                 if (!clicked) {
                     await interaction
                         .reply({ text: 'Copy debug info button not found.' })
-                        .catch(() => {});
+                        .catch(() => { });
                     return;
                 }
 
@@ -118,34 +73,18 @@ export function createErrorPopupButtonAction(
                 } else {
                     await interaction
                         .followUp({ text: 'Could not read debug info from clipboard.' })
-                        .catch(() => {});
+                        .catch(() => { });
                 }
             } else {
                 // Retry action
-                let clicked = false;
-                try {
-                    clicked = await detector.clickRetryButton();
-                } catch (err: unknown) {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    logger.error(`[ErrorPopupAction] CDP click failed: ${msg}`);
-                    await interaction.reply({ text: `Retry failed: ${msg}` }).catch(() => {});
-                    return;
-                }
-                if (clicked) {
-                    await interaction
-                        .update({
-                            text: '🔄 Retry initiated',
-                            components: [],
-                        })
-                        .catch((err) => {
-                            logger.warn('[ErrorPopupAction] update failed:', err);
-                        });
-                } else {
-                    await interaction
-                        .reply({ text: 'Retry button not found.' })
-                        .catch(() => {});
-                }
+                await executeDetectorClick(
+                    interaction,
+                    () => detector.clickRetryButton(),
+                    { text: '🔄 Retry initiated' },
+                    'Retry button not found.',
+                    'ErrorPopupAction',
+                );
             }
         },
-    };
+    });
 }

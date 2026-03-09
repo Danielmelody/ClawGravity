@@ -2,6 +2,7 @@ import * as net from 'net';
 import * as os from 'os';
 import { execFile, spawn } from 'child_process';
 import { CDP_PORTS } from '../../utils/cdpPorts';
+import { isPortFree, findFreeCdpPort } from '../../utils/portUtils';
 import { getAntigravityCliPath } from '../../utils/pathUtils';
 
 const APP_NAME = 'Antigravity';
@@ -15,28 +16,7 @@ const C = {
     red: '\x1b[31m',
 } as const;
 
-/**
- * Check whether a TCP port is available (not in use) by attempting to listen on it.
- */
-function isPortAvailable(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-        const server = net.createServer();
-        server.once('error', () => resolve(false));
-        server.once('listening', () => {
-            server.close(() => resolve(true));
-        });
-        server.listen(port, '127.0.0.1');
-    });
-}
 
-async function findAvailablePort(): Promise<number | null> {
-    for (const port of CDP_PORTS) {
-        if (await isPortAvailable(port)) {
-            return port;
-        }
-    }
-    return null;
-}
 
 function openMacOS(port: number): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -88,7 +68,7 @@ export async function openAction(): Promise<void> {
 
     console.log(`\n  ${C.cyan}Searching for an available CDP port...${C.reset}`);
 
-    const port = await findAvailablePort();
+    const port = await findFreeCdpPort();
     if (port === null) {
         console.log(`  ${C.red}No available CDP ports found.${C.reset}`);
         console.log(`  ${C.dim}All candidate ports are in use: ${CDP_PORTS.join(', ')}${C.reset}`);

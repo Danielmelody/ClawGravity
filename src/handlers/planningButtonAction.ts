@@ -5,11 +5,11 @@
  * from both Discord and Telegram using the ButtonAction interface.
  */
 
-import type { PlatformButtonInteraction } from '../platform/types';
 import type { ButtonAction } from './buttonHandler';
 import type { CdpBridge } from '../services/cdpBridgeManager';
 import { parsePlanningCustomId } from '../services/cdpBridgeManager';
 import { logger } from '../utils/logger';
+import { createButtonAction, executeDetectorClick, extractWithRetry } from './buttonActionUtils';
 
 export interface PlanningButtonActionDeps {
     readonly bridge: CdpBridge;
@@ -20,52 +20,18 @@ const MAX_PLAN_CONTENT = 4096;
 export function createPlanningButtonAction(
     deps: PlanningButtonActionDeps,
 ): ButtonAction {
-    return {
-        match(customId: string): Record<string, string> | null {
-            const parsed = parsePlanningCustomId(customId);
-            if (!parsed) return null;
-            return {
-                action: parsed.action,
-                projectName: parsed.projectName ?? '',
-                channelId: parsed.channelId ?? '',
-            };
-        },
-
-        async execute(
-            interaction: PlatformButtonInteraction,
-            params: Record<string, string>,
-        ): Promise<void> {
-            const { action, channelId } = params;
-
-            // Acknowledge immediately so Telegram doesn't time out
-            await interaction.deferUpdate().catch(() => {});
-
-            if (channelId && channelId !== interaction.channel.id) {
-                await interaction
-                    .reply({ text: 'This planning action is linked to a different session channel.' })
-                    .catch(() => {});
-                return;
-            }
-
-            const projectName = params.projectName || deps.bridge.lastActiveWorkspace;
-            const detector = projectName
-                ? deps.bridge.pool.getPlanningDetector(projectName)
-                : undefined;
-
-            if (!detector) {
-                await interaction
-                    .reply({ text: 'Planning detector not found.' })
-                    .catch(() => {});
-                return;
-            }
-
+    return createButtonAction({
+        parseFn: parsePlanningCustomId,
+        bridge: deps.bridge,
+        getDetector: (pool, name) => pool.getPlanningDetector(name),
+        label: 'PlanningAction',
+        async handler(interaction, detector, action) {
             if (action === 'open') {
-
                 const clicked = await detector.clickOpenButton();
                 if (!clicked) {
                     await interaction
                         .reply({ text: 'Open button not found.' })
-                        .catch(() => {});
+                        .catch(() => { });
                     return;
                 }
 
@@ -73,12 +39,9 @@ export function createPlanningButtonAction(
                 await new Promise((resolve) => setTimeout(resolve, 500));
 
                 // Extract plan content with retry
-                let planContent: string | null = null;
-                for (let attempt = 0; attempt < 3; attempt++) {
-                    planContent = await detector.extractPlanContent();
-                    if (planContent) break;
-                    await new Promise((resolve) => setTimeout(resolve, 500));
-                }
+                const planContent = await extractWithRetry(
+                    () => detector.extractPlanContent(),
+                );
 
                 await interaction
                     .update({
@@ -101,37 +64,18 @@ export function createPlanningButtonAction(
                 } else {
                     await interaction
                         .followUp({ text: 'Could not extract plan content from the editor.' })
-                        .catch(() => {});
+                        .catch(() => { });
                 }
             } else {
                 // Proceed action
-                await interaction.deferUpdate().catch(() => {});
-
-                let clicked = false;
-                try {
-                    clicked = await detector.clickProceedButton();
-                } catch (err: unknown) {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    logger.error(`[PlanningAction] CDP click failed: ${msg}`);
-                    await interaction.reply({ text: `Proceed failed: ${msg}` }).catch(() => {});
-                    return;
-                }
-
-                if (clicked) {
-                    await interaction
-                        .update({
-                            text: '▶️ Proceed started',
-                            components: [],
-                        })
-                        .catch((err) => {
-                            logger.warn('[PlanningAction] update failed:', err);
-                        });
-                } else {
-                    await interaction
-                        .reply({ text: 'Proceed button not found.' })
-                        .catch(() => {});
-                }
+                await executeDetectorClick(
+                    interaction,
+                    () => detector.clickProceedButton(),
+                    { text: '▶️ Proceed started' },
+                    'Proceed button not found.',
+                    'PlanningAction',
+                );
             }
         },
-    };
+    });
 }

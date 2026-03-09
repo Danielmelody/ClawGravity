@@ -1,5 +1,13 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
+import {
+    DetectorState,
+    DetectorStateConfig,
+    createDetectorState,
+    startDetector,
+    stopDetector,
+    processDetectorResult,
+} from './detectorStateManager';
 
 /** Error popup information */
 export interface ErrorPopupInfo {
@@ -37,19 +45,12 @@ export class ErrorPopupDetector {
     private onErrorPopup: (info: ErrorPopupInfo) => void;
     private onResolved?: () => void;
 
-    private isRunning: boolean = false;
-    /** Key of the last detected error popup (for duplicate notification prevention) */
-    private lastDetectedKey: string | null = null;
-    /** Full ErrorPopupInfo from the last detection */
-    private lastDetectedInfo: ErrorPopupInfo | null = null;
-    /** Timestamp of last notification (for cooldown-based dedup) */
-    private lastNotifiedAt: number = 0;
-    /** Cooldown period in ms to suppress duplicate notifications (10s for error popups) */
-    private static readonly COOLDOWN_MS = 10000;
-    /** Set of keys that have already been notified (prevents cross-session re-fires) */
-    private notifiedKeys: Set<string> = new Set();
-    /** Maximum size of notifiedKeys before pruning oldest entries */
-    private static readonly MAX_NOTIFIED_KEYS = 50;
+    private state: DetectorState<ErrorPopupInfo> = createDetectorState();
+    private static readonly CONFIG: DetectorStateConfig = {
+        cooldownMs: 10000,
+        maxNotifiedKeys: 50,
+        label: 'ErrorPopupDetector',
+    };
 
     constructor(options: ErrorPopupDetectorOptions) {
         this.cdpService = options.cdpService;
@@ -58,28 +59,16 @@ export class ErrorPopupDetector {
     }
 
     /** Start monitoring (marks active — must be called before evaluate()). */
-    start(): void {
-        if (this.isRunning) return;
-        this.isRunning = true;
-        this.lastDetectedKey = null;
-        this.lastDetectedInfo = null;
-        this.lastNotifiedAt = 0;
-    }
+    start(): void { startDetector(this.state); }
 
     /** Stop monitoring. */
-    async stop(): Promise<void> {
-        this.isRunning = false;
-    }
+    async stop(): Promise<void> { stopDetector(this.state); }
 
     /** Return the last detected error popup info. Returns null if nothing has been detected. */
-    getLastDetectedInfo(): ErrorPopupInfo | null {
-        return this.lastDetectedInfo;
-    }
+    getLastDetectedInfo(): ErrorPopupInfo | null { return this.state.lastDetectedInfo; }
 
     /** Returns whether monitoring is currently active. */
-    isActive(): boolean {
-        return this.isRunning;
-    }
+    isActive(): boolean { return this.state.isRunning; }
 
     /**
      * Dismiss the error — no-op; error state resolves on its own.
@@ -136,38 +125,20 @@ export class ErrorPopupDetector {
      * @param runStatus  Cascade run status string
      */
     evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
-        if (!this.isRunning) return;
+        if (!this.state.isRunning) return;
 
         try {
             const info = this.extractErrorFromTrajectory(steps, runStatus);
+            const key = info ? `${cascadeId}::${info.title}::${info.body.slice(0, 100)}` : null;
 
-            if (info) {
-                // Include cascadeId in the key to prevent cross-session re-fires
-                const key = `${cascadeId}::${info.title}::${info.body.slice(0, 100)}`;
-                const now = Date.now();
-                const withinCooldown = (now - this.lastNotifiedAt) < ErrorPopupDetector.COOLDOWN_MS;
-                if (key !== this.lastDetectedKey && !withinCooldown && !this.notifiedKeys.has(key)) {
-                    this.lastDetectedKey = key;
-                    this.lastDetectedInfo = info;
-                    this.lastNotifiedAt = now;
-                    this.notifiedKeys.add(key);
-                    // Prune oldest entries if set grows too large
-                    if (this.notifiedKeys.size > ErrorPopupDetector.MAX_NOTIFIED_KEYS) {
-                        const first = this.notifiedKeys.values().next().value;
-                        if (first) this.notifiedKeys.delete(first);
-                    }
-                    this.onErrorPopup(info);
-                } else if (key === this.lastDetectedKey) {
-                    this.lastDetectedInfo = info;
-                }
-            } else {
-                const wasDetected = this.lastDetectedKey !== null;
-                this.lastDetectedKey = null;
-                this.lastDetectedInfo = null;
-                if (wasDetected && this.onResolved) {
-                    this.onResolved();
-                }
-            }
+            processDetectorResult(
+                this.state,
+                ErrorPopupDetector.CONFIG,
+                info,
+                key,
+                (detected) => this.onErrorPopup(detected),
+                this.onResolved,
+            );
         } catch (error) {
             logger.error('[ErrorPopupDetector] Error during evaluation:', error);
         }

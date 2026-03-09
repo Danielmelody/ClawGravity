@@ -197,24 +197,36 @@ export class CleanupCommandHandler {
     }
 
     /**
-     * Button press handler: Archive
+     * Shared guard: verify scan results exist and resolve guild.
+     * Returns null (after sending an error reply) if unavailable.
      */
-    async handleArchive(interaction: ButtonInteraction): Promise<void> {
+    private async ensureScanResult(
+        interaction: ButtonInteraction,
+    ): Promise<{ guild: Guild; result: CleanupScanResult } | null> {
         if (!this.lastScanResult) {
             await interaction.update({
                 content: t('⚠️ No scan results found. Please run `/cleanup` again.'),
                 embeds: [],
                 components: [],
             });
-            return;
+            return null;
         }
 
         const guild = interaction.guild;
-        if (!guild) return;
+        if (!guild) return null;
 
         await interaction.deferUpdate();
 
-        const result = this.lastScanResult;
+        return { guild, result: this.lastScanResult };
+    }
+
+    /**
+     * Button press handler: Archive
+     */
+    async handleArchive(interaction: ButtonInteraction): Promise<void> {
+        const prepared = await this.ensureScanResult(interaction);
+        if (!prepared) return;
+        const { guild, result } = prepared;
         let archivedCount = 0;
         let failedCount = 0;
 
@@ -287,21 +299,9 @@ export class CleanupCommandHandler {
      * Button press handler: Delete
      */
     async handleDelete(interaction: ButtonInteraction): Promise<void> {
-        if (!this.lastScanResult) {
-            await interaction.update({
-                content: t('⚠️ No scan results found. Please run `/cleanup` again.'),
-                embeds: [],
-                components: [],
-            });
-            return;
-        }
-
-        const guild = interaction.guild;
-        if (!guild) return;
-
-        await interaction.deferUpdate();
-
-        const result = this.lastScanResult;
+        const prepared = await this.ensureScanResult(interaction);
+        if (!prepared) return;
+        const { guild, result } = prepared;
         let deletedCount = 0;
         let failedCount = 0;
 

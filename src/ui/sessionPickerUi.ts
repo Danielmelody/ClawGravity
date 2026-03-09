@@ -31,7 +31,7 @@ export function isSessionSelectId(customId: string): boolean {
 /**
  * Build a platform-agnostic MessagePayload for session picker UI.
  */
-export function buildSessionPickerPayload(
+function buildSessionPickerPayload(
     sessions: SessionListItem[],
 ): MessagePayload {
     const MAX_OPTIONS = 25;

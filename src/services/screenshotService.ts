@@ -47,6 +47,20 @@ export class ScreenshotService {
         this.cdpService = options.cdpService;
     }
 
+    /** Build common CDP captureScreenshot params from capture options. */
+    private buildCaptureParams(options: CaptureOptions): Record<string, any> {
+        const params: Record<string, any> = {
+            format: options.format ?? 'png',
+        };
+        if (options.quality !== undefined) {
+            params.quality = options.quality;
+        }
+        if (options.clip) {
+            params.clip = options.clip;
+        }
+        return params;
+    }
+
     /**
      * Capture the current screen.
      *
@@ -55,18 +69,7 @@ export class ScreenshotService {
      */
     async capture(options: CaptureOptions = {}): Promise<CaptureResult> {
         try {
-            const params: Record<string, any> = {
-                format: options.format ?? 'png',
-            };
-
-            if (options.quality !== undefined) {
-                params.quality = options.quality;
-            }
-
-            if (options.clip) {
-                params.clip = options.clip;
-            }
-
+            const params = this.buildCaptureParams(options);
             if (options.captureBeyondViewport !== undefined) {
                 params.captureBeyondViewport = options.captureBeyondViewport;
             }
@@ -106,17 +109,7 @@ export class ScreenshotService {
      */
     async getBase64(options: CaptureOptions = {}): Promise<string | null> {
         try {
-            const params: Record<string, any> = {
-                format: options.format ?? 'png',
-            };
-
-            if (options.quality !== undefined) {
-                params.quality = options.quality;
-            }
-
-            if (options.clip) {
-                params.clip = options.clip;
-            }
+            const params = this.buildCaptureParams(options);
 
             const result = await this.cdpService.callWithRetry('Page.captureScreenshot', params);
             return result?.data ?? null;

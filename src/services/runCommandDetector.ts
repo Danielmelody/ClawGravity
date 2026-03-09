@@ -1,6 +1,13 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
 import { getPendingToolCallsFromPlannerStep, getToolCallName } from './trajectoryToolState';
+import {
+    type NotificationTracker,
+    createNotificationTracker,
+    resetTrackerDetection,
+    processDetection,
+} from './notificationTracker';
+import { findLastPlannerStep } from './detectorStateManager';
 
 /** Run command dialog information */
 export interface RunCommandInfo {
@@ -41,13 +48,7 @@ export class RunCommandDetector {
     private onResolved?: () => void;
 
     private isRunning: boolean = false;
-    /** Key of the last detected dialog (for duplicate notification prevention) */
-    private lastDetectedKey: string | null = null;
-    /** Full RunCommandInfo from the last detection */
-    private lastDetectedInfo: RunCommandInfo | null = null;
-    /** Set of keys that have already been notified (prevents cross-session re-fires) */
-    private notifiedKeys: Set<string> = new Set();
-    /** Maximum size of notifiedKeys before pruning oldest entries */
+    private tracker: NotificationTracker<RunCommandInfo> = createNotificationTracker();
     private static readonly MAX_NOTIFIED_KEYS = 50;
 
     constructor(options: RunCommandDetectorOptions) {
@@ -60,8 +61,7 @@ export class RunCommandDetector {
     start(): void {
         if (this.isRunning) return;
         this.isRunning = true;
-        this.lastDetectedKey = null;
-        this.lastDetectedInfo = null;
+        resetTrackerDetection(this.tracker);
         // Note: notifiedKeys is NOT cleared on start — it persists across
         // stop/start cycles to prevent stale cross-session re-notifications.
     }
@@ -73,7 +73,7 @@ export class RunCommandDetector {
 
     /** Return the last detected run command info. */
     getLastDetectedInfo(): RunCommandInfo | null {
-        return this.lastDetectedInfo;
+        return this.tracker.lastDetectedInfo;
     }
 
     /** Returns whether monitoring is currently active */
@@ -95,31 +95,14 @@ export class RunCommandDetector {
         try {
             const info = this.extractRunCommandFromTrajectory(steps, runStatus);
 
-            if (info) {
-                // Include cascadeId in the key to prevent cross-session re-fires:
-                // When cascade changes (new conversation), old detections won't match.
-                // When the same cascade transiently resolves then re-enters IDLE,
-                // notifiedKeys prevents duplicate notifications.
-                const key = `${cascadeId}::${info.commandText}::${info.workingDirectory}`;
-                if (key !== this.lastDetectedKey && !this.notifiedKeys.has(key)) {
-                    this.lastDetectedKey = key;
-                    this.lastDetectedInfo = info;
-                    this.notifiedKeys.add(key);
-                    // Prune oldest entries if set grows too large
-                    if (this.notifiedKeys.size > RunCommandDetector.MAX_NOTIFIED_KEYS) {
-                        const first = this.notifiedKeys.values().next().value;
-                        if (first) this.notifiedKeys.delete(first);
-                    }
-                    this.onRunCommandRequired(info);
-                }
-            } else {
-                const wasDetected = this.lastDetectedKey !== null;
-                this.lastDetectedKey = null;
-                this.lastDetectedInfo = null;
-                if (wasDetected && this.onResolved) {
-                    this.onResolved();
-                }
-            }
+            processDetection(
+                this.tracker,
+                info,
+                (i) => `${cascadeId}::${i.commandText}::${i.workingDirectory}`,
+                (i) => this.onRunCommandRequired(i),
+                this.onResolved,
+                RunCommandDetector.MAX_NOTIFIED_KEYS,
+            );
         } catch (error) {
             logger.error('[RunCommandDetector] Error during evaluation:', error);
         }
@@ -130,56 +113,48 @@ export class RunCommandDetector {
      * Looks for terminal/command tool calls when cascade is IDLE.
      */
     private extractRunCommandFromTrajectory(steps: any[], runStatus: string | null): RunCommandInfo | null {
-        if (!runStatus || runStatus !== 'CASCADE_RUN_STATUS_IDLE') return null;
-        if (steps.length === 0) return null;
+        const found = findLastPlannerStep(steps, runStatus);
+        if (!found) return null;
 
-        for (let i = steps.length - 1; i >= 0; i--) {
-            const step = steps[i];
-            if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') break;
+        const { index: i } = found;
+        const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
+        if (pendingToolCalls.length === 0) return null;
 
-            if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
-                const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
-                if (pendingToolCalls.length === 0) return null;
+        // Find terminal command tool calls
+        for (const tc of pendingToolCalls) {
+            const toolName = getToolCallName(tc);
+            const isTerminal = [
+                'terminal', 'command', 'shell', 'bash', 'exec',
+                'run_command', 'runcommand', 'execute_command',
+            ].some((pattern) => toolName.includes(pattern));
+            if (!isTerminal) continue;
 
-                // Find terminal command tool calls
-                for (const tc of pendingToolCalls) {
-                    const toolName = getToolCallName(tc);
-                    const isTerminal = [
-                        'terminal', 'command', 'shell', 'bash', 'exec',
-                        'run_command', 'runcommand', 'execute_command',
-                    ].some((pattern) => toolName.includes(pattern));
-                    if (!isTerminal) continue;
+            // Extract command text from tool call arguments
+            const args = this.parseToolCallArgs(tc);
+            const commandText = typeof args === 'string'
+                ? args
+                : args?.command || args?.cmd || args?.script || args?.CommandLine || '';
+            const workingDirectory =
+                args?.cwd
+                || args?.workingDirectory
+                || args?.directory
+                || args?.Cwd
+                || '';
 
-                    // Extract command text from tool call arguments
-                    const args = this.parseToolCallArgs(tc);
-                    const commandText = typeof args === 'string'
-                        ? args
-                        : args?.command || args?.cmd || args?.script || args?.CommandLine || '';
-                    const workingDirectory =
-                        args?.cwd
-                        || args?.workingDirectory
-                        || args?.directory
-                        || args?.Cwd
-                        || '';
+            // Skip if we couldn't extract a meaningful command
+            const trimmedCommand = String(commandText).trim();
+            if (!trimmedCommand) continue;
 
-                    // Skip if we couldn't extract a meaningful command
-                    const trimmedCommand = String(commandText).trim();
-                    if (!trimmedCommand) continue;
-
-                    return {
-                        commandText: trimmedCommand,
-                        workingDirectory: String(workingDirectory).trim(),
-                        runText: 'Run',
-                        rejectText: 'Reject',
-                    };
-                }
-
-                // If we reach the end of the latest planner response and found
-                // no pending terminal commands, then there are none awaiting user action.
-                return null;
-            }
+            return {
+                commandText: trimmedCommand,
+                workingDirectory: String(workingDirectory).trim(),
+                runText: 'Run',
+                rejectText: 'Reject',
+            };
         }
 
+        // If we reach the end of the latest planner response and found
+        // no pending terminal commands, then there are none awaiting user action.
         return null;
     }
 

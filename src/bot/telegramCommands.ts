@@ -409,7 +409,7 @@ async function ensureTelegramRuntimeForChat(
 }
 
 async function handleModel(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
-    let runtimePrepared: Awaited<ReturnType<typeof ensureWorkspaceRuntime>> | null = null;
+    let runtimePrepared: Awaited<ReturnType<typeof ensureWorkspaceRuntime>> | null;
     try {
         runtimePrepared = await ensureTelegramRuntimeForChat(deps, message);
     } catch (err: any) {
@@ -578,40 +578,64 @@ async function handleLogs(message: PlatformMessage, args: string): Promise<void>
     await message.reply({ text: truncated }).catch(logger.error);
 }
 
-async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
-    if (!deps.chatSessionService) {
-        await message.reply({ text: 'Chat session service not available.' }).catch(logger.error);
-        return;
-    }
-
-    // Resolve workspace binding for this chat
+/**
+ * Resolve the workspace binding for a chat and prepare the runtime.
+ * Returns the prepared runtime or null (after sending an error reply).
+ */
+async function resolveWorkspaceRuntime(
+    deps: TelegramCommandDeps,
+    message: PlatformMessage,
+    logTag: string,
+): Promise<{ runtime: any; binding: any } | null> {
     const chatId = message.channel.id;
     const binding = deps.telegramBindingRepo?.findByChatId(chatId);
     if (!binding) {
         await message.reply({
             text: 'No project is linked to this chat. Use /project to bind a workspace first.',
         }).catch(logger.error);
-        return;
+        return null;
     }
 
-    // Resolve workspace path and connect to CDP
-    let runtimePrepared;
     try {
-        runtimePrepared = await ensureWorkspaceRuntime(
+        const runtimePrepared = await ensureWorkspaceRuntime(
             deps.bridge,
             deps.workspaceService
                 ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
                 : binding.workspacePath,
         );
+        return { runtime: runtimePrepared.runtime, binding };
     } catch (err: any) {
-        logger.error('[TelegramCommand:new] runtime bootstrap failed:', err?.message || err);
+        logger.error(`[TelegramCommand:${logTag}] runtime bootstrap failed:`, err?.message || err);
         await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
-        return;
+        return null;
     }
+}
+
+/**
+ * Convenience helper: verify chatSessionService exists and resolve the workspace runtime.
+ * Returns null (after sending error reply) if either check fails.
+ */
+async function resolveWithSessionService(
+    deps: TelegramCommandDeps,
+    message: PlatformMessage,
+    logTag: string,
+): Promise<{ runtime: any; binding: any; chatSessionService: NonNullable<typeof deps.chatSessionService> } | null> {
+    if (!deps.chatSessionService) {
+        await message.reply({ text: 'Chat session service not available.' }).catch(logger.error);
+        return null;
+    }
+    const resolved = await resolveWorkspaceRuntime(deps, message, logTag);
+    if (!resolved) return null;
+    return { ...resolved, chatSessionService: deps.chatSessionService };
+}
+
+async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
+    const resolved = await resolveWithSessionService(deps, message, 'new');
+    if (!resolved) return;
 
     // Start a new chat session
     try {
-        const result = await runtimePrepared.runtime.startNewChat(deps.chatSessionService);
+        const result = await resolved.runtime.startNewChat(resolved.chatSessionService);
         if (result.ok) {
             deps.sessionStateStore?.clearSelectedSession(message.channel.id);
             await message.reply({ text: 'New chat session started.' }).catch(logger.error);
@@ -628,39 +652,13 @@ async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): P
 }
 
 async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
-    if (!deps.chatSessionService) {
-        await message.reply({ text: 'Chat session service not available.' }).catch(logger.error);
-        return;
-    }
-
-    // Resolve workspace binding for this chat
+    const resolved = await resolveWithSessionService(deps, message, 'clear');
+    if (!resolved) return;
     const chatId = message.channel.id;
-    const binding = deps.telegramBindingRepo?.findByChatId(chatId);
-    if (!binding) {
-        await message.reply({
-            text: 'No project is linked to this chat. Use /project to bind a workspace first.',
-        }).catch(logger.error);
-        return;
-    }
-
-    // Resolve workspace path and connect to CDP
-    let runtimePrepared;
-    try {
-        runtimePrepared = await ensureWorkspaceRuntime(
-            deps.bridge,
-            deps.workspaceService
-                ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
-                : binding.workspacePath,
-        );
-    } catch (err: any) {
-        logger.error('[TelegramCommand:clear] runtime bootstrap failed:', err?.message || err);
-        await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
-        return;
-    }
 
     // Start a new chat session (effectively clearing the backend history)
     try {
-        const result = await runtimePrepared.runtime.startNewChat(deps.chatSessionService);
+        const result = await resolved.runtime.startNewChat(resolved.chatSessionService);
         if (result.ok) {
             deps.sessionStateStore?.clearSelectedSession(chatId);
 

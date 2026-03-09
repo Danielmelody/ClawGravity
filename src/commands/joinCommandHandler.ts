@@ -74,6 +74,37 @@ export class JoinCommandHandler {
         return this.workspaceService.getWorkspacePath(projectName);
     }
 
+    /**
+     * Resolve the project name bound to the current channel.
+     * Returns null if no binding exists (after sending an error reply).
+     */
+    private resolveProjectForChannel(
+        channelId: string,
+    ): string | null {
+        const binding = this.bindingRepo.findByChannelId(channelId);
+        const session = this.chatSessionRepo.findByChannelId(channelId);
+        return binding?.workspacePath ?? session?.workspacePath ?? null;
+    }
+
+    /**
+     * Resolve the project name and full path for the current channel,
+     * replying with an error if no binding exists.
+     * Returns null if no project is bound (after sending an error reply).
+     */
+    private async resolveProjectWithPath(
+        interaction: ChatInputCommandInteraction,
+    ): Promise<{ projectName: string; projectPath: string } | null> {
+        const projectName = this.resolveProjectForChannel(interaction.channelId);
+        if (!projectName) {
+            await interaction.editReply({
+                content: t('⚠️ No project is bound to this channel. Use `/project` first.'),
+            });
+            return null;
+        }
+        const projectPath = this.resolveProjectPath(projectName);
+        return { projectName, projectPath };
+    }
+
     private getMirrorSinkKey(projectName: string): string {
         return `${JoinCommandHandler.DISCORD_MIRROR_SINK_PREFIX}${projectName}`;
     }
@@ -153,18 +184,9 @@ export class JoinCommandHandler {
         interaction: ChatInputCommandInteraction,
         bridge: CdpBridge,
     ): Promise<void> {
-        const binding = this.bindingRepo.findByChannelId(interaction.channelId);
-        const session = this.chatSessionRepo.findByChannelId(interaction.channelId);
-        const projectName = binding?.workspacePath ?? session?.workspacePath;
-
-        if (!projectName) {
-            await interaction.editReply({
-                content: t('⚠️ No project is bound to this channel. Use `/project` first.'),
-            });
-            return;
-        }
-
-        const projectPath = this.resolveProjectPath(projectName);
+        const resolved = await this.resolveProjectWithPath(interaction);
+        if (!resolved) return;
+        const { projectPath } = resolved;
 
         let runtime;
         try {
@@ -203,9 +225,7 @@ export class JoinCommandHandler {
             return;
         }
 
-        const binding = this.bindingRepo.findByChannelId(interaction.channelId);
-        const session = this.chatSessionRepo.findByChannelId(interaction.channelId);
-        const projectName = binding?.workspacePath ?? session?.workspacePath;
+        const projectName = this.resolveProjectForChannel(interaction.channelId);
 
         if (!projectName) {
             await interaction.editReply({ content: t('⚠️ No project is bound to this channel.') });
@@ -302,18 +322,10 @@ export class JoinCommandHandler {
         interaction: ChatInputCommandInteraction,
         bridge: CdpBridge,
     ): Promise<void> {
-        const binding = this.bindingRepo.findByChannelId(interaction.channelId);
-        const session = this.chatSessionRepo.findByChannelId(interaction.channelId);
-        const projectName = binding?.workspacePath ?? session?.workspacePath;
+        const resolved = await this.resolveProjectWithPath(interaction);
+        if (!resolved) return;
+        const { projectName, projectPath } = resolved;
 
-        if (!projectName) {
-            await interaction.editReply({
-                content: t('⚠️ No project is bound to this channel. Use `/project` first.'),
-            });
-            return;
-        }
-
-        const projectPath = this.resolveProjectPath(projectName);
         const runtime = this.pool.getOrCreateRuntime(projectPath);
         const detector = this.pool.getUserMessageDetector(projectName);
 
@@ -450,7 +462,7 @@ export class JoinCommandHandler {
         // Stop previous monitor if still running
         const prev = this.activeResponseMonitors.get(projectName);
         if (prev?.isActive()) {
-            prev.stop().catch(() => {});
+            prev.stop().catch(() => { });
         }
 
         const grpcClient = await cdp.getGrpcClient();

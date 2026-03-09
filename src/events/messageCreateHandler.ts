@@ -29,6 +29,7 @@ import {
 } from '../utils/imageHandler';
 import { logger } from '../utils/logger';
 import { WorkspaceRuntime } from '../services/workspaceRuntime';
+import { WorkspaceQueue } from '../bot/workspaceQueue';
 
 export interface MessageCreateHandlerDeps {
     config: { allowedUserIds: string[]; extractionMode?: import('../utils/config').ExtractionMode };
@@ -84,25 +85,7 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
     const isImageAttachment = deps.isImageAttachment ?? isImageAttachmentFn;
 
     // Per-workspace prompt queue: serializes send→response cycles
-    const workspaceQueues = new Map<string, Promise<void>>();
-    const workspaceQueueDepths = new Map<string, number>();
-
-    function enqueueForWorkspace(
-        workspacePath: string,
-        task: () => Promise<void>,
-    ): Promise<void> {
-        // .catch: ensure a prior rejection never stalls the chain
-        const current = (workspaceQueues.get(workspacePath) ?? Promise.resolve()).catch(() => { });
-        const next = current.then(async () => {
-            try {
-                await task();
-            } catch (err: any) {
-                logger.error('[WorkspaceQueue] task error:', err?.message || err);
-            }
-        });
-        workspaceQueues.set(workspacePath, next);
-        return next;
-    }
+    const promptQueue = new WorkspaceQueue();
 
     return async (message: Message): Promise<void> => {
         if (message.author.bot) return;
@@ -136,7 +119,7 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                     { name: 'Auto Approve', value: deps.bridge.autoAccept.isEnabled() ? '🟢 ON' : '⚪ OFF', inline: true },
                 ];
 
-                let statusDescription = '';
+                let statusDescription: string;
                 if (activeNames.length > 0) {
                     const lines = activeNames.map((name) => {
                         const cdp = deps.bridge.pool.getConnected(name);
@@ -223,9 +206,8 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                     const projectLabel = deps.bridge.pool.extractProjectName(workspacePath);
 
                     // Track queue depth for hourglass reactions
-                    const currentDepth = workspaceQueueDepths.get(workspacePath) ?? 0;
-                    workspaceQueueDepths.set(workspacePath, currentDepth + 1);
-                    const newDepth = currentDepth + 1;
+                    const currentDepth = promptQueue.getDepth(workspacePath);
+                    const newDepth = promptQueue.incrementDepth(workspacePath);
 
                     if (currentDepth > 0) {
                         logger.info(
@@ -239,7 +221,7 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                     }
 
                     const queueStartTime = Date.now();
-                    await enqueueForWorkspace(workspacePath, async () => {
+                    await promptQueue.enqueue(workspacePath, async () => {
                         const waitMs = Date.now() - queueStartTime;
                         if (waitMs > 100) {
                             logger.info(
@@ -359,8 +341,7 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                             );
                             await message.reply(`Failed to connect to workspace: ${e.message}`);
                         } finally {
-                            const remainingDepth = (workspaceQueueDepths.get(workspacePath) ?? 1) - 1;
-                            workspaceQueueDepths.set(workspacePath, remainingDepth);
+                            const remainingDepth = promptQueue.decrementDepth(workspacePath);
                             if (remainingDepth > 0) {
                                 logger.info(
                                     `[Queue:${projectLabel}] Task done, ${remainingDepth} remaining`,

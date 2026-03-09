@@ -75,31 +75,43 @@ export interface TelegramJoinCommandDeps {
     readonly sessionStateStore: TelegramSessionStateStore;
 }
 
-export async function handleTelegramJoinCommand(
+/** Shared workspace→runtime resolution used by both join command and join select. */
+async function resolveBindingRuntime(
     deps: TelegramJoinCommandDeps,
-    message: PlatformMessage,
-): Promise<void> {
-    const chatId = message.channel.id;
+    chatId: string,
+    replyTarget: { reply: (opts: { text: string }) => Promise<any> },
+): Promise<{ runtime: any } | null> {
     const binding = deps.telegramBindingRepo.findByChatId(chatId);
     if (!binding) {
-        await message.reply({
+        await replyTarget.reply({
             text: 'No project is linked to this chat. Use /project to bind a workspace first.',
         }).catch(logger.error);
-        return;
+        return null;
     }
 
     const workspacePath = deps.workspaceService
         ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
         : binding.workspacePath;
 
-    let runtime;
     try {
         const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath);
-        runtime = prepared.runtime;
+        return { runtime: prepared.runtime };
     } catch (err: any) {
-        await message.reply({ text: `Failed to connect to project: ${escapeHtml(err?.message || 'unknown error')}` }).catch(logger.error);
-        return;
+        await replyTarget.reply({
+            text: `Failed to connect to project: ${escapeHtml(err?.message || 'unknown error')}`,
+        }).catch(logger.error);
+        return null;
     }
+}
+
+export async function handleTelegramJoinCommand(
+    deps: TelegramJoinCommandDeps,
+    message: PlatformMessage,
+): Promise<void> {
+    const chatId = message.channel.id;
+    const resolved = await resolveBindingRuntime(deps, chatId, message);
+    if (!resolved) return;
+    const { runtime } = resolved;
 
     const sessions = await runtime.listAllSessions(deps.chatSessionService);
     if (sessions.length === 0) {
@@ -112,7 +124,7 @@ export async function handleTelegramJoinCommand(
         type: 'selectMenu',
         customId: TG_JOIN_SELECT_ID,
         placeholder: 'Select a history session',
-        options: sessions.slice(0, 25).map((session) => ({
+        options: sessions.slice(0, 25).map((session: any) => ({
             label: session.title === currentTitle?.title ? `${session.title} (current)` : session.title,
             value: session.title,
         })),
@@ -132,31 +144,12 @@ export async function handleTelegramJoinSelect(
     if (!selectedTitle) return;
 
     const chatId = interaction.channel.id;
-    const binding = deps.telegramBindingRepo.findByChatId(chatId);
-    if (!binding) {
-        await interaction.reply({
-            text: 'No project is linked to this chat. Use /project first.',
-        }).catch(logger.error);
-        return;
-    }
-
-    const workspacePath = deps.workspaceService
-        ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
-        : binding.workspacePath;
-
-    let runtime;
-    try {
-        const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath);
-        runtime = prepared.runtime;
-    } catch (err: any) {
-        await interaction.reply({
-            text: `Failed to connect to project: ${escapeHtml(err?.message || 'unknown error')}`,
-        }).catch(logger.error);
-        return;
-    }
+    const resolved = await resolveBindingRuntime(deps, chatId, interaction);
+    if (!resolved) return;
+    const { runtime } = resolved;
 
     const sessions = await runtime.listAllSessions(deps.chatSessionService);
-    const selectedSession = sessions.find(s => s.title === selectedTitle);
+    const selectedSession = sessions.find((s: any) => s.title === selectedTitle);
     const cascadeId = selectedSession?.cascadeId || '';
 
     deps.sessionStateStore.setSelectedSession(chatId, selectedTitle, cascadeId);

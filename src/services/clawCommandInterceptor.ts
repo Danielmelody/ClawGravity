@@ -289,6 +289,7 @@ export class ClawCommandInterceptor {
             };
         }
 
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const parentAgent = require('path').basename(this.clawWorkspacePath);
 
         logger.info(`[ClawInterceptor] agent_send: "${parentAgent}" → "${to}" (${message.length} chars)`);

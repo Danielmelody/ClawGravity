@@ -4,6 +4,8 @@
  * Converts common HTML tags to Discord-compatible Markdown.
  */
 
+import { decodeHtmlEntities } from './htmlEntities';
+
 /**
  * Convert an HTML string to Discord-compatible Markdown.
  *
@@ -134,7 +136,7 @@ export function htmlToDiscordMarkdown(html: string): string {
     result = stripTags(result);
 
     // Decode HTML entities
-    result = decodeEntities(result);
+    result = decodeHtmlEntities(result);
 
     // Escape double underscores outside code blocks/inline code to prevent
     // Discord from interpreting __dirname, __proto__ etc. as underline markup.
@@ -190,19 +192,7 @@ function stripTags(html: string): string {
     return html.replace(/<[^>]+>/g, '');
 }
 
-/** Decode common HTML entities and generic numeric entities */
-function decodeEntities(text: string): string {
-    return text
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&#x27;/g, "'")
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => String.fromCodePoint(parseInt(hex, 16)))
-        .replace(/&#(\d+);/g, (_m, dec) => String.fromCodePoint(parseInt(dec, 10)));
-}
+
 
 /**
  * Escape double underscores outside code blocks and inline code

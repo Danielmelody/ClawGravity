@@ -21,6 +21,68 @@ export interface ModelsUiPayload {
     components: ActionRowBuilder<ButtonBuilder>[];
 }
 
+/** Normalize a model name for fuzzy matching. */
+function normalizeModelName(s: string): string {
+    return s.toLowerCase().replace(/[\s\-_]/g, '');
+}
+
+/** Resolved quota information for a model. */
+interface QuotaResult {
+    percent: number | null;
+    timeStr: string;
+}
+
+/** Match a model name against quota data and compute display values. */
+function resolveQuotaInfo(mName: string, quotaData: any[]): QuotaResult | null {
+    const nName = normalizeModelName(mName);
+    const q = quotaData.find(q => {
+        const nLabel = normalizeModelName(q.label);
+        const nModel = normalizeModelName(q.model || '');
+        return nLabel === nName || nModel === nName
+            || nName.includes(nLabel) || nLabel.includes(nName)
+            || (nModel && (nName.includes(nModel) || nModel.includes(nName)));
+    });
+    if (!q || !q.quotaInfo) return null;
+
+    const rem = q.quotaInfo.remainingFraction;
+    const resetTime = q.quotaInfo.resetTime ? new Date(q.quotaInfo.resetTime) : null;
+    const diffMs = resetTime ? resetTime.getTime() - Date.now() : 0;
+    let timeStr = 'Ready';
+    if (diffMs > 0) {
+        const mins = Math.ceil(diffMs / 60000);
+        if (mins < 60) timeStr = `${mins}m`;
+        else timeStr = `${Math.floor(mins / 60)}h ${mins % 60}m`;
+    }
+
+    const percent = (rem !== undefined && rem !== null) ? Math.round(rem * 100) : null;
+    return { percent, timeStr };
+}
+
+/** Format a model name with quota info for display. */
+function formatQuota(
+    mName: string,
+    current: boolean,
+    quotaData: any[],
+    richIcons: boolean = false,
+): string {
+    if (!mName) return `${current ? '[x]' : '[ ]'} Unknown`;
+    const prefix = current ? '[x]' : '[ ]';
+    const qi = resolveQuotaInfo(mName, quotaData);
+    if (!qi) return `${prefix} ${mName}`;
+    if (qi.percent !== null) {
+        if (richIcons) {
+            let icon = '🟢';
+            if (qi.percent <= 20) icon = '🔴';
+            else if (qi.percent <= 50) icon = '🟡';
+            return `${prefix} ${mName} ${icon} ${qi.percent}% (⏱️ ${qi.timeStr})`;
+        }
+        return `${prefix} ${mName} ${qi.percent}% (${qi.timeStr})`;
+    }
+    return richIcons
+        ? `${prefix} ${mName} (⏱️ ${qi.timeStr})`
+        : `${prefix} ${mName} (${qi.timeStr})`;
+}
+
 /**
  * Build a platform-agnostic MessagePayload for model selection UI.
  */
@@ -32,39 +94,7 @@ export function buildModelsPayload(
 ): MessagePayload | null {
     if (models.length === 0) return null;
 
-    function formatQuota(mName: string, current: boolean) {
-        if (!mName) return `${current ? '[x]' : '[ ]'} Unknown`;
-
-        const normalize = (s: string) => s.toLowerCase().replace(/[\s\-_]/g, '');
-        const nName = normalize(mName);
-        const q = quotaData.find(q => {
-            const nLabel = normalize(q.label);
-            const nModel = normalize(q.model || '');
-            return nLabel === nName || nModel === nName
-                || nName.includes(nLabel) || nLabel.includes(nName)
-                || (nModel && (nName.includes(nModel) || nModel.includes(nName)));
-        });
-        if (!q || !q.quotaInfo) return `${current ? '[x]' : '[ ]'} ${mName}`;
-
-        const rem = q.quotaInfo.remainingFraction;
-        const resetTime = q.quotaInfo.resetTime ? new Date(q.quotaInfo.resetTime) : null;
-        const diffMs = resetTime ? resetTime.getTime() - Date.now() : 0;
-        let timeStr = 'Ready';
-        if (diffMs > 0) {
-            const mins = Math.ceil(diffMs / 60000);
-            if (mins < 60) timeStr = `${mins}m`;
-            else timeStr = `${Math.floor(mins / 60)}h ${mins % 60}m`;
-        }
-
-        if (rem !== undefined && rem !== null) {
-            const percent = Math.round(rem * 100);
-            return `${current ? '[x]' : '[ ]'} ${mName} ${percent}% (${timeStr})`;
-        }
-
-        return `${current ? '[x]' : '[ ]'} ${mName} (${timeStr})`;
-    }
-
-    const currentModelFormatted = currentModel ? formatQuota(currentModel, true) : 'Unknown';
+    const currentModelFormatted = currentModel ? formatQuota(currentModel, true, quotaData) : 'Unknown';
     const defaultLine = defaultModel
         ? `\n**Default:** ⭐ ${defaultModel}`
         : '\n**Default:** Not set';
@@ -73,7 +103,7 @@ export function buildModelsPayload(
         const isCurrent = m === currentModel;
         const isDefault = defaultModel != null && m.toLowerCase() === defaultModel.toLowerCase();
         const star = isDefault ? ' ⭐' : '';
-        return `${formatQuota(m, isCurrent)}${star}`;
+        return `${formatQuota(m, isCurrent, quotaData)}${star}`;
     }).join('\n');
 
     const rc = withTimestamp(
@@ -154,49 +184,14 @@ export async function buildModelsUI(
 
     if (models.length === 0) return null;
 
-    function formatQuota(mName: string, current: boolean) {
-        if (!mName) return `${current ? '[x]' : '[ ]'} Unknown`;
-
-        const normalize = (s: string) => s.toLowerCase().replace(/[\s\-_]/g, '');
-        const nName = normalize(mName);
-        const q = quotaData.find(q => {
-            const nLabel = normalize(q.label);
-            const nModel = normalize(q.model || '');
-            return nLabel === nName || nModel === nName
-                || nName.includes(nLabel) || nLabel.includes(nName)
-                || (nModel && (nName.includes(nModel) || nModel.includes(nName)));
-        });
-        if (!q || !q.quotaInfo) return `${current ? '[x]' : '[ ]'} ${mName}`;
-
-        const rem = q.quotaInfo.remainingFraction;
-        const resetTime = q.quotaInfo.resetTime ? new Date(q.quotaInfo.resetTime) : null;
-        const diffMs = resetTime ? resetTime.getTime() - Date.now() : 0;
-        let timeStr = 'Ready';
-        if (diffMs > 0) {
-            const mins = Math.ceil(diffMs / 60000);
-            if (mins < 60) timeStr = `${mins}m`;
-            else timeStr = `${Math.floor(mins / 60)}h ${mins % 60}m`;
-        }
-
-        if (rem !== undefined && rem !== null) {
-            const percent = Math.round(rem * 100);
-            let icon = '🟢';
-            if (percent <= 20) icon = '🔴';
-            else if (percent <= 50) icon = '🟡';
-            return `${current ? '[x]' : '[ ]'} ${mName} ${icon} ${percent}% (⏱️ ${timeStr})`;
-        }
-
-        return `${current ? '[x]' : '[ ]'} ${mName} (⏱️ ${timeStr})`;
-    }
-
-    const currentModelFormatted = currentModel ? formatQuota(currentModel, true) : 'Unknown';
+    const currentModelFormatted = currentModel ? formatQuota(currentModel, true, quotaData, true) : 'Unknown';
 
     const embed = new EmbedBuilder()
         .setTitle('Model Management')
         .setColor(0x5865F2)
         .setDescription(`**Current Model:**\n${currentModelFormatted}\n\n` +
             `**Available Models (${models.length})**\n` +
-            models.map(m => formatQuota(m, m === currentModel)).join('\n'),
+            models.map(m => formatQuota(m, m === currentModel, quotaData, true)).join('\n'),
         )
         .setFooter({ text: 'Latest quota information retrieved' })
         .setTimestamp();

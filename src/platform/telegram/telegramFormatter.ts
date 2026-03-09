@@ -21,6 +21,7 @@ marked.use({
                 return `\x00TAG${idx}\x00`;
             });
             result = result.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            // eslint-disable-next-line no-control-regex
             return result.replace(/\x00TAG(\d+)\x00/g, (_m, idx) => tagPlaceholders[Number(idx)]);
         },
         text({ text }) { return escapeHtml(text); },

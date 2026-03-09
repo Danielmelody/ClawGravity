@@ -256,7 +256,7 @@ describe('createPlanningButtonAction', () => {
             });
 
             expect(interaction.reply).toHaveBeenCalledWith({
-                text: 'Planning detector not found.',
+                text: 'PlanningAction detector not found.',
             });
         });
 
@@ -274,7 +274,7 @@ describe('createPlanningButtonAction', () => {
             });
 
             expect(interaction.reply).toHaveBeenCalledWith({
-                text: 'This planning action is linked to a different session channel.',
+                text: 'This PlanningAction action is linked to a different session channel.',
             });
         });
 

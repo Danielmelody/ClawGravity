@@ -230,6 +230,40 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await monitor.stop();
     });
 
+    it('fetches a trajectory snapshot on generic diff notifications without the old 300ms lag', async () => {
+        const client = new FakeGrpcClient();
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'hi' } },
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Partial reply' } },
+                ],
+            },
+        });
+
+        const onProgress = jest.fn();
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-fast-diff',
+            expectedUserMessage: 'hi',
+            onProgress,
+        });
+
+        await monitor.start();
+        client.emit('data', { type: 'status', raw: { diff: { fieldDiffs: [{ updateSingular: { stringValue: 'delta' } }] } } });
+        await Promise.resolve();
+
+        expect(client.rawRPC).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(8);
+
+        expect(client.rawRPC).toHaveBeenCalledWith('GetCascadeTrajectory', { cascadeId: 'cascade-fast-diff' });
+        expect(onProgress).toHaveBeenCalledWith('Partial reply');
+
+        await monitor.stop();
+    });
+
     it('uses the top-level trajectory status when cascadeRunStatus is absent', async () => {
         const client = new FakeGrpcClient();
         client.rawRPC

@@ -26,7 +26,7 @@ export const MODE_UI_NAMES: Record<string, string> = {
 };
 
 /** Reverse mapping from UI display name -> internal name */
-export const MODE_UI_NAME_REVERSE: Record<string, string> = Object.fromEntries(
+const MODE_UI_NAME_REVERSE: Record<string, string> = Object.fromEntries(
     Object.entries(MODE_UI_NAMES).map(([k, v]) => [v.toLowerCase(), k])
 );
 

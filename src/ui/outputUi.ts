@@ -17,7 +17,7 @@ export const OUTPUT_BTN_PLAIN = 'output_btn_plain';
 /**
  * Build a platform-agnostic MessagePayload for output format UI.
  */
-export function buildOutputPayload(currentFormat: OutputFormat): MessagePayload {
+function buildOutputPayload(currentFormat: OutputFormat): MessagePayload {
     const isEmbed = currentFormat === 'embed';
 
     const rc = withTimestamp(

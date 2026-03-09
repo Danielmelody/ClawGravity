@@ -26,6 +26,30 @@ export function parseTemplateButtonId(customId: string): number {
     return parseInt(customId.slice(TEMPLATE_BTN_PREFIX.length), 10);
 }
 
+const EMPTY_DESCRIPTION = 'No templates registered.\n\n' +
+    'Use `/template add name:<name> prompt:<prompt>` to add one.';
+
+/** Truncate text with ellipsis. */
+function truncate(text: string, max: number): string {
+    return text.length > max ? `${text.substring(0, max - 3)}...` : text;
+}
+
+/** Compute shared data for template list rendering. */
+function prepareTemplateData(templates: TemplateRecord[]) {
+    const displayTemplates = templates.slice(0, MAX_BUTTONS);
+    const hasMore = templates.length > MAX_BUTTONS;
+
+    const description = displayTemplates
+        .map((tpl, i) => `**${i + 1}. ${tpl.name}**\n> ${truncate(tpl.prompt, MAX_PROMPT_PREVIEW_LEN)}`)
+        .join('\n\n');
+
+    const footerText = hasMore
+        ? `${templates.length - MAX_BUTTONS} templates are hidden. Use /template use <name> to execute directly.`
+        : 'Click a button to execute the template';
+
+    return { displayTemplates, description, footerText };
+}
+
 /**
  * Build a platform-agnostic MessagePayload for template list UI.
  */
@@ -39,26 +63,13 @@ export function buildTemplatePayload(
                     withTitle(createRichContent(), 'Template Management'),
                     0x57F287,
                 ),
-                'No templates registered.\n\n' +
-                'Use `/template add name:<name> prompt:<prompt>` to add one.',
+                EMPTY_DESCRIPTION,
             ),
         );
         return { richContent: rc, components: [] };
     }
 
-    const truncate = (text: string, max: number): string =>
-        text.length > max ? `${text.substring(0, max - 3)}...` : text;
-
-    const displayTemplates = templates.slice(0, MAX_BUTTONS);
-    const hasMore = templates.length > MAX_BUTTONS;
-
-    const description = displayTemplates
-        .map((tpl, i) => `**${i + 1}. ${tpl.name}**\n> ${truncate(tpl.prompt, MAX_PROMPT_PREVIEW_LEN)}`)
-        .join('\n\n');
-
-    const footerText = hasMore
-        ? `${templates.length - MAX_BUTTONS} templates are hidden. Use /template use <name> to execute directly.`
-        : 'Click a button to execute the template';
+    const { displayTemplates, description, footerText } = prepareTemplateData(templates);
 
     const rc = withTimestamp(
         withFooter(
@@ -109,29 +120,14 @@ export async function sendTemplateUI(
         const embed = new EmbedBuilder()
             .setTitle('Template Management')
             .setColor(0x57F287)
-            .setDescription(
-                'No templates registered.\n\n' +
-                'Use `/template add name:<name> prompt:<prompt>` to add one.',
-            )
+            .setDescription(EMPTY_DESCRIPTION)
             .setTimestamp();
 
         await target.editReply({ content: '', embeds: [embed], components: [] });
         return;
     }
 
-    const truncate = (text: string, max: number): string =>
-        text.length > max ? `${text.substring(0, max - 3)}...` : text;
-
-    const displayTemplates = templates.slice(0, MAX_BUTTONS);
-    const hasMore = templates.length > MAX_BUTTONS;
-
-    const description = displayTemplates
-        .map((tpl, i) => `**${i + 1}. ${tpl.name}**\n> ${truncate(tpl.prompt, MAX_PROMPT_PREVIEW_LEN)}`)
-        .join('\n\n');
-
-    const footerText = hasMore
-        ? `${templates.length - MAX_BUTTONS} templates are hidden. Use /template use <name> to execute directly.`
-        : 'Click a button to execute the template';
+    const { displayTemplates, description, footerText } = prepareTemplateData(templates);
 
     const embed = new EmbedBuilder()
         .setTitle('Template Management')

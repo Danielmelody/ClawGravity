@@ -1,8 +1,7 @@
 import { logger } from '../utils/logger';
 import { CDP_PORTS } from '../utils/cdpPorts';
 import { getAntigravityCliPath, getAntigravityCdpHint } from '../utils/pathUtils';
-import * as http from 'http';
-import * as net from 'net';
+import { checkCdpPort, isPortFree, findFreeCdpPort } from '../utils/portUtils';
 import { execFile, spawn } from 'child_process';
 
 /** How long to wait for Antigravity to become responsive after launch (ms) */
@@ -11,57 +10,7 @@ const LAUNCH_WAIT_MS = 45_000;
 /** Poll interval when waiting for CDP to respond (ms) */
 const POLL_INTERVAL_MS = 2_000;
 
-/**
- * Check if CDP responds on the specified port.
- */
-function checkPort(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-        const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
-            let data = '';
-            res.on('data', (chunk) => (data += chunk));
-            res.on('end', () => {
-                try {
-                    const parsed = JSON.parse(data);
-                    resolve(Array.isArray(parsed));
-                } catch {
-                    resolve(false);
-                }
-            });
-        });
-        req.on('error', () => resolve(false));
-        req.setTimeout(2000, () => {
-            req.destroy();
-            resolve(false);
-        });
-    });
-}
 
-/**
- * Check whether a TCP port is available (not in use) by attempting to listen on it.
- */
-function isPortFree(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-        const server = net.createServer();
-        server.once('error', () => resolve(false));
-        server.once('listening', () => {
-            server.close(() => resolve(true));
-        });
-        server.listen(port, '127.0.0.1');
-    });
-}
-
-/**
- * Find the first free CDP port from CDP_PORTS.
- * Returns null if all ports are occupied.
- */
-async function findFreePort(): Promise<number | null> {
-    for (const port of CDP_PORTS) {
-        if (await isPortFree(port)) {
-            return port;
-        }
-    }
-    return null;
-}
 
 /**
  * Launch Antigravity with --remote-debugging-port using the platform-appropriate method.
@@ -140,14 +89,14 @@ export async function ensureAntigravityRunning(workspacePath?: string): Promise<
     logger.debug('[AntigravityLauncher] Checking CDP ports...');
 
     for (const port of CDP_PORTS) {
-        if (await checkPort(port)) {
+        if (await checkCdpPort(port)) {
             logger.debug(`[AntigravityLauncher] OK — Port ${port} responding`);
             return;
         }
     }
 
     // No CDP port is responding — find a free port and auto-launch Antigravity
-    const launchPort = await findFreePort();
+    const launchPort = await findFreeCdpPort();
     if (!launchPort) {
         logger.warn('[AntigravityLauncher] No free CDP port available. All candidate ports are occupied.');
         logger.warn(`[AntigravityLauncher] Candidate ports: ${CDP_PORTS.join(', ')}`);
@@ -166,7 +115,7 @@ export async function ensureAntigravityRunning(workspacePath?: string): Promise<
         while (Date.now() - startTime < LAUNCH_WAIT_MS) {
             await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
 
-            if (await checkPort(launchPort)) {
+            if (await checkCdpPort(launchPort)) {
                 logger.done(`[AntigravityLauncher] ✓ Antigravity CDP ready on port ${launchPort}`);
                 return;
             }

@@ -69,7 +69,4 @@ export function rawHtmlToTelegramHtml(html: string): string {
     return htmlToTelegramHtml(html);
 }
 
-/**
- * Re-export for convenience.
- */
-export { htmlToTelegramHtml } from './htmlToTelegramHtml';
+

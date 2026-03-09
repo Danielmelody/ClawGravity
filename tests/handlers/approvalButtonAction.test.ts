@@ -188,7 +188,7 @@ describe('createApprovalButtonAction', () => {
             });
 
             expect(interaction.reply).toHaveBeenCalledWith({
-                text: 'Approval detector not found.',
+                text: 'ApprovalAction detector not found.',
             });
         });
 
@@ -225,7 +225,7 @@ describe('createApprovalButtonAction', () => {
             });
 
             expect(interaction.reply).toHaveBeenCalledWith({
-                text: 'This approval action is linked to a different session channel.',
+                text: 'This ApprovalAction action is linked to a different session channel.',
             });
         });
 

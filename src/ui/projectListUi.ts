@@ -53,7 +53,7 @@ export function isProjectSelectId(customId: string): boolean {
 /**
  * Build a platform-agnostic MessagePayload for project list UI.
  */
-export function buildProjectListPayload(
+function buildProjectListPayload(
     workspaces: string[],
     page: number = 0,
 ): MessagePayload {

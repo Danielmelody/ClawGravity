@@ -291,6 +291,32 @@ async function trySendFile(
     return null;
 }
 
+/**
+ * Try to send a file attachment from a MessagePayload.
+ * Returns a wrapped PlatformSentMessage if successful, or null to fall back to text.
+ */
+async function trySendFileFromPayload(
+    api: TelegramBotLike['api'],
+    chatId: number | string,
+    payload: MessagePayload,
+    extraOptions: Record<string, any> | undefined,
+    toInputFile: TelegramBotLike['toInputFile'] | undefined,
+): Promise<PlatformSentMessage | null> {
+    if (!payload.files || payload.files.length === 0) return null;
+
+    const file = payload.files[0];
+    const opts = payload.text || payload.richContent
+        ? toTelegramPayload({ text: payload.text, richContent: payload.richContent })
+        : null;
+    const caption = opts?.text;
+
+    const sent = await trySendFile(api, chatId, file, caption, extraOptions, toInputFile);
+    if (sent) {
+        return wrapTelegramSentMessage(sent, api, chatId);
+    }
+    return null;
+}
+
 /** Wrap a Telegram chat as a PlatformChannel. */
 export function wrapTelegramChannel(
     api: TelegramBotLike['api'],
@@ -305,19 +331,8 @@ export function wrapTelegramChannel(
         name: undefined,
         async send(payload: MessagePayload): Promise<PlatformSentMessage> {
             // Handle file attachments (e.g., screenshots)
-            if (payload.files && payload.files.length > 0) {
-                const file = payload.files[0];
-                const opts = payload.text || payload.richContent
-                    ? toTelegramPayload({ text: payload.text, richContent: payload.richContent })
-                    : null;
-                const caption = opts?.text;
-
-                const sent = await trySendFile(api, chatId, file, caption, undefined, toInputFile);
-                if (sent) {
-                    return wrapTelegramSentMessage(sent, api, chatId);
-                }
-                // Fallback to text-only if file sending not supported
-            }
+            const fileSent = await trySendFileFromPayload(api, chatId, payload, undefined, toInputFile);
+            if (fileSent) return fileSent;
 
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
@@ -408,26 +423,12 @@ export function wrapTelegramMessage(
         },
         async reply(payload: MessagePayload): Promise<PlatformSentMessage> {
             // Handle file attachments (e.g., screenshots)
-            if (payload.files && payload.files.length > 0) {
-                const file = payload.files[0];
-                const opts = payload.text || payload.richContent
-                    ? toTelegramPayload({ text: payload.text, richContent: payload.richContent })
-                    : null;
-                const caption = opts?.text;
-
-                const sent = await trySendFile(
-                    api,
-                    msg.chat.id,
-                    file,
-                    caption,
-                    { reply_to_message_id: msg.message_id },
-                    toInputFile,
-                );
-                if (sent) {
-                    return wrapTelegramSentMessage(sent, api, msg.chat.id);
-                }
-                // Fallback to text-only if file sending not supported
-            }
+            const fileSent = await trySendFileFromPayload(
+                api, msg.chat.id, payload,
+                { reply_to_message_id: msg.message_id },
+                toInputFile,
+            );
+            if (fileSent) return fileSent;
 
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
@@ -490,12 +491,8 @@ export function wrapTelegramCallbackQuery(
             await withRetry429(() => api.editMessageText(chatId, messageId, text, rest));
         },
         async editReply(payload: MessagePayload): Promise<void> {
-            if (!query.message) return;
-            assertValidChatId(chatId);
-            const messageId = query.message.message_id;
-            const opts = toTelegramPayload(payload);
-            const { text, ...rest } = opts;
-            await withRetry429(() => api.editMessageText(chatId, messageId, text, rest));
+            // Semantically identical to update for Telegram callback queries
+            return this.update(payload);
         },
         async followUp(payload: MessagePayload): Promise<PlatformSentMessage> {
             assertValidChatId(chatId);

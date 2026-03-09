@@ -50,7 +50,7 @@ function getDefaultDbPath(): string {
 }
 
 /** Expand leading `~` or `~/` to the user's home directory. */
-function expandTilde(raw: string): string {
+export function expandTilde(raw: string): string {
     if (raw === '~') return os.homedir();
     if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
     return raw;

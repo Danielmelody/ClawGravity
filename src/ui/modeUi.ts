@@ -21,6 +21,17 @@ export interface ModeUiDeps {
     getCurrentCdp?: () => CdpService | null;
 }
 
+/** Build the description string for mode management UI. */
+function buildModeDescription(currentMode: string, suffix: string = ''): string {
+    return `**Current Mode:** ${MODE_DISPLAY_NAMES[currentMode] || currentMode}${suffix}\n` +
+        `${MODE_DESCRIPTIONS[currentMode] || ''}\n\n` +
+        `**Available Modes (${AVAILABLE_MODES.length})**\n` +
+        AVAILABLE_MODES.map(m => {
+            const icon = m === currentMode ? '[x]' : '[ ]';
+            return `${icon} **${MODE_DISPLAY_NAMES[m] || m}** — ${MODE_DESCRIPTIONS[m] || ''}`;
+        }).join('\n');
+}
+
 /**
  * Build a platform-agnostic MessagePayload for mode selection UI.
  * @param currentMode The current mode name
@@ -35,13 +46,7 @@ export function buildModePayload(currentMode: string, isPending: boolean = false
                     withTitle(createRichContent(), 'Mode Management'),
                     0x57F287,
                 ),
-                `**Current Mode:** ${MODE_DISPLAY_NAMES[currentMode] || currentMode}${pendingSuffix}\n` +
-                `${MODE_DESCRIPTIONS[currentMode] || ''}\n\n` +
-                `**Available Modes (${AVAILABLE_MODES.length})**\n` +
-                AVAILABLE_MODES.map(m => {
-                    const icon = m === currentMode ? '[x]' : '[ ]';
-                    return `${icon} **${MODE_DISPLAY_NAMES[m] || m}** — ${MODE_DESCRIPTIONS[m] || ''}`;
-                }).join('\n'),
+                buildModeDescription(currentMode, pendingSuffix),
             ),
             'Select a mode from the dropdown below',
         ),
@@ -93,15 +98,7 @@ export async function sendModeUI(
     const embed = new EmbedBuilder()
         .setTitle('Mode Management')
         .setColor(0x57F287)
-        .setDescription(
-            `**Current Mode:** ${MODE_DISPLAY_NAMES[currentMode] || currentMode}\n` +
-            `${MODE_DESCRIPTIONS[currentMode] || ''}\n\n` +
-            `**Available Modes (${AVAILABLE_MODES.length})**\n` +
-            AVAILABLE_MODES.map(m => {
-                const icon = m === currentMode ? '[x]' : '[ ]';
-                return `${icon} **${MODE_DISPLAY_NAMES[m] || m}** — ${MODE_DESCRIPTIONS[m] || ''}`;
-            }).join('\n'),
-        )
+        .setDescription(buildModeDescription(currentMode))
         .setFooter({ text: 'Select a mode from the dropdown below' })
         .setTimestamp();
 

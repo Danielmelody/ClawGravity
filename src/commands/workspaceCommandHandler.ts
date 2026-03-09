@@ -41,6 +41,40 @@ export class WorkspaceCommandHandler {
     }
 
     /**
+     * Shared helper: ensures category, creates session channel, registers binding & session.
+     * Returns the created channelId.
+     */
+    private async bindProjectToGuild(
+        guild: Guild,
+        workspacePath: string,
+    ): Promise<string> {
+        const categoryResult = await this.channelManager.ensureCategory(guild, workspacePath);
+        const categoryId = categoryResult.categoryId;
+
+        const sessionNumber = this.chatSessionRepo.getNextSessionNumber(categoryId);
+        const channelName = `session-${sessionNumber}`;
+
+        const sessionResult = await this.channelManager.createSessionChannel(guild, categoryId, channelName);
+        const channelId = sessionResult.channelId;
+
+        this.bindingRepo.upsert({
+            channelId,
+            workspacePath,
+            guildId: guild.id,
+        });
+
+        this.chatSessionRepo.create({
+            channelId,
+            categoryId,
+            workspacePath,
+            sessionNumber,
+            guildId: guild.id,
+        });
+
+        return channelId;
+    }
+
+    /**
      * /project list -- Display project list via select menu
      */
     public async handleShow(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -118,32 +152,7 @@ export class WorkspaceCommandHandler {
         this.processingWorkspaces.add(workspacePath);
 
         try {
-            // Ensure category exists
-            const categoryResult = await this.channelManager.ensureCategory(guild, workspacePath);
-            const categoryId = categoryResult.categoryId;
-
-            // Get session number (usually 1)
-            const sessionNumber = this.chatSessionRepo.getNextSessionNumber(categoryId);
-            const channelName = `session-${sessionNumber}`;
-
-            // Create session channel
-            const sessionResult = await this.channelManager.createSessionChannel(guild, categoryId, channelName);
-            const channelId = sessionResult.channelId;
-
-            // Register binding and session
-            this.bindingRepo.upsert({
-                channelId,
-                workspacePath,
-                guildId: guild.id,
-            });
-
-            this.chatSessionRepo.create({
-                channelId,
-                categoryId,
-                workspacePath,
-                sessionNumber,
-                guildId: guild.id,
-            });
+            const channelId = await this.bindProjectToGuild(guild, workspacePath);
 
             const fullPath = this.workspaceService.getWorkspacePath(workspacePath);
 
@@ -217,32 +226,7 @@ export class WorkspaceCommandHandler {
                 fs.mkdirSync(fullPath, { recursive: true });
             }
 
-            // Ensure category exists
-            const categoryResult = await this.channelManager.ensureCategory(guild, name);
-            const categoryId = categoryResult.categoryId;
-
-            // Get session number (usually 1)
-            const sessionNumber = this.chatSessionRepo.getNextSessionNumber(categoryId);
-            const channelName = `session-${sessionNumber}`;
-
-            // Create session channel
-            const sessionResult = await this.channelManager.createSessionChannel(guild, categoryId, channelName);
-            const channelId = sessionResult.channelId;
-
-            // Register binding and session
-            this.bindingRepo.upsert({
-                channelId,
-                workspacePath: name,
-                guildId: guild.id,
-            });
-
-            this.chatSessionRepo.create({
-                channelId,
-                categoryId,
-                workspacePath: name,
-                sessionNumber,
-                guildId: guild.id,
-            });
+            const channelId = await this.bindProjectToGuild(guild, name);
 
             const embed = new EmbedBuilder()
                 .setTitle('📁 Project Created')

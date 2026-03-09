@@ -40,6 +40,8 @@ import { markdownToTelegramHtmlViaUnified, rawHtmlToTelegramHtml } from '../plat
 import { AntigravityTrajectoryRenderer } from '../services/antigravityTrajectoryRenderer';
 import { escapeHtml } from '../platform/telegram/telegramFormatter';
 
+const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
+
 export interface TelegramMessageHandlerDeps {
     readonly bridge: CdpBridge;
     readonly telegramBindingRepo: TelegramBindingRepository;
@@ -306,8 +308,14 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             const channel = trackedChannel;
             const startTime = Date.now();
             let renderedTimelineHtml = '';
-            let statusMsg: PlatformSentMessage | null = null;
-            let lastStatusRender = '';
+            let statusMessages: PlatformSentMessage[] = [];
+            const statusRenderer = createCoalescedStatusRenderer(
+                channel,
+                () => statusMessages,
+                (nextMessages) => {
+                    statusMessages = nextMessages;
+                },
+            );
 
             const localMode = deps.modeService?.getCurrentMode() || 'fast';
             const currentModeName = MODE_UI_NAMES[localMode] || localMode;
@@ -316,9 +324,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             const headerLines = buildModeModelLines(currentModeName, currentModel, currentModel);
 
             let sessionLines: string[] = [];
-            let lastStatusEditTime = 0;
-            const STATUS_EDIT_MIN_INTERVAL_MS = 2500;
-            let pendingStatusUpdateTimer: NodeJS.Timeout | null = null;
             let isStatusTerminal = false;
             let currentStateIndicator = '⏳ Waiting for response...';
             let lastPhaseName = '';
@@ -326,9 +331,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
             const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
                 if (isStatusTerminal && mode === 'streaming') return;
-                if (!statusMsg) return;
-                const now = Date.now();
-                const elapsed = Math.round((now - startTime) / 1000);
+                const elapsed = Math.round((Date.now() - startTime) / 1000);
                 const nextText = buildTelegramStatusText({
                     activityLogText: getStatusActivityText(),
                     previewText: '',
@@ -338,43 +341,16 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     sessionLines,
                     stateIndicator: currentStateIndicator,
                 });
-                if (!nextText || nextText === lastStatusRender) {
+                if (!nextText) {
                     return;
                 }
 
-                // If terminal state, clear pending and update immediately
                 if (mode === 'complete' || mode === 'timeout' || mode === 'error') {
-                    if (pendingStatusUpdateTimer) {
-                        clearTimeout(pendingStatusUpdateTimer);
-                        pendingStatusUpdateTimer = null;
-                    }
-                    lastStatusRender = nextText;
-                    lastStatusEditTime = now;
-                    statusMsg.edit({ text: nextText }).catch(() => { });
+                    statusRenderer.request(nextText, true);
                     return;
                 }
 
-                // Throttle trailing edit
-                const timeSinceLastEdit = now - lastStatusEditTime;
-                if (timeSinceLastEdit < STATUS_EDIT_MIN_INTERVAL_MS) {
-                    if (!pendingStatusUpdateTimer) {
-                        const delay = STATUS_EDIT_MIN_INTERVAL_MS - timeSinceLastEdit;
-                        pendingStatusUpdateTimer = setTimeout(() => {
-                            pendingStatusUpdateTimer = null;
-                            refreshStatusMessage(mode);
-                        }, delay);
-                    }
-                    return;
-                }
-
-                if (pendingStatusUpdateTimer) {
-                    clearTimeout(pendingStatusUpdateTimer);
-                    pendingStatusUpdateTimer = null;
-                }
-
-                lastStatusRender = nextText;
-                lastStatusEditTime = now;
-                statusMsg.edit({ text: nextText }).catch(() => { });
+                statusRenderer.request(nextText);
             };
 
             // Prefetch session info once (or periodically)
@@ -382,14 +358,20 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 if (info) {
                     const { buildSessionLines } = await import('../utils/streamMessageFormatter');
                     sessionLines = buildSessionLines(info.title, info.summary);
-                    refreshStatusMessage('streaming');
+                    if (statusMessages.length > 0) {
+                        refreshStatusMessage('streaming');
+                    }
                 }
             }).catch(() => { });
 
             // Send initial status message
-            statusMsg = await channel.send({ text: 'Processing...' }).catch(() => null);
+            const initialStatusMsg = await channel.send({ text: 'Processing...' }).catch(() => null);
+            if (initialStatusMsg) {
+                statusMessages = [initialStatusMsg];
+            }
             refreshStatusMessage('streaming');
 
+            // eslint-disable-next-line no-async-promise-executor
             await new Promise<void>(async (resolve) => {
                 const TIMEOUT_MS = 600_000;
 
@@ -446,16 +428,13 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                     onComplete: async (finalText: string) => {
                         isStatusTerminal = true;
-                        if (pendingStatusUpdateTimer) {
-                            clearTimeout(pendingStatusUpdateTimer);
-                            pendingStatusUpdateTimer = null;
-                        }
                         try {
                             const elapsed = Math.round((Date.now() - startTime) / 1000);
 
                             // Flash "Done" state on the card before replacing with final text
                             currentStateIndicator = `✅ Finished`;
                             refreshStatusMessage('complete');
+                            await statusRenderer.flush();
 
                             const separated = splitOutputAndLogs(finalText || '');
                             const finalOutputText = separated.output || finalText || '';
@@ -471,8 +450,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             } else if (finalText && finalText.trim().length > 0) {
                                 await deliverFinalTelegramText(null, channel, finalText);
                             } else {
-                                if (statusMsg) {
-                                    await statusMsg.delete().catch(() => { });
+                                if (statusMessages.length > 0) {
+                                    await deleteStreamingStatusMessages(statusMessages);
+                                    statusMessages = [];
                                 }
                                 await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
                             }
@@ -547,15 +527,12 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                 }
                             }
                         } finally {
+                            statusRenderer.dispose();
                             settle();
                         }
                     },
                     onTimeout: async (lastText: string) => {
                         isStatusTerminal = true;
-                        if (pendingStatusUpdateTimer) {
-                            clearTimeout(pendingStatusUpdateTimer);
-                            pendingStatusUpdateTimer = null;
-                        }
                         try {
                             // Determine cause from monitor phase
                             const monitorPhase = monitor?.getPhase?.() || 'timeout';
@@ -563,8 +540,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             const isQuota = monitorPhase === 'quotaReached';
 
                             // Update status message with correct mode
-                            if (statusMsg) {
+                            if (statusMessages.length > 0) {
                                 refreshStatusMessage(isError || isQuota ? 'error' : 'timeout');
+                                await statusRenderer.flush();
                             }
 
                             if (isQuota) {
@@ -581,6 +559,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                 await channel.send({ text: 'Response timed out.' }).catch(logger.error);
                             }
                         } finally {
+                            statusRenderer.dispose();
                             settle();
                         }
                     },
@@ -600,7 +579,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     ...monitorConfig
                 });
 
-                let safetyTimer = setTimeout(() => {
+                const safetyTimer = setTimeout(() => {
                     logger.warn(`[TelegramHandler:${projectName}] Safety timeout — releasing queue after idle period`);
                     monitor.stop().catch(() => { });
                     settle();
@@ -621,7 +600,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                         return;
                     }
                     refreshStatusMessage('streaming');
-                }, 3000);
+                }, 1000);
             });
         });
     };
@@ -687,25 +666,87 @@ function splitTelegramText(text: string): string[] {
     const MAX_LENGTH = 4096;
     if (text.length <= MAX_LENGTH) return text.length > 0 ? [text] : [];
 
+    type OpenTag = { name: string; openTag: string };
+    const tagPattern = /<\/?([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>/g;
     const chunks: string[] = [];
-    let remaining = text;
-    while (remaining.length > 0) {
-        if (remaining.length <= MAX_LENGTH) {
-            chunks.push(remaining);
-            break;
+    const openTags: OpenTag[] = [];
+    let current = '';
+    let cursor = 0;
+
+    const buildClosingTags = () => openTags.slice().reverse().map((tag) => `</${tag.name}>`).join('');
+    const buildOpeningTags = () => openTags.map((tag) => tag.openTag).join('');
+    const flushChunk = () => {
+        if (!current) return;
+        chunks.push(current + buildClosingTags());
+        current = buildOpeningTags();
+    };
+    const splitTextSegment = (segment: string, maxLen: number): [string, string] => {
+        if (segment.length <= maxLen) {
+            return [segment, ''];
         }
 
-        // Try to split at the last newline before the limit
-        const candidate = remaining.slice(0, MAX_LENGTH);
+        const candidate = segment.slice(0, maxLen);
         const lastNewline = candidate.lastIndexOf('\n');
+        const splitAt = lastNewline > maxLen / 2 ? lastNewline + 1 : maxLen;
+        return [segment.slice(0, splitAt), segment.slice(splitAt)];
+    };
+    const appendText = (segment: string) => {
+        let remaining = segment;
+        while (remaining.length > 0) {
+            const closingTags = buildClosingTags();
+            const available = MAX_LENGTH - current.length - closingTags.length;
+            if (available <= 0) {
+                flushChunk();
+                continue;
+            }
 
-        // Use newline boundary if it's reasonably close (at least 50% of MAX_LENGTH)
-        const splitAt = lastNewline > MAX_LENGTH / 2 ? lastNewline + 1 : MAX_LENGTH;
+            const [piece, rest] = splitTextSegment(remaining, available);
+            current += piece;
+            remaining = rest;
+            if (remaining.length > 0) {
+                flushChunk();
+            }
+        }
+    };
 
-        chunks.push(remaining.slice(0, splitAt));
-        remaining = remaining.slice(splitAt);
+    let match: RegExpExecArray | null;
+    while ((match = tagPattern.exec(text)) !== null) {
+        if (match.index > cursor) {
+            appendText(text.slice(cursor, match.index));
+        }
+
+        const fullTag = match[0];
+        const rawName = match[1] || '';
+        const tagName = rawName.toLowerCase();
+        const isClosing = fullTag.startsWith('</');
+        const isSelfClosing = fullTag.endsWith('/>') || tagName === 'tg-emoji';
+
+        if ((current.length + fullTag.length + buildClosingTags().length) > MAX_LENGTH) {
+            flushChunk();
+        }
+        current += fullTag;
+
+        if (isClosing) {
+            const idx = openTags.map((tag) => tag.name).lastIndexOf(tagName);
+            if (idx >= 0) {
+                openTags.splice(idx, 1);
+            }
+        } else if (!isSelfClosing) {
+            openTags.push({ name: tagName, openTag: fullTag });
+        }
+
+        cursor = match.index + fullTag.length;
     }
-    return chunks;
+
+    if (cursor < text.length) {
+        appendText(text.slice(cursor));
+    }
+
+    if (current) {
+        chunks.push(current + buildClosingTags());
+    }
+
+    return chunks.filter((chunk) => chunk.length > 0);
 }
 
 function buildTelegramStatusText(options: {
@@ -717,8 +758,6 @@ function buildTelegramStatusText(options: {
     sessionLines?: string[];
     stateIndicator?: string;
 }): string {
-    const MAX_LENGTH = 4096;
-
     const stateBarStr = options.stateIndicator || '';
     const stateBar = stateBarStr ? `<b>${escapeHtml(stateBarStr)}</b>` : '';
 
@@ -747,12 +786,117 @@ function buildTelegramStatusText(options: {
     if (activityLogStr) sections.push(activityLogStr);
     sections.push(footer);
 
-    let text = sections.join('\n\n');
-    if (text.length > MAX_LENGTH && activityLogStr) {
-        const withoutTimeline = sections.filter((section) => section !== activityLogStr);
-        text = withoutTimeline.join('\n\n');
+    return sections.join('\n\n');
+}
+
+function createCoalescedStatusRenderer(
+    channel: PlatformChannel,
+    getMessages: () => PlatformSentMessage[],
+    setMessages: (messages: PlatformSentMessage[]) => void,
+) {
+    let lastAppliedText = '';
+    let pendingText: string | null = null;
+    let renderTimer: NodeJS.Timeout | null = null;
+    let renderPromise: Promise<void> | null = null;
+    let disposed = false;
+
+    const scheduleFlush = () => {
+        if (disposed || renderTimer) return;
+        renderTimer = setTimeout(() => {
+            renderTimer = null;
+            void flushPending();
+        }, TELEGRAM_STREAM_RENDER_COALESCE_MS);
+    };
+
+    const flushPending = async (): Promise<void> => {
+        if (disposed || renderPromise) {
+            return renderPromise ?? Promise.resolve();
+        }
+
+        renderPromise = (async () => {
+            while (!disposed && pendingText && pendingText !== lastAppliedText) {
+                const nextText = pendingText;
+                pendingText = null;
+                const nextMessages = await syncStreamingStatusMessages(channel, getMessages(), nextText);
+                setMessages(nextMessages);
+                lastAppliedText = nextText;
+            }
+        })()
+            .catch(() => { })
+            .finally(() => {
+                renderPromise = null;
+                if (!disposed && pendingText && pendingText !== lastAppliedText) {
+                    scheduleFlush();
+                }
+            });
+
+        return renderPromise;
+    };
+
+    return {
+        request(text: string, immediate = false): void {
+            if (disposed || !text) return;
+            if (text === lastAppliedText || text === pendingText) return;
+
+            pendingText = text;
+            if (immediate) {
+                if (renderTimer) {
+                    clearTimeout(renderTimer);
+                    renderTimer = null;
+                }
+                void flushPending();
+                return;
+            }
+
+            scheduleFlush();
+        },
+        async flush(): Promise<void> {
+            if (renderTimer) {
+                clearTimeout(renderTimer);
+                renderTimer = null;
+            }
+            await flushPending();
+        },
+        dispose(): void {
+            disposed = true;
+            pendingText = null;
+            if (renderTimer) {
+                clearTimeout(renderTimer);
+                renderTimer = null;
+            }
+        },
+    };
+}
+
+async function syncStreamingStatusMessages(
+    channel: PlatformChannel,
+    existingMessages: PlatformSentMessage[],
+    text: string,
+): Promise<PlatformSentMessage[]> {
+    const chunks = splitTelegramText(text);
+    if (chunks.length === 0) {
+        return existingMessages;
     }
-    return text;
+
+    const nextMessages = existingMessages.slice();
+    for (let i = 0; i < chunks.length; i++) {
+        if (nextMessages[i]) {
+            await nextMessages[i].edit({ text: chunks[i] });
+            continue;
+        }
+
+        nextMessages[i] = await channel.send({ text: chunks[i] });
+    }
+
+    for (let i = chunks.length; i < nextMessages.length; i++) {
+        await nextMessages[i].delete().catch(() => { });
+    }
+
+    return nextMessages.slice(0, chunks.length);
+}
+
+async function deleteStreamingStatusMessages(messages: PlatformSentMessage[]): Promise<void> {
+    await Promise.all(messages.map((message) => message.delete().catch(() => { })));
 }
 
 // ---------------------------------------------------------------------------
@@ -806,23 +950,23 @@ async function startPassiveResponseMonitor(
 
     const startTime = Date.now();
     let renderedTimelineHtml = '';
-    let statusMsg: PlatformSentMessage | null = null;
-    let lastStatusRender = '';
-    let statusMsgSent = false;
+    let statusMessages: PlatformSentMessage[] = [];
+    const statusRenderer = createCoalescedStatusRenderer(
+        channel,
+        () => statusMessages,
+        (nextMessages) => {
+            statusMessages = nextMessages;
+        },
+    );
 
     let sessionLines: string[] = [];
     let isStatusTerminal = false;
     let currentStateIndicator = '⏳ Waiting for response...';
-    let lastStatusEditTime = 0;
-    const STATUS_EDIT_MIN_INTERVAL_MS = 2500;
-    let pendingStatusUpdateTimer: NodeJS.Timeout | null = null;
     const getStatusActivityText = () => renderedTimelineHtml;
 
     const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
         if (isStatusTerminal && mode === 'streaming') return;
-        if (!statusMsg) return;
-        const now = Date.now();
-        const elapsed = Math.round((now - startTime) / 1000);
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
 
         const nextText = buildTelegramStatusText({
             activityLogText: getStatusActivityText(),
@@ -832,39 +976,14 @@ async function startPassiveResponseMonitor(
             sessionLines,
             stateIndicator: currentStateIndicator,
         });
-        if (!nextText || nextText === lastStatusRender) return;
+        if (!nextText) return;
 
         if (mode === 'complete' || mode === 'timeout' || mode === 'error') {
-            if (pendingStatusUpdateTimer) {
-                clearTimeout(pendingStatusUpdateTimer);
-                pendingStatusUpdateTimer = null;
-            }
-            lastStatusRender = nextText;
-            lastStatusEditTime = now;
-            statusMsg.edit({ text: nextText }).catch(() => { });
+            statusRenderer.request(nextText, true);
             return;
         }
 
-        const timeSinceLastEdit = now - lastStatusEditTime;
-        if (timeSinceLastEdit < STATUS_EDIT_MIN_INTERVAL_MS) {
-            if (!pendingStatusUpdateTimer) {
-                const delay = STATUS_EDIT_MIN_INTERVAL_MS - timeSinceLastEdit;
-                pendingStatusUpdateTimer = setTimeout(() => {
-                    pendingStatusUpdateTimer = null;
-                    refreshStatusMessage(mode);
-                }, delay);
-            }
-            return;
-        }
-
-        if (pendingStatusUpdateTimer) {
-            clearTimeout(pendingStatusUpdateTimer);
-            pendingStatusUpdateTimer = null;
-        }
-
-        lastStatusRender = nextText;
-        lastStatusEditTime = now;
-        statusMsg.edit({ text: nextText }).catch(() => { });
+        statusRenderer.request(nextText);
     };
 
     // Prefetch session info
@@ -872,14 +991,18 @@ async function startPassiveResponseMonitor(
         if (sessionInfo) {
             const { buildSessionLines } = await import('../utils/streamMessageFormatter');
             sessionLines = buildSessionLines(sessionInfo.title, sessionInfo.summary);
-            refreshStatusMessage('streaming');
+            if (statusMessages.length > 0) {
+                refreshStatusMessage('streaming');
+            }
         }
     }).catch(() => { });
 
     const ensureStatusMsg = async () => {
-        if (!statusMsgSent) {
-            statusMsgSent = true;
-            statusMsg = await channel.send({ text: '🖥️ Processing...' }).catch(() => null);
+        if (statusMessages.length === 0) {
+            const sent = await channel.send({ text: '🖥️ Processing...' }).catch(() => null);
+            if (sent) {
+                statusMessages = [sent];
+            }
         }
     };
 
@@ -905,99 +1028,108 @@ async function startPassiveResponseMonitor(
             isStatusTerminal = true;
             passiveResponseMonitors.delete(projectName);
             activeMonitors?.delete(`passive:${projectName}`);
-            if (!finalText || finalText.trim().length === 0) {
-                // Clean up status message if no output
-                if (statusMsg) statusMsg.delete().catch(() => { });
-                return;
-            }
-
-            // Flash "Done" state on the card before resolving text
-            currentStateIndicator = `✅ Finished`;
-            ensureStatusMsg().then(() => refreshStatusMessage('complete')).catch(() => { });
-
-            // Deliver final text — send new message without replacing status msg so the process log is preserved
-            if (statusMsg) {
-                await deliverFinalTelegramText(null, channel, finalText);
-            } else {
-                await sendTextChunked(channel, finalText);
-            }
-
-            // Handle @claw commands if interceptor is available
-            if (!clawInterceptor) return;
-
-            let currentText = finalText;
-            let clawDepth = 0;
-            const MAX_CLAW_DEPTH = 3;
-            let activeCascadeId = initialMonitoringTarget?.cascadeId || info.cascadeId || null;
-
-            while (clawDepth < MAX_CLAW_DEPTH) {
-                const clawResults = await clawInterceptor.execute(currentText);
-                if (clawResults.length === 0) break;
-
-                clawDepth++;
-                logger.info(`[TelegramPassive] Found @claw command(s) in AI response. Executing (Depth ${clawDepth})...`);
-
-                const resultLines = clawResults.map(r =>
-                    `@claw:${r.command.action} — ${r.success ? 'OK' : 'FAIL'}\n${r.message}`
-                );
-                const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
-
-                for (const r of clawResults) {
-                    const icon = r.success ? '✅' : '❌';
-                    await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
+            try {
+                if (!finalText || finalText.trim().length === 0) {
+                    // Clean up status message if no output
+                    if (statusMessages.length > 0) {
+                        await deleteStreamingStatusMessages(statusMessages);
+                        statusMessages = [];
+                    }
+                    return;
                 }
 
-                const followUpResult = await runtime.sendPromptWithMonitoringTarget({
-                    text: feedback,
-                    overrideCascadeId: activeCascadeId || undefined,
-                });
-                const ir = followUpResult.injectResult;
-                if (!ir.ok) {
-                    logger.warn(`[TelegramPassive] Failed to inject @claw results: ${ir.error}`);
-                    break;
-                }
-                logger.debug(`[TelegramPassive] Injected @claw results back to Antigravity (length: ${feedback.length})`);
+                // Flash "Done" state on the card before resolving text
+                currentStateIndicator = `✅ Finished`;
+                await ensureStatusMsg().catch(() => { });
+                refreshStatusMessage('complete');
+                await statusRenderer.flush();
 
-                const followUpTarget = followUpResult.monitoringTarget
-                    ?? await runtime.getMonitoringTarget(ir.cascadeId || activeCascadeId || null);
-                if (!followUpTarget) {
-                    logger.warn('[TelegramPassive] @claw follow-up: gRPC unavailable');
-                    break;
+                // Deliver final text — send new message without replacing status msg so the process log is preserved
+                if (statusMessages.length > 0) {
+                    await deliverFinalTelegramText(null, channel, finalText);
+                } else {
+                    await sendTextChunked(channel, finalText);
                 }
-                activeCascadeId = followUpTarget.cascadeId;
 
-                const followUpPromise = new Promise<string>((resolve) => {
-                    const followUpMonitor = new GrpcResponseMonitor({
-                        grpcClient: followUpTarget.grpcClient,
-                        cascadeId: followUpTarget.cascadeId,
-                        expectedUserMessage: feedback,
-                        onComplete: (followUpText: string) => resolve(followUpText),
-                        onTimeout: (lastText: string) => resolve(lastText || ''),
+                // Handle @claw commands if interceptor is available
+                if (!clawInterceptor) return;
+
+                let currentText = finalText;
+                let clawDepth = 0;
+                const MAX_CLAW_DEPTH = 3;
+                let activeCascadeId = initialMonitoringTarget?.cascadeId || info.cascadeId || null;
+
+                while (clawDepth < MAX_CLAW_DEPTH) {
+                    const clawResults = await clawInterceptor.execute(currentText);
+                    if (clawResults.length === 0) break;
+
+                    clawDepth++;
+                    logger.info(`[TelegramPassive] Found @claw command(s) in AI response. Executing (Depth ${clawDepth})...`);
+
+                    const resultLines = clawResults.map(r =>
+                        `@claw:${r.command.action} — ${r.success ? 'OK' : 'FAIL'}\n${r.message}`
+                    );
+                    const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
+
+                    for (const r of clawResults) {
+                        const icon = r.success ? '✅' : '❌';
+                        await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
+                    }
+
+                    const followUpResult = await runtime.sendPromptWithMonitoringTarget({
+                        text: feedback,
+                        overrideCascadeId: activeCascadeId || undefined,
+                    });
+                    const ir = followUpResult.injectResult;
+                    if (!ir.ok) {
+                        logger.warn(`[TelegramPassive] Failed to inject @claw results: ${ir.error}`);
+                        break;
+                    }
+                    logger.debug(`[TelegramPassive] Injected @claw results back to Antigravity (length: ${feedback.length})`);
+
+                    const followUpTarget = followUpResult.monitoringTarget
+                        ?? await runtime.getMonitoringTarget(ir.cascadeId || activeCascadeId || null);
+                    if (!followUpTarget) {
+                        logger.warn('[TelegramPassive] @claw follow-up: gRPC unavailable');
+                        break;
+                    }
+                    activeCascadeId = followUpTarget.cascadeId;
+
+                    const followUpPromise = new Promise<string>((resolve) => {
+                        const followUpMonitor = new GrpcResponseMonitor({
+                            grpcClient: followUpTarget.grpcClient,
+                            cascadeId: followUpTarget.cascadeId,
+                            expectedUserMessage: feedback,
+                            onComplete: (followUpText: string) => resolve(followUpText),
+                            onTimeout: (lastText: string) => resolve(lastText || ''),
+                        });
+
+                        passiveResponseMonitors.set(projectName, followUpMonitor);
+                        activeMonitors?.set(`passive:${projectName}`, followUpMonitor);
+
+                        followUpMonitor.start().catch((err: any) => {
+                            logger.error('[TelegramPassive] Failed to start follow-up monitor:', err?.message || err);
+                            resolve('');
+                        });
                     });
 
-                    passiveResponseMonitors.set(projectName, followUpMonitor);
-                    activeMonitors?.set(`passive:${projectName}`, followUpMonitor);
+                    const nextText = await followUpPromise;
+                    passiveResponseMonitors.delete(projectName);
+                    activeMonitors?.delete(`passive:${projectName}`);
 
-                    followUpMonitor.start().catch((err: any) => {
-                        logger.error('[TelegramPassive] Failed to start follow-up monitor:', err?.message || err);
-                        resolve('');
-                    });
-                });
+                    if (!nextText || nextText.trim().length === 0) break;
 
-                const nextText = await followUpPromise;
-                passiveResponseMonitors.delete(projectName);
-                activeMonitors?.delete(`passive:${projectName}`);
+                    await sendTextChunked(channel, nextText);
+                    currentText = nextText;
 
-                if (!nextText || nextText.trim().length === 0) break;
-
-                await sendTextChunked(channel, nextText);
-                currentText = nextText;
-
-                if (clawDepth >= MAX_CLAW_DEPTH) {
-                    logger.warn(`[TelegramPassive] Reached MAX_CLAW_DEPTH (${MAX_CLAW_DEPTH}). Stopping @claw command execution.`);
-                    await sendTextChunked(channel, `⚠️ Reached max @claw execution depth (${MAX_CLAW_DEPTH}). Stopping auto-execution.`);
-                    break;
+                    if (clawDepth >= MAX_CLAW_DEPTH) {
+                        logger.warn(`[TelegramPassive] Reached MAX_CLAW_DEPTH (${MAX_CLAW_DEPTH}). Stopping @claw command execution.`);
+                        await sendTextChunked(channel, `⚠️ Reached max @claw execution depth (${MAX_CLAW_DEPTH}). Stopping auto-execution.`);
+                        break;
+                    }
                 }
+            } finally {
+                statusRenderer.dispose();
             }
         },
         onPhaseChange: (phase: string, _text: string | null) => {
@@ -1025,8 +1157,9 @@ async function startPassiveResponseMonitor(
             const isError = monitorPhase === 'error';
             const isQuota = monitorPhase === 'quotaReached';
 
-            if (statusMsg) {
+            if (statusMessages.length > 0) {
                 refreshStatusMessage(isError ? 'error' : 'timeout');
+                await statusRenderer.flush();
             }
 
             if (isQuota) {
@@ -1038,11 +1171,13 @@ async function startPassiveResponseMonitor(
                     await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(() => { });
                 }
             }
+            statusRenderer.dispose();
         },
     };
 
     if (!initialMonitoringTarget) {
         logger.warn('[TelegramPassive] gRPC client or cascadeId unavailable — cannot start passive monitor');
+        statusRenderer.dispose();
         return;
     }
     const monitor = new GrpcResponseMonitor({
@@ -1060,6 +1195,7 @@ async function startPassiveResponseMonitor(
         logger.error('[TelegramPassive] Failed to start response monitor:', err?.message || err);
         passiveResponseMonitors.delete(projectName);
         activeMonitors?.delete(`passive:${projectName}`);
+        statusRenderer.dispose();
     });
 }
 

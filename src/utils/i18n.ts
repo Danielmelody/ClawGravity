@@ -2,12 +2,12 @@ import { logger } from './logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
-export type Language = 'en' | 'ja';
+type Language = 'en' | 'ja';
 
 let currentLanguage: Language = 'en';
-let translations: Record<string, Record<string, string>> = {};
+const translations: Record<string, Record<string, string>> = {};
 
-export function initI18n(lang: Language = 'en') {
+function initI18n(lang: Language = 'en') {
     currentLanguage = lang;
     loadTranslations();
 }

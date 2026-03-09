@@ -435,22 +435,22 @@ export class WorkspaceRuntime {
     async disconnect(): Promise<void> {
         this.clearUserMessageSinks();
         if (this.streamRouter) {
-            try { await Promise.resolve(this.streamRouter.stop()); } catch { }
+            try { await Promise.resolve(this.streamRouter.stop()); } catch { /* cleanup */ }
         }
         if (this.approvalDetector) {
-            try { await Promise.resolve(this.approvalDetector.stop()); } catch { }
+            try { await Promise.resolve(this.approvalDetector.stop()); } catch { /* cleanup */ }
         }
         if (this.errorPopupDetector) {
-            try { await Promise.resolve(this.errorPopupDetector.stop()); } catch { }
+            try { await Promise.resolve(this.errorPopupDetector.stop()); } catch { /* cleanup */ }
         }
         if (this.planningDetector) {
-            try { await Promise.resolve(this.planningDetector.stop()); } catch { }
+            try { await Promise.resolve(this.planningDetector.stop()); } catch { /* cleanup */ }
         }
         if (this.runCommandDetector) {
-            try { await Promise.resolve(this.runCommandDetector.stop()); } catch { }
+            try { await Promise.resolve(this.runCommandDetector.stop()); } catch { /* cleanup */ }
         }
         if (this.userMessageDetector) {
-            try { this.userMessageDetector.stop(); } catch { }
+            try { this.userMessageDetector.stop(); } catch { /* cleanup */ }
         }
         await this.cdp.disconnect();
     }

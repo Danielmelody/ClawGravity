@@ -1,6 +1,15 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
 import { getPendingToolCallsFromPlannerStep, getToolCallName } from './trajectoryToolState';
+import {
+    type DetectorState,
+    type DetectorStateConfig,
+    createDetectorState,
+    startDetector,
+    stopDetector,
+    processDetectorResult,
+    findLastPlannerStep,
+} from './detectorStateManager';
 
 /** Planning mode button information */
 export interface PlanningInfo {
@@ -42,19 +51,12 @@ export class PlanningDetector {
     private onPlanningRequired: (info: PlanningInfo) => void;
     private onResolved?: () => void;
 
-    private isRunning: boolean = false;
-    /** Key of the last detected planning info (for duplicate notification prevention) */
-    private lastDetectedKey: string | null = null;
-    /** Full PlanningInfo from the last detection */
-    private lastDetectedInfo: PlanningInfo | null = null;
-    /** Timestamp of last notification (for cooldown-based dedup) */
-    private lastNotifiedAt: number = 0;
-    /** Cooldown period in ms to suppress duplicate notifications */
-    private static readonly COOLDOWN_MS = 5000;
-    /** Set of keys that have already been notified (prevents cross-session re-fires) */
-    private notifiedKeys: Set<string> = new Set();
-    /** Maximum size of notifiedKeys before pruning oldest entries */
-    private static readonly MAX_NOTIFIED_KEYS = 50;
+    private state: DetectorState<PlanningInfo> = createDetectorState();
+    private static readonly CONFIG: DetectorStateConfig = {
+        cooldownMs: 5000,
+        maxNotifiedKeys: 50,
+        label: 'PlanningDetector',
+    };
 
     constructor(options: PlanningDetectorOptions) {
         this.cdpService = options.cdpService;
@@ -83,35 +85,22 @@ export class PlanningDetector {
     }
 
     /** Start monitoring (marks active — must be called before evaluate()). */
-    start(): void {
-        if (this.isRunning) return;
-        this.isRunning = true;
-        this.lastDetectedKey = null;
-        this.lastDetectedInfo = null;
-        this.lastNotifiedAt = 0;
-    }
+    start(): void { startDetector(this.state); }
 
     /** Stop monitoring. */
-    async stop(): Promise<void> {
-        this.isRunning = false;
-    }
+    async stop(): Promise<void> { stopDetector(this.state); }
 
     /** Return the last detected planning info. Returns null if nothing has been detected. */
-    getLastDetectedInfo(): PlanningInfo | null {
-        return this.lastDetectedInfo;
-    }
+    getLastDetectedInfo(): PlanningInfo | null { return this.state.lastDetectedInfo; }
 
     /** Returns whether monitoring is currently active. */
-    isActive(): boolean {
-        return this.isRunning;
-    }
+    isActive(): boolean { return this.state.isRunning; }
 
     /**
      * Click the Open button.
      * Uses VS Code command (no DOM operation).
      */
     async clickOpenButton(_buttonText?: string): Promise<boolean> {
-        // Open plan — try using VS Code command
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.command.openPlan');
             if (result?.ok) {
@@ -159,21 +148,18 @@ export class PlanningDetector {
             const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
             const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
 
-            // Walk backwards to find the latest planner response with plan content
-            for (let i = steps.length - 1; i >= 0; i--) {
-                const step = steps[i];
-                if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') break;
+            // Reuse shared backward-walk to find the latest planner response
+            const found = findLastPlannerStep(steps);
+            if (!found) return null;
 
-                if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
-                    const responseText =
-                        step?.plannerResponse?.response
-                        || step?.response?.text
-                        || step?.assistantResponse?.text
-                        || null;
-                    if (responseText && responseText.length > 50) {
-                        return responseText.slice(0, 4000);
-                    }
-                }
+            const { step } = found;
+            const responseText =
+                step?.plannerResponse?.response
+                || step?.response?.text
+                || step?.assistantResponse?.text
+                || null;
+            if (responseText && responseText.length > 50) {
+                return responseText.slice(0, 4000);
             }
             return null;
         } catch (error) {
@@ -191,38 +177,20 @@ export class PlanningDetector {
      * @param runStatus  Cascade run status string
      */
     evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
-        if (!this.isRunning) return;
+        if (!this.state.isRunning) return;
 
         try {
             const info = this.extractPlanningFromTrajectory(steps, runStatus);
+            const key = info ? `${cascadeId}::${info.planTitle}::${info.planSummary?.slice(0, 50)}` : null;
 
-            if (info) {
-                // Include cascadeId in the key to prevent cross-session re-fires
-                const key = `${cascadeId}::${info.planTitle}::${info.planSummary?.slice(0, 50)}`;
-                const now = Date.now();
-                const withinCooldown = (now - this.lastNotifiedAt) < PlanningDetector.COOLDOWN_MS;
-                if (key !== this.lastDetectedKey && !withinCooldown && !this.notifiedKeys.has(key)) {
-                    this.lastDetectedKey = key;
-                    this.lastDetectedInfo = info;
-                    this.lastNotifiedAt = now;
-                    this.notifiedKeys.add(key);
-                    // Prune oldest entries if set grows too large
-                    if (this.notifiedKeys.size > PlanningDetector.MAX_NOTIFIED_KEYS) {
-                        const first = this.notifiedKeys.values().next().value;
-                        if (first) this.notifiedKeys.delete(first);
-                    }
-                    this.onPlanningRequired(info);
-                } else if (key === this.lastDetectedKey) {
-                    this.lastDetectedInfo = info;
-                }
-            } else {
-                const wasDetected = this.lastDetectedKey !== null;
-                this.lastDetectedKey = null;
-                this.lastDetectedInfo = null;
-                if (wasDetected && this.onResolved) {
-                    this.onResolved();
-                }
-            }
+            processDetectorResult(
+                this.state,
+                PlanningDetector.CONFIG,
+                info,
+                key,
+                (detected) => this.onPlanningRequired(detected),
+                this.onResolved,
+            );
         } catch (error) {
             logger.error('[PlanningDetector] Error during evaluation:', error);
         }
@@ -233,48 +201,40 @@ export class PlanningDetector {
      * Returns PlanningInfo if there's an active plan awaiting user decision.
      */
     private extractPlanningFromTrajectory(steps: any[], runStatus: string | null): PlanningInfo | null {
-        if (!runStatus || runStatus !== 'CASCADE_RUN_STATUS_IDLE') return null;
-        if (steps.length === 0) return null;
+        const found = findLastPlannerStep(steps, runStatus);
+        if (!found) return null;
 
-        for (let i = steps.length - 1; i >= 0; i--) {
-            const step = steps[i];
-            if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') break;
+        const { step, index: i } = found;
+        const plannerResponse = step?.plannerResponse;
+        if (!plannerResponse) return null;
 
-            if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
-                const plannerResponse = step?.plannerResponse;
-                if (!plannerResponse) return null;
+        const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
 
-                const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
+        // Planning mode requires actual planned tool calls
+        const hasToolPlan = pendingToolCalls.length > 0;
 
-                // Planning mode requires actual planned tool calls
-                const hasToolPlan = pendingToolCalls.length > 0;
+        if (!hasToolPlan) return null;
+        if (pendingToolCalls.some((tc: any) => this.isRunCommandTool(tc))) return null;
 
-                if (!hasToolPlan) return null;
-                if (pendingToolCalls.some((tc: any) => this.isRunCommandTool(tc))) return null;
+        const responseText = plannerResponse?.response || '';
 
-                const responseText = plannerResponse?.response || '';
+        // Build plan summary from pending tool calls
+        const toolNames = hasToolPlan
+            ? pendingToolCalls.map((tc: any) => tc?.name || tc?.toolName || 'action').join(', ')
+            : '';
 
-                // Build plan summary from pending tool calls
-                const toolNames = hasToolPlan
-                    ? pendingToolCalls.map((tc: any) => tc?.name || tc?.toolName || 'action').join(', ')
-                    : '';
+        const planTitle = 'Implementation Plan';
+        const planSummary = toolNames
+            ? `Planned actions: ${toolNames}`
+            : responseText.slice(0, 200);
+        const description = responseText.slice(0, 500);
 
-                const planTitle = 'Implementation Plan';
-                const planSummary = toolNames
-                    ? `Planned actions: ${toolNames}`
-                    : responseText.slice(0, 200);
-                const description = responseText.slice(0, 500);
-
-                return {
-                    openText: 'Open',
-                    proceedText: 'Proceed',
-                    planTitle,
-                    planSummary,
-                    description,
-                };
-            }
-        }
-
-        return null;
+        return {
+            openText: 'Open',
+            proceedText: 'Proceed',
+            planTitle,
+            planSummary,
+            description,
+        };
     }
 }

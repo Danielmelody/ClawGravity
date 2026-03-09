@@ -223,7 +223,7 @@ const ERROR_POPUP_PREFIX_MAP = {
     retry: ERROR_POPUP_RETRY_ACTION_PREFIX,
 } as const;
 
-export function buildErrorPopupCustomId(
+function buildErrorPopupCustomId(
     action: 'dismiss' | 'copy_debug' | 'retry',
     projectName: string,
     channelId?: string,
@@ -286,11 +286,66 @@ export function getCurrentCdp(bridge: CdpBridge): CdpService | null {
     return bridge.pool.getConnected(bridge.lastActiveWorkspace);
 }
 
+/* ─── Shared helpers for detector notification tracking ─── */
+
+/** Mutable state container used by all detector onResolved/send callbacks. */
+interface DetectorNotificationState {
+    lastNotification: { sent: PlatformSentMessage; payload: MessagePayload } | null;
+}
+
+/** Create an onResolved callback that disables the last notification message. */
+function createResolvedHandler(state: DetectorNotificationState): () => void {
+    return () => {
+        if (!state.lastNotification) return;
+        const { sent, payload } = state.lastNotification;
+        state.lastNotification = null;
+        const resolved = buildResolvedOverlay(payload, t('Resolved in Antigravity'));
+        sent.edit(resolved).catch(logger.error);
+    };
+}
+
+/** Resolve the target channel for a detector notification. Returns null if no channel is linked. */
+async function resolveDetectorChannel(
+    bridge: CdpBridge,
+    cdp: CdpService,
+    projectName: string,
+    detectorLabel: string,
+): Promise<{ channel: PlatformChannel; channelId: string } | null> {
+    const currentChatTitle = await getCurrentChatTitle(cdp);
+    const targetChannel = resolveApprovalChannelForCurrentChat(bridge, projectName, currentChatTitle);
+    const targetChannelId = targetChannel ? targetChannel.id : '';
+
+    if (!targetChannel || !targetChannelId) {
+        logger.warn(
+            `[${detectorLabel}:${projectName}] Skipped notification because chat is not linked to a session` +
+            `${currentChatTitle ? ` (title="${currentChatTitle}")` : ''}`,
+        );
+        return null;
+    }
+
+    return { channel: targetChannel, channelId: targetChannelId };
+}
+
+/** Send a notification and track it in state for auto-disable. */
+async function sendAndTrackNotification(
+    state: DetectorNotificationState,
+    channel: PlatformChannel,
+    payload: MessagePayload,
+): Promise<void> {
+    const sent = await channel.send(payload).catch((err: any) => {
+        logger.error(err);
+        return null;
+    });
+    if (sent) {
+        state.lastNotification = { sent, payload };
+    }
+}
+
 /**
  * Helper to start an approval detector for each workspace.
  * Does nothing if a detector for the same workspace is already running.
  */
-export function ensureApprovalDetector(
+function ensureApprovalDetector(
     bridge: CdpBridge,
     cdp: CdpService,
     projectName: string,
@@ -302,31 +357,16 @@ export function ensureApprovalDetector(
     // Only the latest is tracked; if a new detection fires before the previous
     // is resolved, the older reference is overwritten. This is acceptable because
     // the detector's lastDetectedKey deduplication prevents rapid successive notifications.
-    let lastNotification: { sent: PlatformSentMessage; payload: MessagePayload } | null = null;
+    const notifState: DetectorNotificationState = { lastNotification: null };
 
     const detector = new ApprovalDetector({
         cdpService: cdp,
-        onResolved: () => {
-            if (!lastNotification) return;
-            const { sent, payload } = lastNotification;
-            lastNotification = null;
-            const resolved = buildResolvedOverlay(payload, t('Resolved in Antigravity'));
-            sent.edit(resolved).catch(logger.error);
-        },
+        onResolved: createResolvedHandler(notifState),
         onApprovalRequired: async (info: ApprovalInfo) => {
             logger.debug(`[ApprovalDetector:${projectName}] Approval button detected (allow="${info.approveText}", deny="${info.denyText}")`);
 
-            const currentChatTitle = await getCurrentChatTitle(cdp);
-            const targetChannel = resolveApprovalChannelForCurrentChat(bridge, projectName, currentChatTitle);
-            const targetChannelId = targetChannel ? targetChannel.id : '';
-
-            if (!targetChannel || !targetChannelId) {
-                logger.warn(
-                    `[ApprovalDetector:${projectName}] Skipped approval notification because chat is not linked to a session` +
-                    `${currentChatTitle ? ` (title="${currentChatTitle}")` : ''}`,
-                );
-                return;
-            }
+            const target = await resolveDetectorChannel(bridge, cdp, projectName, 'ApprovalDetector');
+            if (!target) return;
 
             if (bridge.autoAccept.isEnabled()) {
                 const accepted = await detector.alwaysAllowButton() || await detector.approveButton();
@@ -337,7 +377,7 @@ export function ensureApprovalDetector(
                     description: info.description ?? undefined,
                     approveText: info.approveText ?? undefined,
                 });
-                await targetChannel.send(autoPayload).catch(logger.error);
+                await target.channel.send(autoPayload).catch(logger.error);
 
                 if (accepted) {
                     return;
@@ -348,7 +388,7 @@ export function ensureApprovalDetector(
                 title: t('Approval Required'),
                 description: info.description || t('Antigravity is requesting approval for an action'),
                 projectName,
-                channelId: targetChannelId,
+                channelId: target.channelId,
                 extraFields: [
                     { name: t('Allow button'), value: info.approveText, inline: true },
                     { name: t('Allow Chat button'), value: info.alwaysAllowText || t('In Dropdown'), inline: true },
@@ -356,13 +396,7 @@ export function ensureApprovalDetector(
                 ],
             });
 
-            const sent = await targetChannel.send(payload).catch((err: any) => {
-                logger.error(err);
-                return null;
-            });
-            if (sent) {
-                lastNotification = { sent, payload };
-            }
+            await sendAndTrackNotification(notifState, target.channel, payload);
         },
     });
 
@@ -375,7 +409,7 @@ export function ensureApprovalDetector(
  * Helper to start a planning detector for each workspace.
  * Does nothing if a detector for the same workspace is already running.
  */
-export function ensurePlanningDetector(
+function ensurePlanningDetector(
     bridge: CdpBridge,
     cdp: CdpService,
     projectName: string,
@@ -385,31 +419,16 @@ export function ensurePlanningDetector(
 
     // Track the most recent planning notification for auto-disable on resolve.
     // See ensureApprovalDetector comment for tracking limitation rationale.
-    let lastNotification: { sent: PlatformSentMessage; payload: MessagePayload } | null = null;
+    const notifState: DetectorNotificationState = { lastNotification: null };
 
     const detector = new PlanningDetector({
         cdpService: cdp,
-        onResolved: () => {
-            if (!lastNotification) return;
-            const { sent, payload } = lastNotification;
-            lastNotification = null;
-            const resolved = buildResolvedOverlay(payload, t('Resolved in Antigravity'));
-            sent.edit(resolved).catch(logger.error);
-        },
+        onResolved: createResolvedHandler(notifState),
         onPlanningRequired: async (info: PlanningInfo) => {
             logger.debug(`[PlanningDetector:${projectName}] Planning buttons detected (title="${info.planTitle}")`);
 
-            const currentChatTitle = await getCurrentChatTitle(cdp);
-            const targetChannel = resolveApprovalChannelForCurrentChat(bridge, projectName, currentChatTitle);
-            const targetChannelId = targetChannel ? targetChannel.id : '';
-
-            if (!targetChannel || !targetChannelId) {
-                logger.warn(
-                    `[PlanningDetector:${projectName}] Skipped planning notification because chat is not linked to a session` +
-                    `${currentChatTitle ? ` (title="${currentChatTitle}")` : ''}`,
-                );
-                return;
-            }
+            const target = await resolveDetectorChannel(bridge, cdp, projectName, 'PlanningDetector');
+            if (!target) return;
 
             const descriptionText = info.description || info.planSummary || t('A plan has been generated and is awaiting your review.');
 
@@ -425,17 +444,11 @@ export function ensurePlanningDetector(
                 title: t('Planning Mode'),
                 description: descriptionText,
                 projectName,
-                channelId: targetChannelId,
+                channelId: target.channelId,
                 extraFields,
             });
 
-            const sent = await targetChannel.send(payload).catch((err: any) => {
-                logger.error(err);
-                return null;
-            });
-            if (sent) {
-                lastNotification = { sent, payload };
-            }
+            await sendAndTrackNotification(notifState, target.channel, payload);
         },
     });
 
@@ -448,7 +461,7 @@ export function ensurePlanningDetector(
  * Helper to start an error popup detector for each workspace.
  * Does nothing if a detector for the same workspace is already running.
  */
-export function ensureErrorPopupDetector(
+function ensureErrorPopupDetector(
     bridge: CdpBridge,
     cdp: CdpService,
     projectName: string,
@@ -458,31 +471,16 @@ export function ensureErrorPopupDetector(
 
     // Track the most recent error notification for auto-disable on resolve.
     // See ensureApprovalDetector comment for tracking limitation rationale.
-    let lastNotification: { sent: PlatformSentMessage; payload: MessagePayload } | null = null;
+    const notifState: DetectorNotificationState = { lastNotification: null };
 
     const detector = new ErrorPopupDetector({
         cdpService: cdp,
-        onResolved: () => {
-            if (!lastNotification) return;
-            const { sent, payload } = lastNotification;
-            lastNotification = null;
-            const resolved = buildResolvedOverlay(payload, t('Resolved in Antigravity'));
-            sent.edit(resolved).catch(logger.error);
-        },
+        onResolved: createResolvedHandler(notifState),
         onErrorPopup: async (info: ErrorPopupInfo) => {
             logger.debug(`[ErrorPopupDetector:${projectName}] Error popup detected (title="${info.title}")`);
 
-            const currentChatTitle = await getCurrentChatTitle(cdp);
-            const targetChannel = resolveApprovalChannelForCurrentChat(bridge, projectName, currentChatTitle);
-            const targetChannelId = targetChannel ? targetChannel.id : '';
-
-            if (!targetChannel || !targetChannelId) {
-                logger.warn(
-                    `[ErrorPopupDetector:${projectName}] Skipped error popup notification because chat is not linked to a session` +
-                    `${currentChatTitle ? ` (title="${currentChatTitle}")` : ''}`,
-                );
-                return;
-            }
+            const target = await resolveDetectorChannel(bridge, cdp, projectName, 'ErrorPopupDetector');
+            if (!target) return;
 
             const bodyText = info.body || t('An error occurred in the Antigravity agent.');
             const supportsActions = info.buttons.some((label) => {
@@ -494,7 +492,7 @@ export function ensureErrorPopupDetector(
                 title: info.title || t('Agent Error'),
                 errorMessage: bodyText.substring(0, 4096),
                 projectName,
-                channelId: targetChannelId,
+                channelId: target.channelId,
                 includeActions: supportsActions,
                 extraFields: [
                     { name: t('Buttons'), value: info.buttons.join(', ') || t('(None)'), inline: true },
@@ -502,13 +500,7 @@ export function ensureErrorPopupDetector(
                 ],
             });
 
-            const sent = await targetChannel.send(payload).catch((err: any) => {
-                logger.error(err);
-                return null;
-            });
-            if (sent) {
-                lastNotification = { sent, payload };
-            }
+            await sendAndTrackNotification(notifState, target.channel, payload);
         },
     });
 
@@ -522,7 +514,7 @@ export function ensureErrorPopupDetector(
  * Detects "Run command?" confirmation dialogs and forwards them to Discord.
  * Does nothing if a detector for the same workspace is already running.
  */
-export function ensureRunCommandDetector(
+function ensureRunCommandDetector(
     bridge: CdpBridge,
     cdp: CdpService,
     projectName: string,
@@ -530,31 +522,16 @@ export function ensureRunCommandDetector(
     const existing = bridge.pool.getRunCommandDetector(projectName);
     if (existing && existing.isActive()) return;
 
-    let lastNotification: { sent: PlatformSentMessage; payload: MessagePayload } | null = null;
+    const notifState: DetectorNotificationState = { lastNotification: null };
 
     const detector = new RunCommandDetector({
         cdpService: cdp,
-        onResolved: () => {
-            if (!lastNotification) return;
-            const { sent, payload } = lastNotification;
-            lastNotification = null;
-            const resolved = buildResolvedOverlay(payload, t('Resolved in Antigravity'));
-            sent.edit(resolved).catch(logger.error);
-        },
+        onResolved: createResolvedHandler(notifState),
         onRunCommandRequired: async (info: RunCommandInfo) => {
             logger.debug(`[RunCommandDetector:${projectName}] Run command detected`);
 
-            const currentChatTitle = await getCurrentChatTitle(cdp);
-            const targetChannel = resolveApprovalChannelForCurrentChat(bridge, projectName, currentChatTitle);
-            const targetChannelId = targetChannel ? targetChannel.id : '';
-
-            if (!targetChannel || !targetChannelId) {
-                logger.warn(
-                    `[RunCommandDetector:${projectName}] Skipped run command notification because chat is not linked to a session` +
-                    `${currentChatTitle ? ` (title="${currentChatTitle}")` : ''}`,
-                );
-                return;
-            }
+            const target = await resolveDetectorChannel(bridge, cdp, projectName, 'RunCommandDetector');
+            if (!target) return;
 
             if (bridge.autoAccept.isEnabled()) {
                 const accepted = await detector.runButton();
@@ -565,7 +542,7 @@ export function ensureRunCommandDetector(
                     description: `Run: ${info.commandText}`,
                     approveText: info.runText ?? 'Run',
                 });
-                await targetChannel.send(autoPayload).catch(logger.error);
+                await target.channel.send(autoPayload).catch(logger.error);
 
                 if (accepted) {
                     return;
@@ -577,20 +554,14 @@ export function ensureRunCommandDetector(
                 commandText: info.commandText,
                 workingDirectory: info.workingDirectory,
                 projectName,
-                channelId: targetChannelId,
+                channelId: target.channelId,
                 extraFields: [
                     { name: t('Run button'), value: info.runText, inline: true },
                     { name: t('Reject button'), value: info.rejectText, inline: true },
                 ],
             });
 
-            const sent = await targetChannel.send(payload).catch((err: any) => {
-                logger.error(err);
-                return null;
-            });
-            if (sent) {
-                lastNotification = { sent, payload };
-            }
+            await sendAndTrackNotification(notifState, target.channel, payload);
         },
     });
 
@@ -605,7 +576,7 @@ export function ensureRunCommandDetector(
  * and mirrors them to a Discord channel.
  * Does nothing if a detector for the same workspace is already running.
  */
-export function ensureUserMessageDetector(
+function ensureUserMessageDetector(
     bridge: CdpBridge,
     cdp: CdpService,
     projectName: string,
@@ -631,7 +602,7 @@ export function ensureUserMessageDetector(
  *
  * Call this AFTER all detectors have been created and registered.
  */
-export function ensureStreamRouter(
+function ensureStreamRouter(
     bridge: CdpBridge,
     cdp: CdpService,
     projectName: string,

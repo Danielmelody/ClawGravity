@@ -19,11 +19,11 @@ export function getToolCallName(toolCall: any): string {
     ).toLowerCase();
 }
 
-export function getToolCallId(toolCall: any): string {
+function getToolCallId(toolCall: any): string {
     return String(toolCall?.id || '').trim();
 }
 
-export function isToolCallCompleted(toolCall: any): boolean {
+function isToolCallCompleted(toolCall: any): boolean {
     const hasResult = toolCall?.result !== undefined
         || toolCall?.output !== undefined
         || toolCall?.toolCallResult !== undefined;
@@ -42,7 +42,7 @@ export function isToolCallCompleted(toolCall: any): boolean {
     ].some((value) => status.includes(value));
 }
 
-export function isStepTerminal(step: any): boolean {
+function isStepTerminal(step: any): boolean {
     const status = normalizeStatusValue(step?.status);
     return [
         'done',
@@ -56,7 +56,7 @@ export function isStepTerminal(step: any): boolean {
     ].some((value) => status.includes(value));
 }
 
-export function isStepActive(step: any): boolean {
+function isStepActive(step: any): boolean {
     const status = normalizeStatusValue(step?.status);
     return [
         'pending',
@@ -68,7 +68,7 @@ export function isStepActive(step: any): boolean {
     ].some((value) => status.includes(value));
 }
 
-export function findConcreteToolStep(
+function findConcreteToolStep(
     steps: any[],
     plannerStepIndex: number,
     toolCallId: string,
@@ -86,7 +86,7 @@ export function findConcreteToolStep(
     return null;
 }
 
-export function isToolCallPendingInTrajectory(
+function isToolCallPendingInTrajectory(
     steps: any[],
     plannerStepIndex: number,
     toolCall: any,

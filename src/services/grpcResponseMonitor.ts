@@ -53,7 +53,7 @@ export interface GrpcResponseMonitorOptions {
 }
 
 /** Debounce delay for trajectory fetches triggered by reactive diffs */
-const REACTIVE_SNAPSHOT_DEBOUNCE_MS = 300;
+const REACTIVE_SNAPSHOT_DEBOUNCE_MS = 8;
 /** Initial retry delay for recovery (doubles each attempt) */
 const RECOVERY_INITIAL_DELAY_MS = 500;
 /** Max retry delay cap */
@@ -293,12 +293,7 @@ export class GrpcResponseMonitor {
 
         if (evt.type === 'error') {
             const msg = evt.text || 'Unknown stream payload error';
-            if (msg.toLowerCase().includes('quota')) {
-                this.setPhase('quotaReached', this.lastResponseText);
-                this.stop().catch(() => { });
-                this.onTimeout?.(this.lastResponseText ?? '');
-                return;
-            }
+            if (this.handleQuotaReached(msg)) return;
             this.failStream(`Stream payload error: ${msg.slice(0, 100)}`);
             return;
         }
@@ -371,13 +366,17 @@ export class GrpcResponseMonitor {
         if (!this.isRunning) return;
 
         const msg = err?.message || String(err);
-        if (msg.toLowerCase().includes('quota')) {
-            this.setPhase('quotaReached', this.lastResponseText);
-            this.stop().catch(() => { });
-            this.onTimeout?.(this.lastResponseText ?? '');
-            return;
-        }
+        if (this.handleQuotaReached(msg)) return;
         void this.recoverFromSilentStreamClosure(`Stream error: ${msg.slice(0, 100)}`);
+    }
+
+    /** Check if msg indicates a quota error; if so, handle it and return true. */
+    private handleQuotaReached(msg: string): boolean {
+        if (!msg.toLowerCase().includes('quota')) return false;
+        this.setPhase('quotaReached', this.lastResponseText);
+        this.stop().catch(() => { });
+        this.onTimeout?.(this.lastResponseText ?? '');
+        return true;
     }
 
 

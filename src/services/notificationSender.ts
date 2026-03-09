@@ -52,6 +52,14 @@ const COLOR_SUCCESS = 0x2ECC71;
 /** Grey — used for neutral status notifications. */
 const COLOR_NEUTRAL = 0x95A5A6;
 
+/** Common fields shared by all notification builder option types. */
+interface NotificationBaseOpts {
+    readonly projectName: string;
+    readonly channelId: string | null;
+    /** Additional fields appended before footer. */
+    readonly extraFields?: readonly { readonly name: string; readonly value: string; readonly inline?: boolean }[];
+}
+
 // ---------------------------------------------------------------------------
 // Phase → colour mapping for progress notifications
 // ---------------------------------------------------------------------------
@@ -89,6 +97,16 @@ function customId(prefix: string, projectName: string, channelId: string | null)
     return `${prefix}:${projectName}`;
 }
 
+/** Apply extra fields to a RichContent object. */
+function applyExtraFields(
+    rc: RichContent,
+    extraFields?: readonly { readonly name: string; readonly value: string; readonly inline?: boolean }[],
+): RichContent {
+    return extraFields
+        ? extraFields.reduce<typeof rc>((acc, f) => addField(acc, f.name, f.value, f.inline), rc)
+        : rc;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -116,10 +134,7 @@ export function buildApprovalNotification(opts: {
             toolNames && toolNames.length > 0
                 ? addField(rc, 'Tools', toolNames.join(', '), true)
                 : rc,
-        (rc) =>
-            extraFields
-                ? extraFields.reduce<typeof rc>((acc, f) => addField(acc, f.name, f.value, f.inline), rc)
-                : rc,
+        (rc) => applyExtraFields(rc, extraFields),
         (rc) => withFooter(rc, 'Approval required'),
         (rc) => withTimestamp(rc),
     );
@@ -136,13 +151,9 @@ export function buildApprovalNotification(opts: {
 }
 
 /** Build the planning mode notification message. */
-export function buildPlanningNotification(opts: {
+export function buildPlanningNotification(opts: NotificationBaseOpts & {
     readonly title: string;
     readonly description: string;
-    readonly projectName: string;
-    readonly channelId: string | null;
-    /** Additional fields appended before footer. */
-    readonly extraFields?: readonly { readonly name: string; readonly value: string; readonly inline?: boolean }[];
 }): MessagePayload {
     const { title, description, projectName, channelId, extraFields } = opts;
 
@@ -151,10 +162,7 @@ export function buildPlanningNotification(opts: {
         (rc) => withTitle(rc, title),
         (rc) => withDescription(rc, description),
         (rc) => withColor(rc, COLOR_PLANNING),
-        (rc) =>
-            extraFields
-                ? extraFields.reduce<typeof rc>((acc, f) => addField(acc, f.name, f.value, f.inline), rc)
-                : rc,
+        (rc) => applyExtraFields(rc, extraFields),
         (rc) => withFooter(rc, 'Planning mode detected'),
         (rc) => withTimestamp(rc),
     );
@@ -186,10 +194,7 @@ export function buildErrorPopupNotification(opts: {
         (rc) => withTitle(rc, title),
         (rc) => withDescription(rc, errorMessage),
         (rc) => withColor(rc, COLOR_ERROR),
-        (rc) =>
-            extraFields
-                ? extraFields.reduce<typeof rc>((acc, f) => addField(acc, f.name, f.value, f.inline), rc)
-                : rc,
+        (rc) => applyExtraFields(rc, extraFields),
         (rc) => withFooter(rc, 'Agent error detected'),
         (rc) => withTimestamp(rc),
     );
@@ -208,14 +213,10 @@ export function buildErrorPopupNotification(opts: {
 }
 
 /** Build the run command notification message. */
-export function buildRunCommandNotification(opts: {
+export function buildRunCommandNotification(opts: NotificationBaseOpts & {
     readonly title: string;
     readonly commandText: string;
     readonly workingDirectory: string;
-    readonly projectName: string;
-    readonly channelId: string | null;
-    /** Additional fields appended before footer. */
-    readonly extraFields?: readonly { readonly name: string; readonly value: string; readonly inline?: boolean }[];
 }): MessagePayload {
     const { title, commandText, workingDirectory, projectName, channelId, extraFields } = opts;
     const safeCommandText = (commandText || '')
@@ -230,10 +231,7 @@ export function buildRunCommandNotification(opts: {
         (rc) => withColor(rc, COLOR_APPROVAL),
         (rc) => addField(rc, 'Directory', safeWorkingDirectory, true),
         (rc) => addField(rc, 'Project', projectName, true),
-        (rc) =>
-            extraFields
-                ? extraFields.reduce<typeof rc>((acc, f) => addField(acc, f.name, f.value, f.inline), rc)
-                : rc,
+        (rc) => applyExtraFields(rc, extraFields),
         (rc) => withFooter(rc, 'Run command approval required'),
         (rc) => withTimestamp(rc),
     );

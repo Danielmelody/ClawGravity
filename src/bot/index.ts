@@ -1681,7 +1681,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     const channelId = interaction.channelId;
                     const workspacePath = wsHandler.getWorkspaceForChannel(channelId);
 
-                    let cdp: CdpService | null = null;
+                    let cdp: CdpService | null;
                     if (workspacePath) {
                         try {
                             const prepared = await ensureWorkspaceRuntime(bridge, workspacePath, {
@@ -2257,7 +2257,7 @@ async function handleSlashInteraction(
                 { name: 'Mirroring', value: mirrorStatus, inline: true },
             ];
 
-            let statusDescription = '';
+            let statusDescription: string;
             if (activeNames.length > 0) {
                 const lines = activeNames.map((name) => {
                     const cdp = bridge.pool.getConnected(name);
