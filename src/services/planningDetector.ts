@@ -261,18 +261,27 @@ export class PlanningDetector {
 
                 const toolCalls = plannerResponse?.toolCalls;
 
+                // Filter to only include tool calls that are actually pending.
+                // Tool calls without a status or with a 'done'/etc status have already been handled.
+                const pendingToolCalls = Array.isArray(toolCalls)
+                    ? toolCalls.filter((tc: any) => {
+                        const s = tc?.status || tc?.toolCallStatus;
+                        return s === 'pending' || s === 'awaiting_confirmation';
+                    })
+                    : [];
+
                 // Planning mode requires actual planned tool calls — the agent proposes
                 // a set of actions and waits for user approval before executing.
                 // A long response text alone is NOT sufficient; that's just a normal reply.
-                const hasToolPlan = Array.isArray(toolCalls) && toolCalls.length > 0;
+                const hasToolPlan = pendingToolCalls.length > 0;
 
                 if (!hasToolPlan) continue;
 
                 const responseText = plannerResponse?.response || '';
 
-                // Build plan summary from tool calls
+                // Build plan summary from pending tool calls
                 const toolNames = hasToolPlan
-                    ? toolCalls.map((tc: any) => tc?.name || tc?.toolName || 'action').join(', ')
+                    ? pendingToolCalls.map((tc: any) => tc?.name || tc?.toolName || 'action').join(', ')
                     : '';
 
                 const planTitle = 'Implementation Plan';
