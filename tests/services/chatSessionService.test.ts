@@ -10,6 +10,7 @@ describe('ChatSessionService', () => {
     let mockGrpcClient: {
         rawRPC: jest.Mock;
         createCascade: jest.Mock;
+        focusCascade: jest.Mock;
     };
 
     beforeEach(() => {
@@ -17,11 +18,13 @@ describe('ChatSessionService', () => {
         mockGrpcClient = {
             rawRPC: jest.fn(),
             createCascade: jest.fn(),
+            focusCascade: jest.fn(),
         };
         (mockCdpService as any).getGrpcClient = jest.fn().mockResolvedValue(mockGrpcClient);
         (mockCdpService as any).getActiveCascadeId = jest.fn().mockResolvedValue('cascade-123');
         (mockCdpService as any).isCascadeInWorkspace = jest.fn().mockReturnValue(true);
         (mockCdpService as any).setCachedCascadeId = jest.fn();
+        (mockCdpService as any).rememberCreatedCascade = jest.fn();
         service = new ChatSessionService();
     });
 
@@ -37,7 +40,8 @@ describe('ChatSessionService', () => {
 
             expect(result.ok).toBe(true);
             expect(mockGrpcClient.createCascade).toHaveBeenCalled();
-            expect(mockCdpService.setCachedCascadeId).toHaveBeenCalledWith('new-cascade-456');
+            expect(mockCdpService.rememberCreatedCascade).toHaveBeenCalledWith('new-cascade-456');
+            expect(mockGrpcClient.focusCascade).toHaveBeenCalledWith('new-cascade-456');
         });
 
         it('returns ok:false when gRPC client is unavailable', async () => {
@@ -131,24 +135,39 @@ describe('ChatSessionService', () => {
     // -----------------------------------------------------------------------
 
     describe('activateSessionByTitle()', () => {
-        it('returns ok when called (decoupled no-op)', async () => {
+        it('focuses the matching session by cascade id', async () => {
+            mockGrpcClient.rawRPC.mockResolvedValue({
+                trajectorySummaries: {
+                    'cascade-a': { summary: 'target-session' },
+                    'cascade-b': { summary: 'other-session' },
+                },
+            });
+
             const result = await service.activateSessionByTitle(mockCdpService, 'target-session');
+
             expect(result).toEqual({ ok: true });
+            expect(mockGrpcClient.focusCascade).toHaveBeenCalledWith('cascade-a');
+            expect(mockCdpService.setCachedCascadeId).toHaveBeenCalledWith('cascade-a');
         });
 
-        it('returns ok:false for empty title', async () => {
-            // Even with empty title, the stub returns ok: true in decoupled mode
+        it('returns ok:false when the title cannot be found', async () => {
+            mockGrpcClient.rawRPC.mockResolvedValue({
+                trajectorySummaries: {
+                    'cascade-a': { summary: 'other-session' },
+                },
+            });
+
             const result = await service.activateSessionByTitle(mockCdpService, '');
-            expect(result.ok).toBe(true);
+            expect(result.ok).toBe(false);
         });
 
-        it('returns ok regardless of CDP mock state (fully decoupled)', async () => {
+        it('returns ok:false when gRPC is unavailable', async () => {
             (mockCdpService as any).getGrpcClient.mockResolvedValue(null);
             const result = await service.activateSessionByTitle(
                 mockCdpService,
                 'target-session',
             );
-            expect(result).toEqual({ ok: true });
+            expect(result.ok).toBe(false);
         });
     });
 

@@ -638,4 +638,89 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
 
         await monitor.stop();
     });
+
+    it('re-renders timeline when the same step grows in place', async () => {
+        const client = new FakeGrpcClient();
+        client.rawRPC
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'review cdpService.ts' } },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                thinking: 'Reading the file.',
+                                response: '',
+                            },
+                        },
+                    ],
+                },
+            })
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'review cdpService.ts' } },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: {
+                                thinking: 'Reading the file.\nAnalyzed cdpService.ts #L1-800',
+                                response: '',
+                            },
+                        },
+                    ],
+                },
+            });
+
+        const trajectoryRenderer = {
+            renderTrajectory: jest.fn()
+                .mockResolvedValueOnce({
+                    ok: true,
+                    content: '<blockquote>Reading the file.</blockquote>',
+                    format: 'html',
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    content: '<blockquote>Reading the file.<br>Analyzed cdpService.ts #L1-800</blockquote>',
+                    format: 'html',
+                }),
+        };
+        const onRenderedTimeline = jest.fn();
+
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-timeline-streaming',
+            expectedUserMessage: 'review cdpService.ts',
+            trajectoryRenderer: trajectoryRenderer as any,
+            onRenderedTimeline,
+        });
+
+        await monitor.start();
+
+        client.emit('data', { type: 'status', text: 'DIFF_1', raw: { result: {} } });
+        await jest.advanceTimersByTimeAsync(350);
+        await Promise.resolve();
+
+        client.emit('data', { type: 'status', text: 'DIFF_2', raw: { result: {} } });
+        await jest.advanceTimersByTimeAsync(350);
+        await Promise.resolve();
+
+        expect(trajectoryRenderer.renderTrajectory).toHaveBeenCalledTimes(2);
+        expect(onRenderedTimeline).toHaveBeenCalledTimes(2);
+        expect(onRenderedTimeline).toHaveBeenNthCalledWith(1, {
+            content: '<blockquote>Reading the file.</blockquote>',
+            format: 'html',
+            strategy: undefined,
+            contextId: undefined,
+        });
+        expect(onRenderedTimeline).toHaveBeenNthCalledWith(2, {
+            content: '<blockquote>Reading the file.<br>Analyzed cdpService.ts #L1-800</blockquote>',
+            format: 'html',
+            strategy: undefined,
+            contextId: undefined,
+        });
+
+        await monitor.stop();
+    });
 });

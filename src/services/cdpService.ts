@@ -1399,9 +1399,7 @@ export class CdpService extends EventEmitter {
         logger.warn(`[CdpService] injectViaGrpc: creating new cascade with model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
         const newCascadeId = await client.createCascade(text, modelId || undefined);
         if (newCascadeId) {
-            this.cachedCascadeId = newCascadeId;
-            this.recentCreatedCascadeId = newCascadeId;
-            this.recentCreatedCascadeAt = Date.now();
+            this.rememberCreatedCascade(newCascadeId);
             logger.warn(`[CdpService] New cascade created: ${newCascadeId.slice(0, 16)}...`);
             return { ok: true, method: 'grpc', cascadeId: newCascadeId };
         }
@@ -1885,6 +1883,12 @@ export class CdpService extends EventEmitter {
             this.recentCreatedCascadeId = null;
             this.recentCreatedCascadeAt = 0;
         }
+    }
+
+    rememberCreatedCascade(id: string): void {
+        this.cachedCascadeId = id;
+        this.recentCreatedCascadeId = id;
+        this.recentCreatedCascadeAt = Date.now();
     }
 
     // ─── Gateway Restart (OpenClaw-style) ────────────────────────────

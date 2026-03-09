@@ -13,6 +13,7 @@
 import { logger } from '../utils/logger';
 import { GrpcCascadeClient, CascadeStreamEvent } from './grpcCascadeClient';
 import type { AntigravityTrajectoryRenderer } from './antigravityTrajectoryRenderer';
+import { createHash } from 'crypto';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,6 +106,12 @@ function buildAssistantSignature(step: any, stepIndex: number): string {
     const text = normalizeComparableText(extractAssistantStepText(step));
     const toolCalls = Array.isArray(step?.plannerResponse?.toolCalls) ? step.plannerResponse.toolCalls.length : 0;
     return `${stepIndex}:${step?.type || 'assistant'}:${toolCalls}:${text}`;
+}
+
+function buildRenderInputSignature(snapshot: TrajectoryRecoverySnapshot): string {
+    const payload = snapshot.renderTrajectory ?? snapshot.renderSteps;
+    const serialized = JSON.stringify(payload) ?? '';
+    return createHash('sha1').update(serialized).digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -783,15 +790,9 @@ export class GrpcResponseMonitor {
     }
 
     private buildRenderedTimelineKey(snapshot: TrajectoryRecoverySnapshot): string {
-        const lastStep = snapshot.renderSteps[snapshot.renderSteps.length - 1] as any;
-        const lastType = typeof lastStep?.type === 'string' ? lastStep.type : 'unknown';
-        const response = snapshot.latestResponseText ?? '';
         return [
             snapshot.runStatus ?? '',
-            snapshot.renderSteps.length,
-            snapshot.latestAssistantSignature ?? '',
-            lastType,
-            response,
+            buildRenderInputSignature(snapshot),
         ].join('|');
     }
 

@@ -126,7 +126,13 @@ export class ChatSessionService {
             if (!client) return { ok: false, error: 'gRPC client unavailable' };
             const newId = await client.createCascade();
             if (!newId) return { ok: false, error: 'Failed to create cascade via gRPC' };
-            cdpService.setCachedCascadeId(newId);
+            cdpService.rememberCreatedCascade(newId);
+            try {
+                await client.focusCascade?.(newId);
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn(`[ChatSessionService] SmartFocusConversation failed for ${newId.slice(0, 12)}...: ${message}`);
+            }
             return { ok: true };
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);
@@ -166,8 +172,23 @@ export class ChatSessionService {
         cdpService: CdpService,
         title: string,
     ): Promise<{ ok: boolean; error?: string }> {
-        // Since we are decoupled, we just return true.
-        // Telegram now handles focusing purely in its own state store via cascadeId.
-        return { ok: true };
+        try {
+            const client = await cdpService.getGrpcClient();
+            if (!client) return { ok: false, error: 'gRPC client unavailable' };
+
+            const sessions = await this.listAllSessions(cdpService);
+            const selectedSession = sessions.find((session) => session.title === title);
+            if (!selectedSession?.cascadeId) {
+                return { ok: false, error: `Session not found: ${title}` };
+            }
+
+            await client.focusCascade?.(selectedSession.cascadeId);
+            cdpService.setCachedCascadeId(selectedSession.cascadeId);
+            return { ok: true };
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(`[ChatSessionService] Failed to activate session "${title}": ${message}`);
+            return { ok: false, error: message };
+        }
     }
 }

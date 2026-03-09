@@ -10,11 +10,12 @@ describe('ChatSessionService gRPC session management', () => {
         const mockCdp = {
             getGrpcClient: jest.fn().mockResolvedValue({
                 createCascade: jest.fn().mockResolvedValue('cascade-new'),
+                focusCascade: jest.fn().mockResolvedValue(undefined),
             }),
-            setCachedCascadeId: jest.fn(),
+            rememberCreatedCascade: jest.fn(),
         } as any;
 
         await expect(service.startNewChat(mockCdp)).resolves.toEqual({ ok: true });
-        expect(mockCdp.setCachedCascadeId).toHaveBeenCalledWith('cascade-new');
+        expect(mockCdp.rememberCreatedCascade).toHaveBeenCalledWith('cascade-new');
     });
 });

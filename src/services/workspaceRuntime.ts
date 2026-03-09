@@ -190,7 +190,13 @@ export class WorkspaceRuntime {
                     if (!cascadeId) {
                         return { ok: false, error: 'Failed to create cascade via gRPC' };
                     }
-                    cdp.setCachedCascadeId(cascadeId);
+                    cdp.rememberCreatedCascade(cascadeId);
+                    try {
+                        await grpcClient.focusCascade?.(cascadeId);
+                    } catch (error: unknown) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        logger.warn(`[WorkspaceRuntime:${this.projectName}] SmartFocusConversation failed for ${cascadeId.slice(0, 12)}...: ${message}`);
+                    }
                     this.rememberActiveCascade(cascadeId);
                     return { ok: true };
                 } catch (error: unknown) {

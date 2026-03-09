@@ -221,6 +221,7 @@ describe('WorkspaceRuntime', () => {
     it('creates a new chat through gRPC and remembers the selected cascade', async () => {
         const mockGrpcClient = {
             createCascade: jest.fn().mockResolvedValue('cascade-new'),
+            focusCascade: jest.fn().mockResolvedValue(undefined),
         };
         const mockCdp = {
             isConnected: jest.fn().mockReturnValue(true),
@@ -228,7 +229,7 @@ describe('WorkspaceRuntime', () => {
             on: jest.fn(),
             disconnect: jest.fn().mockResolvedValue(undefined),
             getGrpcClient: jest.fn().mockResolvedValue(mockGrpcClient),
-            setCachedCascadeId: jest.fn(),
+            rememberCreatedCascade: jest.fn(),
         };
         (CdpService as jest.MockedClass<typeof CdpService>).mockImplementation(() => mockCdp as any);
 
@@ -243,8 +244,9 @@ describe('WorkspaceRuntime', () => {
 
         await expect(runtime.startNewChat(chatSessionService)).resolves.toEqual({ ok: true });
         expect(mockGrpcClient.createCascade).toHaveBeenCalledTimes(1);
+        expect(mockGrpcClient.focusCascade).toHaveBeenCalledWith('cascade-new');
         expect(chatSessionService.startNewChat).not.toHaveBeenCalled();
-        expect(mockCdp.setCachedCascadeId).toHaveBeenCalledWith('cascade-new');
+        expect(mockCdp.rememberCreatedCascade).toHaveBeenCalledWith('cascade-new');
         expect(runtime.getSelectedCascadeId()).toBe('cascade-new');
     });
 
