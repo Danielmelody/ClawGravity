@@ -1,12 +1,11 @@
 /**
  * Step 9: Model/mode switching UI sync tests
- * TDD Red phase: Tests for CdpService UI manipulation methods
  *
  * Verification items:
- * - Can setUiMode() operate the Antigravity UI mode dropdown?
- * - Can setUiModel() operate the Antigravity UI model dropdown?
- * - Does it throw appropriate errors when not connected?
- * - Fallback handling when DOM manipulation fails
+ * - Does setUiMode() update the cached mode without CDP calls?
+ * - Does setUiModel() resolve models from cachedModelConfigs?
+ * - Does it reject unknown modes/models gracefully?
+ * - getPrimaryContextId prefers the default context for the target frame
  */
 
 import WebSocket from 'ws';
@@ -24,7 +23,6 @@ jest.mock('http', () => ({
 describe('CdpService - UI sync (Step 9)', () => {
     let cdpService: CdpService;
     let mockWsInstance: jest.Mocked<WebSocket>;
-    let callSpy: jest.SpyInstance;
 
     beforeEach(() => {
         jest.clearAllMocks();
@@ -40,9 +38,6 @@ describe('CdpService - UI sync (Step 9)', () => {
         MockWebSocket.mockImplementation(() => mockWsInstance);
 
         cdpService = new CdpService({ cdpCallTimeout: 1000 });
-
-        // Spy on the call method to simulate connected state
-        callSpy = jest.spyOn(cdpService, 'call');
     });
 
     afterEach(async () => {
@@ -51,112 +46,43 @@ describe('CdpService - UI sync (Step 9)', () => {
 
     // ========== setUiMode tests ==========
 
-    describe('setUiMode - UI mode dropdown operation', () => {
+    describe('setUiMode - cached mode switching', () => {
 
-        it('throws an error when not connected and no workspace path', async () => {
-            // When disconnected with no workspace path, reconnectOnDemand throws
-            await expect(cdpService.setUiMode('plan')).rejects.toThrow(
-                'WebSocket is not connected'
-            );
-        });
-
-        it('executes a UI manipulation script via CDP when connected', async () => {
-            // Set to connected state
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            // Stub call to return success
-            callSpy.mockResolvedValue({
-                result: { value: { ok: true, mode: 'Planning' } }
-            });
-
+        it('succeeds even when not connected (mode is cached locally)', async () => {
+            // setUiMode no longer requires a connection — it just caches the mode
             const result = await cdpService.setUiMode('plan');
-
-            // Verify call was invoked
-            expect(callSpy).toHaveBeenCalledWith(
-                'Runtime.evaluate',
-                expect.objectContaining({
-                    expression: expect.stringContaining('plan'),
-                    returnByValue: true,
-                    awaitPromise: true,
-                })
-            );
             expect(result.ok).toBe(true);
+            expect(result.mode).toBe('plan');
         });
 
-        it('maps internal mode names to UI display names', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            callSpy.mockResolvedValue({
-                result: { value: { ok: true, mode: 'Planning' } }
-            });
-
-            const result = await cdpService.setUiMode('plan');
-
-            // Verify expression contains UI name mapping
-            const callArgs = callSpy.mock.calls[0][1];
-            expect(callArgs.expression).toContain('Planning');
-            expect(callArgs.expression).toContain('Fast');
-            expect(result.ok).toBe(true);
-            expect(result.mode).toBe('Planning');
-        });
-
-        it('returns the mode name on successful UI operation', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            callSpy.mockResolvedValue({
-                result: { value: { ok: true, mode: 'Fast' } }
-            });
-
+        it('accepts "fast" mode', async () => {
             const result = await cdpService.setUiMode('fast');
-
             expect(result.ok).toBe(true);
-            expect(result.mode).toBe('Fast');
+            expect(result.mode).toBe('fast');
         });
 
-        it('uses dialog-based selectors in the expression', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
+        it('accepts "plan" mode', async () => {
+            const result = await cdpService.setUiMode('plan');
+            expect(result.ok).toBe(true);
+            expect(result.mode).toBe('plan');
+        });
 
-            callSpy.mockResolvedValue({
-                result: { value: { ok: true, mode: 'Planning' } }
-            });
+        it('normalizes mode name to lowercase', async () => {
+            const result = await cdpService.setUiMode('Plan');
+            expect(result.ok).toBe(true);
+            expect(result.mode).toBe('plan');
+        });
 
+        it('returns ok: false for unknown mode names', async () => {
+            const result = await cdpService.setUiMode('unknown_mode');
+            expect(result.ok).toBe(false);
+            expect(result.error).toContain('unknown_mode');
+        });
+
+        it('does not make any CDP calls', async () => {
+            const callSpy = jest.spyOn(cdpService, 'call');
             await cdpService.setUiMode('plan');
-
-            const callArgs = callSpy.mock.calls[0][1];
-            // Verify dialog-based search is used
-            expect(callArgs.expression).toContain('role=\\"dialog\\"');
-            expect(callArgs.expression).toContain('.font-medium');
-            expect(callArgs.expression).toContain('cursor-pointer');
-        });
-
-        it('returns ok: false when DOM elements are not found', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            callSpy.mockResolvedValue({
-                result: { value: { ok: false, error: 'Mode toggle button not found' } }
-            });
-
-            const result = await cdpService.setUiMode('plan');
-
-            expect(result.ok).toBe(false);
-            expect(result.error).toBeDefined();
-        });
-
-        it('returns ok: false without crashing when a CDP error occurs', async () => {
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
-
-            callSpy.mockRejectedValue(new Error('CDP通信エラー'));
-
-            const result = await cdpService.setUiMode('plan');
-
-            expect(result.ok).toBe(false);
-            expect(result.error).toContain('CDP通信エラー');
+            expect(callSpy).not.toHaveBeenCalled();
         });
     });
 

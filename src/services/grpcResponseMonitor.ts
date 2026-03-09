@@ -669,27 +669,42 @@ export class GrpcResponseMonitor {
             ? (snapshot.latestResponseText ?? '')
             : null;
 
+        // Emit thinking details first (always comes before tool calls)
         if (snapshot.accumulatedThinkingText) {
             this.emitThinkingDetails(snapshot.accumulatedThinkingText);
         }
-        if (snapshot.allToolCalls.length > 0) {
-            this.emitPlannedToolCalls(snapshot.allToolCalls);
-        }
 
+        // Transition to 'generating' phase BEFORE emitting tool calls when
+        // response text is present. This matches the real execution timeline:
+        // the AI starts generating, then tool calls fire during generation.
+        // Without this order, the Telegram log would show all tool calls
+        // batched before "✍️ Generating..." instead of interleaved correctly.
+        let textUpdated = false;
         if (latestText !== null && latestText !== this.lastResponseText) {
             this.lastResponseText = latestText;
             if (latestText.length > 0) {
                 this.hasSeenActivity = true;
+                textUpdated = true;
                 if (this.currentPhase === 'thinking' || this.currentPhase === 'waiting') {
                     this.setPhase('generating', latestText);
                 }
-                this.onProgress?.(latestText);
             }
         } else if (snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
             this.hasSeenActivity = true;
             if (this.currentPhase === 'waiting') {
                 this.setPhase('thinking', null);
             }
+        }
+
+        // Emit tool calls AFTER phase transition so they appear in the correct
+        // chronological position in the activity log.
+        if (snapshot.allToolCalls.length > 0) {
+            this.emitPlannedToolCalls(snapshot.allToolCalls);
+        }
+
+        // Emit progress after tool calls to keep the streaming preview up-to-date
+        if (textUpdated && latestText) {
+            this.onProgress?.(latestText);
         }
 
         const latestTextIsEmpty = latestText !== null && latestText.trim().length === 0;

@@ -34,16 +34,18 @@ export interface CdpBridge {
     approvalChannelBySession: Map<string, PlatformChannel>;
 }
 
-const APPROVE_ACTION_PREFIX = 'approve_action';
-const ALWAYS_ALLOW_ACTION_PREFIX = 'always_allow_action';
-const DENY_ACTION_PREFIX = 'deny_action';
-const PLANNING_OPEN_ACTION_PREFIX = 'planning_open_action';
-const PLANNING_PROCEED_ACTION_PREFIX = 'planning_proceed_action';
-const ERROR_POPUP_DISMISS_ACTION_PREFIX = 'error_popup_dismiss_action';
-const ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX = 'error_popup_copy_debug_action';
-const ERROR_POPUP_RETRY_ACTION_PREFIX = 'error_popup_retry_action';
-const RUN_COMMAND_RUN_ACTION_PREFIX = 'run_command_run_action';
-const RUN_COMMAND_REJECT_ACTION_PREFIX = 'run_command_reject_action';
+import {
+    APPROVE_ACTION_PREFIX,
+    ALWAYS_ALLOW_ACTION_PREFIX,
+    DENY_ACTION_PREFIX,
+    PLANNING_OPEN_ACTION_PREFIX,
+    PLANNING_PROCEED_ACTION_PREFIX,
+    ERROR_POPUP_DISMISS_ACTION_PREFIX,
+    ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX,
+    ERROR_POPUP_RETRY_ACTION_PREFIX,
+    RUN_COMMAND_RUN_ACTION_PREFIX,
+    RUN_COMMAND_REJECT_ACTION_PREFIX,
+} from './actionPrefixes';
 
 function normalizeSessionTitle(title: string): string {
     return title.trim().toLowerCase();
@@ -118,160 +120,134 @@ export function resolveApprovalChannelForCurrentChat(
     return bridge.approvalChannelByWorkspace.get(projectName) ?? null;
 }
 
-export function buildApprovalCustomId(
-    action: 'approve' | 'always_allow' | 'deny',
+// ---------------------------------------------------------------------------
+// Generic custom-ID build / parse helpers
+// ---------------------------------------------------------------------------
+
+/** Map of action name → prefix for all button interaction types */
+type ActionPrefixMap<A extends string> = Record<A, string>;
+
+/** Parsed result from a custom ID */
+interface ParsedCustomId<A extends string> {
+    action: A;
+    projectName: string | null;
+    channelId: string | null;
+}
+
+/**
+ * Build a custom ID string from an action, project name, and optional channel ID.
+ * Format: `<prefix>` or `<prefix>:<projectName>` or `<prefix>:<projectName>:<channelId>`
+ */
+function buildCustomId<A extends string>(
+    prefixMap: ActionPrefixMap<A>,
+    action: A,
     projectName: string,
     channelId?: string,
 ): string {
-    const prefix = action === 'approve'
-        ? APPROVE_ACTION_PREFIX
-        : action === 'always_allow'
-            ? ALWAYS_ALLOW_ACTION_PREFIX
-            : DENY_ACTION_PREFIX;
+    const prefix = prefixMap[action];
     if (channelId && channelId.trim().length > 0) {
         return `${prefix}:${projectName}:${channelId}`;
     }
     return `${prefix}:${projectName}`;
 }
 
-export function parseApprovalCustomId(customId: string): { action: 'approve' | 'always_allow' | 'deny'; projectName: string | null; channelId: string | null } | null {
-    if (customId === APPROVE_ACTION_PREFIX) {
-        return { action: 'approve', projectName: null, channelId: null };
-    }
-    if (customId === ALWAYS_ALLOW_ACTION_PREFIX) {
-        return { action: 'always_allow', projectName: null, channelId: null };
-    }
-    if (customId === DENY_ACTION_PREFIX) {
-        return { action: 'deny', projectName: null, channelId: null };
-    }
-    if (customId.startsWith(`${APPROVE_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${APPROVE_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'approve', projectName: projectName || null, channelId: channelId || null };
-    }
-    if (customId.startsWith(`${ALWAYS_ALLOW_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${ALWAYS_ALLOW_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'always_allow', projectName: projectName || null, channelId: channelId || null };
-    }
-    if (customId.startsWith(`${DENY_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${DENY_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'deny', projectName: projectName || null, channelId: channelId || null };
+/**
+ * Parse a custom ID string back into its action, project name, and channel ID.
+ * Returns null if the custom ID doesn't match any known prefix.
+ */
+function parseCustomId<A extends string>(
+    prefixMap: ActionPrefixMap<A>,
+    customId: string,
+): ParsedCustomId<A> | null {
+    for (const [action, prefix] of Object.entries(prefixMap)) {
+        if (customId === prefix) {
+            return { action: action as A, projectName: null, channelId: null };
+        }
+        if (customId.startsWith(`${prefix}:`)) {
+            const rest = customId.substring((prefix as string).length + 1);
+            const [projectName, channelId] = rest.split(':');
+            return {
+                action: action as A,
+                projectName: projectName || null,
+                channelId: channelId || null,
+            };
+        }
     }
     return null;
 }
+
+// ---------------------------------------------------------------------------
+// Domain-specific wrappers (backward-compatible public API)
+// ---------------------------------------------------------------------------
+
+const APPROVAL_PREFIX_MAP = {
+    approve: APPROVE_ACTION_PREFIX,
+    always_allow: ALWAYS_ALLOW_ACTION_PREFIX,
+    deny: DENY_ACTION_PREFIX,
+} as const;
+
+export function buildApprovalCustomId(
+    action: 'approve' | 'always_allow' | 'deny',
+    projectName: string,
+    channelId?: string,
+): string {
+    return buildCustomId(APPROVAL_PREFIX_MAP, action, projectName, channelId);
+}
+
+export function parseApprovalCustomId(customId: string): ParsedCustomId<'approve' | 'always_allow' | 'deny'> | null {
+    return parseCustomId(APPROVAL_PREFIX_MAP, customId);
+}
+
+const PLANNING_PREFIX_MAP = {
+    open: PLANNING_OPEN_ACTION_PREFIX,
+    proceed: PLANNING_PROCEED_ACTION_PREFIX,
+} as const;
 
 export function buildPlanningCustomId(
     action: 'open' | 'proceed',
     projectName: string,
     channelId?: string,
 ): string {
-    const prefix = action === 'open'
-        ? PLANNING_OPEN_ACTION_PREFIX
-        : PLANNING_PROCEED_ACTION_PREFIX;
-    if (channelId && channelId.trim().length > 0) {
-        return `${prefix}:${projectName}:${channelId}`;
-    }
-    return `${prefix}:${projectName}`;
+    return buildCustomId(PLANNING_PREFIX_MAP, action, projectName, channelId);
 }
 
-export function parsePlanningCustomId(customId: string): { action: 'open' | 'proceed'; projectName: string | null; channelId: string | null } | null {
-    if (customId === PLANNING_OPEN_ACTION_PREFIX) {
-        return { action: 'open', projectName: null, channelId: null };
-    }
-    if (customId === PLANNING_PROCEED_ACTION_PREFIX) {
-        return { action: 'proceed', projectName: null, channelId: null };
-    }
-    if (customId.startsWith(`${PLANNING_OPEN_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${PLANNING_OPEN_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'open', projectName: projectName || null, channelId: channelId || null };
-    }
-    if (customId.startsWith(`${PLANNING_PROCEED_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${PLANNING_PROCEED_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'proceed', projectName: projectName || null, channelId: channelId || null };
-    }
-    return null;
+export function parsePlanningCustomId(customId: string): ParsedCustomId<'open' | 'proceed'> | null {
+    return parseCustomId(PLANNING_PREFIX_MAP, customId);
 }
+
+const ERROR_POPUP_PREFIX_MAP = {
+    dismiss: ERROR_POPUP_DISMISS_ACTION_PREFIX,
+    copy_debug: ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX,
+    retry: ERROR_POPUP_RETRY_ACTION_PREFIX,
+} as const;
 
 export function buildErrorPopupCustomId(
     action: 'dismiss' | 'copy_debug' | 'retry',
     projectName: string,
     channelId?: string,
 ): string {
-    const prefix = action === 'dismiss'
-        ? ERROR_POPUP_DISMISS_ACTION_PREFIX
-        : action === 'copy_debug'
-            ? ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX
-            : ERROR_POPUP_RETRY_ACTION_PREFIX;
-    if (channelId && channelId.trim().length > 0) {
-        return `${prefix}:${projectName}:${channelId}`;
-    }
-    return `${prefix}:${projectName}`;
+    return buildCustomId(ERROR_POPUP_PREFIX_MAP, action, projectName, channelId);
 }
 
-export function parseErrorPopupCustomId(customId: string): { action: 'dismiss' | 'copy_debug' | 'retry'; projectName: string | null; channelId: string | null } | null {
-    if (customId === ERROR_POPUP_DISMISS_ACTION_PREFIX) {
-        return { action: 'dismiss', projectName: null, channelId: null };
-    }
-    if (customId === ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX) {
-        return { action: 'copy_debug', projectName: null, channelId: null };
-    }
-    if (customId === ERROR_POPUP_RETRY_ACTION_PREFIX) {
-        return { action: 'retry', projectName: null, channelId: null };
-    }
-    if (customId.startsWith(`${ERROR_POPUP_DISMISS_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${ERROR_POPUP_DISMISS_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'dismiss', projectName: projectName || null, channelId: channelId || null };
-    }
-    if (customId.startsWith(`${ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'copy_debug', projectName: projectName || null, channelId: channelId || null };
-    }
-    if (customId.startsWith(`${ERROR_POPUP_RETRY_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${ERROR_POPUP_RETRY_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'retry', projectName: projectName || null, channelId: channelId || null };
-    }
-    return null;
+export function parseErrorPopupCustomId(customId: string): ParsedCustomId<'dismiss' | 'copy_debug' | 'retry'> | null {
+    return parseCustomId(ERROR_POPUP_PREFIX_MAP, customId);
 }
+
+const RUN_COMMAND_PREFIX_MAP = {
+    run: RUN_COMMAND_RUN_ACTION_PREFIX,
+    reject: RUN_COMMAND_REJECT_ACTION_PREFIX,
+} as const;
 
 export function buildRunCommandCustomId(
     action: 'run' | 'reject',
     projectName: string,
     channelId?: string,
 ): string {
-    const prefix = action === 'run'
-        ? RUN_COMMAND_RUN_ACTION_PREFIX
-        : RUN_COMMAND_REJECT_ACTION_PREFIX;
-    if (channelId && channelId.trim().length > 0) {
-        return `${prefix}:${projectName}:${channelId}`;
-    }
-    return `${prefix}:${projectName}`;
+    return buildCustomId(RUN_COMMAND_PREFIX_MAP, action, projectName, channelId);
 }
 
-export function parseRunCommandCustomId(customId: string): { action: 'run' | 'reject'; projectName: string | null; channelId: string | null } | null {
-    if (customId === RUN_COMMAND_RUN_ACTION_PREFIX) {
-        return { action: 'run', projectName: null, channelId: null };
-    }
-    if (customId === RUN_COMMAND_REJECT_ACTION_PREFIX) {
-        return { action: 'reject', projectName: null, channelId: null };
-    }
-    if (customId.startsWith(`${RUN_COMMAND_RUN_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${RUN_COMMAND_RUN_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'run', projectName: projectName || null, channelId: channelId || null };
-    }
-    if (customId.startsWith(`${RUN_COMMAND_REJECT_ACTION_PREFIX}:`)) {
-        const rest = customId.substring(`${RUN_COMMAND_REJECT_ACTION_PREFIX}:`.length);
-        const [projectName, channelId] = rest.split(':');
-        return { action: 'reject', projectName: projectName || null, channelId: channelId || null };
-    }
-    return null;
+export function parseRunCommandCustomId(customId: string): ParsedCustomId<'run' | 'reject'> | null {
+    return parseCustomId(RUN_COMMAND_PREFIX_MAP, customId);
 }
 
 /** Initialize the CDP bridge (lazy connection: pool creation only) */

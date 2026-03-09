@@ -331,6 +331,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             let pendingStatusUpdateTimer: NodeJS.Timeout | null = null;
             let isStatusTerminal = false;
             let currentStateIndicator = '⏳ Waiting for response...';
+            let lastPhaseName = '';
 
             const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
                 if (isStatusTerminal && mode === 'streaming') return;
@@ -433,19 +434,27 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                     onPhaseChange: (phase: string, text: string | null) => {
                         const len = text ? text.length : 0;
+                        const phaseChanged = phase !== lastPhaseName;
+                        lastPhaseName = phase;
+
                         if (phase === 'thinking') {
                             currentStateIndicator = '🤔 Thinking...';
-                            lastActivityLogText = '🤔 Thinking / Planning...';
+                            if (phaseChanged) {
+                                lastActivityLogText = processLogBuffer.append('🤔 Thinking / Planning...');
+                            }
                         } else if (phase === 'generating') {
                             currentStateIndicator = `✍️ Generating (${len} chars)...`;
-                            // Show generating state explicitly in the activity log
-                            lastActivityLogText = `✍️ Generating (${len} chars)...`;
+                            // Only log the first transition to generating — don't spam with char-count updates
+                            if (phaseChanged) {
+                                lastActivityLogText = processLogBuffer.append('✍️ Generating...');
+                            }
                         } else if (phase === 'error') {
                             currentStateIndicator = '❌ Error';
-                            lastActivityLogText = text ? `❌ Error: ${text}` : '❌ Error occurred';
+                            const errorEntry = text ? `❌ Error: ${text}` : '❌ Error occurred';
+                            lastActivityLogText = processLogBuffer.append(errorEntry);
                         } else if (phase === 'quotaReached') {
                             currentStateIndicator = '⚠️ Quota Reached';
-                            lastActivityLogText = '⚠️ Quota reached';
+                            lastActivityLogText = processLogBuffer.append('⚠️ Quota reached');
                         }
                         refreshStatusMessage('streaming');
                     },
@@ -723,10 +732,18 @@ function buildTelegramStatusText(options: {
         ? options.headerLines.join('\n')
         : '';
 
-    // Preview gets full priority — no truncation
-    const preview = (options.previewText && options.mode === 'streaming')
+    // Show only the tail of preview text to keep the display concise.
+    // The full response will be delivered as a separate message on completion.
+    const PREVIEW_MAX_CHARS = 600;
+    let preview = (options.previewText && options.mode === 'streaming')
         ? options.previewText.trim()
         : '';
+    if (preview.length > PREVIEW_MAX_CHARS) {
+        // Find a clean break point (paragraph or sentence) near the tail
+        const tail = preview.slice(-PREVIEW_MAX_CHARS);
+        const breakIdx = tail.indexOf('\n');
+        preview = '...' + (breakIdx > 0 ? tail.slice(breakIdx) : tail);
+    }
     const previewSection = preview ? `[streaming preview]\n${preview}` : '';
 
     // Activity log fills remaining space after preview

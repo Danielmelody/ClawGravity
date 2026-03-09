@@ -24,20 +24,18 @@ import {
     pipe,
 } from '../platform/richContentBuilder';
 
-// ---------------------------------------------------------------------------
-// Custom-ID prefix constants (must stay in sync with cdpBridgeManager)
-// ---------------------------------------------------------------------------
-
-const APPROVE_ACTION_PREFIX = 'approve_action';
-const ALWAYS_ALLOW_ACTION_PREFIX = 'always_allow_action';
-const DENY_ACTION_PREFIX = 'deny_action';
-const PLANNING_OPEN_ACTION_PREFIX = 'planning_open_action';
-const PLANNING_PROCEED_ACTION_PREFIX = 'planning_proceed_action';
-const ERROR_POPUP_DISMISS_ACTION_PREFIX = 'error_popup_dismiss_action';
-const ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX = 'error_popup_copy_debug_action';
-const ERROR_POPUP_RETRY_ACTION_PREFIX = 'error_popup_retry_action';
-const RUN_COMMAND_RUN_ACTION_PREFIX = 'run_command_run_action';
-const RUN_COMMAND_REJECT_ACTION_PREFIX = 'run_command_reject_action';
+import {
+    APPROVE_ACTION_PREFIX,
+    ALWAYS_ALLOW_ACTION_PREFIX,
+    DENY_ACTION_PREFIX,
+    PLANNING_OPEN_ACTION_PREFIX,
+    PLANNING_PROCEED_ACTION_PREFIX,
+    ERROR_POPUP_DISMISS_ACTION_PREFIX,
+    ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX,
+    ERROR_POPUP_RETRY_ACTION_PREFIX,
+    RUN_COMMAND_RUN_ACTION_PREFIX,
+    RUN_COMMAND_REJECT_ACTION_PREFIX,
+} from './actionPrefixes';
 
 // ---------------------------------------------------------------------------
 // Notification colours
@@ -198,12 +196,12 @@ export function buildErrorPopupNotification(opts: {
 
     const components: readonly ComponentRow[] | undefined = includeActions
         ? [
-              buttonRow(
-                  button(customId(ERROR_POPUP_DISMISS_ACTION_PREFIX, projectName, channelId), 'Dismiss', 'secondary'),
-                  button(customId(ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX, projectName, channelId), 'Copy Debug', 'primary'),
-                  button(customId(ERROR_POPUP_RETRY_ACTION_PREFIX, projectName, channelId), 'Retry', 'success'),
-              ),
-          ]
+            buttonRow(
+                button(customId(ERROR_POPUP_DISMISS_ACTION_PREFIX, projectName, channelId), 'Dismiss', 'secondary'),
+                button(customId(ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX, projectName, channelId), 'Copy Debug', 'primary'),
+                button(customId(ERROR_POPUP_RETRY_ACTION_PREFIX, projectName, channelId), 'Retry', 'success'),
+            ),
+        ]
         : undefined;
 
     return { richContent, components };
@@ -301,10 +299,10 @@ export function buildResolvedOverlay(
 
     const disabledComponents: ComponentRow[] | undefined = original.components
         ? original.components.map((row) => ({
-              components: row.components.map((comp) =>
-                  comp.type === 'button' ? { ...comp, disabled: true as const } : comp,
-              ),
-          }))
+            components: row.components.map((comp) =>
+                comp.type === 'button' ? { ...comp, disabled: true as const } : comp,
+            ),
+        }))
         : undefined;
 
     return {
@@ -331,9 +329,9 @@ export function buildStatusNotification(opts: {
         (rc) =>
             fields
                 ? fields.reduce<typeof rc>(
-                      (acc, f) => addField(acc, f.name, f.value, f.inline),
-                      rc,
-                  )
+                    (acc, f) => addField(acc, f.name, f.value, f.inline),
+                    rc,
+                )
                 : rc,
     );
 
