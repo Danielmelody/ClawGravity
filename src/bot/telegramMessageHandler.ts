@@ -327,7 +327,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
             let sessionLines: string[] = [];
             let lastStatusEditTime = 0;
-            const STATUS_EDIT_MIN_INTERVAL_MS = 1500;
+            const STATUS_EDIT_MIN_INTERVAL_MS = 2500;
             let pendingStatusUpdateTimer: NodeJS.Timeout | null = null;
             let isStatusTerminal = false;
             let currentStateIndicator = '⏳ Waiting for response...';
@@ -477,9 +477,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                             // Deliver the initial response to Telegram first
                             if (finalOutputText && finalOutputText.trim().length > 0) {
-                                await deliverFinalTelegramText(statusMsg, channel, finalOutputText);
+                                await deliverFinalTelegramText(null, channel, finalOutputText);
                             } else if (finalText && finalText.trim().length > 0) {
-                                await deliverFinalTelegramText(statusMsg, channel, finalText);
+                                await deliverFinalTelegramText(null, channel, finalText);
                             } else {
                                 if (statusMsg) {
                                     await statusMsg.delete().catch(() => { });
@@ -816,10 +816,15 @@ async function startPassiveResponseMonitor(
     let sessionLines: string[] = [];
     let isStatusTerminal = false;
     let currentStateIndicator = '⏳ Waiting for response...';
+    let lastStatusEditTime = 0;
+    const STATUS_EDIT_MIN_INTERVAL_MS = 2500;
+    let pendingStatusUpdateTimer: NodeJS.Timeout | null = null;
+
     const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
         if (isStatusTerminal && mode === 'streaming') return;
         if (!statusMsg) return;
-        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        const now = Date.now();
+        const elapsed = Math.round((now - startTime) / 1000);
 
         const nextText = buildTelegramStatusText({
             activityLogText: lastActivityLogText,
@@ -830,7 +835,37 @@ async function startPassiveResponseMonitor(
             stateIndicator: currentStateIndicator,
         });
         if (!nextText || nextText === lastStatusRender) return;
+
+        if (mode === 'complete' || mode === 'timeout' || mode === 'error') {
+            if (pendingStatusUpdateTimer) {
+                clearTimeout(pendingStatusUpdateTimer);
+                pendingStatusUpdateTimer = null;
+            }
+            lastStatusRender = nextText;
+            lastStatusEditTime = now;
+            statusMsg.edit({ text: nextText }).catch(() => { });
+            return;
+        }
+
+        const timeSinceLastEdit = now - lastStatusEditTime;
+        if (timeSinceLastEdit < STATUS_EDIT_MIN_INTERVAL_MS) {
+            if (!pendingStatusUpdateTimer) {
+                const delay = STATUS_EDIT_MIN_INTERVAL_MS - timeSinceLastEdit;
+                pendingStatusUpdateTimer = setTimeout(() => {
+                    pendingStatusUpdateTimer = null;
+                    refreshStatusMessage(mode);
+                }, delay);
+            }
+            return;
+        }
+
+        if (pendingStatusUpdateTimer) {
+            clearTimeout(pendingStatusUpdateTimer);
+            pendingStatusUpdateTimer = null;
+        }
+
         lastStatusRender = nextText;
+        lastStatusEditTime = now;
         statusMsg.edit({ text: nextText }).catch(() => { });
     };
 
@@ -876,10 +911,13 @@ async function startPassiveResponseMonitor(
                 return;
             }
 
-            // Deliver final text — merge into status message or send new
+            // Flash "Done" state on the card before resolving text
+            currentStateIndicator = `✅ Finished`;
+            ensureStatusMsg().then(() => refreshStatusMessage('complete')).catch(() => { });
+
+            // Deliver final text — send new message without replacing status msg so the process log is preserved
             if (statusMsg) {
-                await deliverFinalTelegramText(statusMsg, channel, finalText);
-                statusMsg = null;
+                await deliverFinalTelegramText(null, channel, finalText);
             } else {
                 await sendTextChunked(channel, finalText);
             }
