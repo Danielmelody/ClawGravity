@@ -49,6 +49,8 @@ export class ChatSessionService {
 
             const list: SessionListItem[] = [];
             for (const [id, t] of Object.entries(summaries)) {
+                if (!cdpService.isCascadeInWorkspace(t)) continue;
+
                 const target = t as any;
                 list.push({
                     title: target.summary || 'Untitled',
@@ -146,7 +148,7 @@ export class ChatSessionService {
             const resp = await client.rawRPC('GetAllCascadeTrajectories', {});
             const summaries = resp?.trajectorySummaries || {};
             const item = summaries[activeId];
-            if (item) {
+            if (item && cdpService.isCascadeInWorkspace(item)) {
                 return { title: item.summary || '(Untitled)', hasActiveChat: true, cascadeId: activeId };
             }
             return { title: '(Untitled)', hasActiveChat: true, cascadeId: activeId };

@@ -1774,8 +1774,16 @@ export class CdpService extends EventEmitter {
                 summary: summary?.summary || '',
             });
 
-            if (this.cachedCascadeId && summaries[this.cachedCascadeId]) {
-                return toSessionInfo(this.cachedCascadeId, summaries[this.cachedCascadeId]);
+            // Filter out summaries that don't belong to this workspace
+            const workspaceSummaries: Record<string, any> = {};
+            for (const [id, summary] of Object.entries(summaries)) {
+                if (this.isCascadeInWorkspace(summary)) {
+                    workspaceSummaries[id] = summary;
+                }
+            }
+
+            if (this.cachedCascadeId && workspaceSummaries[this.cachedCascadeId]) {
+                return toSessionInfo(this.cachedCascadeId, workspaceSummaries[this.cachedCascadeId]);
             }
 
             if (
@@ -1791,11 +1799,11 @@ export class CdpService extends EventEmitter {
                 };
             }
 
-            // Find the most recently modified cascade
+            // Find the most recently modified cascade in THIS workspace
             let latestId: string | null = null;
             let latestTime = 0;
 
-            for (const [id, summary] of Object.entries(summaries)) {
+            for (const [id, summary] of Object.entries(workspaceSummaries)) {
                 const s = summary as any;
                 const modTime = s.lastModifiedTimestamp || s.lastModifiedTime
                     ? new Date(s.lastModifiedTimestamp || s.lastModifiedTime).getTime()
@@ -1808,7 +1816,7 @@ export class CdpService extends EventEmitter {
 
             if (latestId) {
                 this.cachedCascadeId = latestId;
-                return toSessionInfo(latestId, summaries[latestId]);
+                return toSessionInfo(latestId, workspaceSummaries[latestId]);
             }
 
             // Fallback: first key
@@ -1925,5 +1933,34 @@ export class CdpService extends EventEmitter {
             logger.error(`[CdpService] Gateway restart failed: ${error}`);
             return { ok: false, steps, error };
         }
+    }
+
+    /**
+     * Helper to verify if a cascade trajectory summary belongs to the currently active workspace.
+     */
+    public isCascadeInWorkspace(summary: any): boolean {
+        if (!this.currentWorkspacePath) return true; // Accept if we don't know our own workspace yet
+        if (!summary?.workspaces || !Array.isArray(summary.workspaces)) return false;
+
+        const targetPath = this.currentWorkspacePath.replaceAll('\\', '/').toLowerCase();
+
+        for (const ws of summary.workspaces) {
+            if (!ws.workspaceFolderAbsoluteUri) continue;
+            let uriPath = ws.workspaceFolderAbsoluteUri.replace(/^file:\/\//i, '');
+            // Handle /c:/ to c:/
+            if (uriPath.match(/^\/[a-zA-Z]:/)) {
+                uriPath = uriPath.substring(1);
+            }
+
+            let localPath = uriPath.replaceAll('\\', '/').toLowerCase();
+            // Handle trailing slashes uniformly
+            if (localPath.endsWith('/')) localPath = localPath.substring(0, localPath.length - 1);
+            let targetNoSlash = targetPath.endsWith('/') ? targetPath.substring(0, targetPath.length - 1) : targetPath;
+
+            if (localPath === targetNoSlash || localPath.endsWith(targetNoSlash) || targetNoSlash.endsWith(localPath)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

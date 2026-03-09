@@ -20,6 +20,7 @@ describe('ChatSessionService', () => {
         };
         (mockCdpService as any).getGrpcClient = jest.fn().mockResolvedValue(mockGrpcClient);
         (mockCdpService as any).getActiveCascadeId = jest.fn().mockResolvedValue('cascade-123');
+        (mockCdpService as any).isCascadeInWorkspace = jest.fn().mockReturnValue(true);
         (mockCdpService as any).setCachedCascadeId = jest.fn();
         service = new ChatSessionService();
     });
