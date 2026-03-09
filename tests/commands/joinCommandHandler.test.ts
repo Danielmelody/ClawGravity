@@ -8,10 +8,10 @@ import { WorkspaceService } from '../../src/services/workspaceService';
 import Database from 'better-sqlite3';
 import { Collection } from 'discord.js';
 
-// Mock ensureUserMessageDetector and getCurrentChatTitle to prevent real polling in tests
+// Mock runtime bootstrap helpers to prevent real CDP/gRPC startup in tests
 jest.mock('../../src/services/cdpBridgeManager', () => ({
     ...jest.requireActual('../../src/services/cdpBridgeManager'),
-    ensureUserMessageDetector: jest.fn(),
+    ensureWorkspaceRuntime: jest.fn(),
     getCurrentChatTitle: jest.fn().mockResolvedValue(null),
 }));
 
@@ -31,6 +31,13 @@ describe('JoinCommandHandler', () => {
     let mockWorkspaceService: jest.Mocked<WorkspaceService>;
     let mockClient: any;
     let mockJoinedChannelSend: jest.Mock;
+    let mockRuntime: {
+        listAllSessions: jest.Mock;
+        activateSessionByTitle: jest.Mock;
+        sendPrompt: jest.Mock;
+        removeUserMessageSink: jest.Mock;
+        hasUserMessageSinks: jest.Mock;
+    };
     let db: Database.Database;
     let chatSessionRepo: ChatSessionRepository;
     let bindingRepo: WorkspaceBindingRepository;
@@ -45,6 +52,8 @@ describe('JoinCommandHandler', () => {
     });
 
     beforeEach(() => {
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
+
         mockService = {
             startNewChat: jest.fn(),
             getCurrentSessionInfo: jest.fn(),
@@ -52,8 +61,17 @@ describe('JoinCommandHandler', () => {
             listAllSessions: jest.fn(),
         } as any;
 
+        mockRuntime = {
+            listAllSessions: jest.fn(),
+            activateSessionByTitle: jest.fn(),
+            sendPrompt: jest.fn(),
+            removeUserMessageSink: jest.fn(),
+            hasUserMessageSinks: jest.fn().mockReturnValue(false),
+        };
+
         mockPool = {
             getOrConnect: jest.fn(),
+            getOrCreateRuntime: jest.fn().mockReturnValue(mockRuntime),
             getConnected: jest.fn(),
             getActiveWorkspaceNames: jest.fn().mockReturnValue([]),
             getApprovalDetector: jest.fn(),
@@ -61,6 +79,12 @@ describe('JoinCommandHandler', () => {
             registerUserMessageDetector: jest.fn(),
             extractProjectName: jest.fn((path: string) => path.split(/[/\\]/).filter(Boolean).pop() || path),
         } as any;
+
+        ensureWorkspaceRuntime.mockImplementation(async (bridge: any, workspacePath: string) => ({
+            runtime: mockRuntime,
+            cdp: await bridge.pool.getOrConnect(workspacePath),
+            projectName: bridge.pool.extractProjectName(workspacePath),
+        }));
 
         mockWorkspaceService = {
             getWorkspacePath: jest.fn((name: string) => `/workspace/base/${name}`),
@@ -113,9 +137,10 @@ describe('JoinCommandHandler', () => {
         });
 
         it('returns error when CDP connection fails', async () => {
+            const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
             // Bind a workspace to this channel
             bindingRepo.upsert({ channelId: 'ch-1', workspacePath: 'my-project', guildId: 'guild-1' });
-            mockPool.getOrConnect.mockRejectedValue(new Error('WebSocket connection refused'));
+            ensureWorkspaceRuntime.mockRejectedValueOnce(new Error('WebSocket connection refused'));
 
             const interaction = makeMockInteraction();
             const bridge = { pool: mockPool, lastActiveWorkspace: null } as any;
@@ -138,7 +163,7 @@ describe('JoinCommandHandler', () => {
                 { title: 'Fix bug', isActive: true },
                 { title: 'Add feature', isActive: false },
             ];
-            mockService.listAllSessions.mockResolvedValue(sessions);
+            mockRuntime.listAllSessions.mockResolvedValue(sessions);
 
             const interaction = makeMockInteraction();
             const bridge = { pool: mockPool, lastActiveWorkspace: null } as any;
@@ -157,7 +182,7 @@ describe('JoinCommandHandler', () => {
             bindingRepo.upsert({ channelId: 'ch-1', workspacePath: 'my-project', guildId: 'guild-1' });
             const mockCdp = { isConnected: () => true } as any;
             mockPool.getOrConnect.mockResolvedValue(mockCdp);
-            mockService.listAllSessions.mockResolvedValue([]);
+            mockRuntime.listAllSessions.mockResolvedValue([]);
 
             const interaction = makeMockInteraction();
             const bridge = { pool: mockPool, lastActiveWorkspace: null } as any;
@@ -211,7 +236,7 @@ describe('JoinCommandHandler', () => {
             await handler.handleJoinSelect(interaction as any, bridge);
 
             // Should NOT activate session or create channel
-            expect(mockService.activateSessionByTitle).not.toHaveBeenCalled();
+            expect(mockRuntime.activateSessionByTitle).not.toHaveBeenCalled();
             expect(interaction.editReply).toHaveBeenCalledWith(
                 expect.objectContaining({
                     embeds: expect.arrayContaining([
@@ -227,12 +252,10 @@ describe('JoinCommandHandler', () => {
 
         it('creates new channel and binds session when no channel exists', async () => {
             bindingRepo.upsert({ channelId: 'ch-1', workspacePath: 'my-project', guildId: 'guild-1' });
-            const mockCdp = {
-                isConnected: () => true,
-                injectMessage: jest.fn().mockResolvedValue({ ok: true }),
-            } as any;
+            const mockCdp = { isConnected: () => true } as any;
             mockPool.getOrConnect.mockResolvedValue(mockCdp);
-            mockService.activateSessionByTitle.mockResolvedValue({ ok: true });
+            mockRuntime.activateSessionByTitle.mockResolvedValue({ ok: true });
+            mockRuntime.sendPrompt.mockResolvedValue({ ok: true });
 
             // Mock guild channel creation
             const guildWithCreate = {
@@ -261,9 +284,9 @@ describe('JoinCommandHandler', () => {
 
             await handler.handleJoinSelect(interaction as any, bridge);
 
-            expect(mockService.activateSessionByTitle).toHaveBeenCalledWith(mockCdp, 'Brand New Session');
-            expect(mockCdp.injectMessage).toHaveBeenNthCalledWith(1, 'First recent message');
-            expect(mockCdp.injectMessage).toHaveBeenNthCalledWith(2, 'Second recent message');
+            expect(mockRuntime.activateSessionByTitle).toHaveBeenCalledWith(mockService, 'Brand New Session');
+            expect(mockRuntime.sendPrompt).toHaveBeenNthCalledWith(1, { text: 'First recent message', echoText: 'First recent message' });
+            expect(mockRuntime.sendPrompt).toHaveBeenNthCalledWith(2, { text: 'Second recent message', echoText: 'Second recent message' });
             // Verify channel was created
             expect(guildWithCreate.channels.create).toHaveBeenCalled();
             // Verify binding was created
@@ -280,7 +303,7 @@ describe('JoinCommandHandler', () => {
             bindingRepo.upsert({ channelId: 'ch-1', workspacePath: 'my-project', guildId: 'guild-1' });
             const mockCdp = { isConnected: () => true } as any;
             mockPool.getOrConnect.mockResolvedValue(mockCdp);
-            mockService.activateSessionByTitle.mockResolvedValue({ ok: true });
+            mockRuntime.activateSessionByTitle.mockResolvedValue({ ok: true });
 
             // Set up an active detector that should be stopped
             const mockDetector = { isActive: jest.fn().mockReturnValue(true), stop: jest.fn() };
@@ -304,7 +327,7 @@ describe('JoinCommandHandler', () => {
 
             await handler.handleJoinSelect(interaction as any, bridge);
 
-            // Verify existing detector was stopped before ensureUserMessageDetector
+            // Verify existing detector was stopped before runtime bootstrap re-primes mirroring
             expect(mockDetector.stop).toHaveBeenCalled();
         });
 
@@ -312,7 +335,7 @@ describe('JoinCommandHandler', () => {
             bindingRepo.upsert({ channelId: 'ch-1', workspacePath: 'my-project', guildId: 'guild-1' });
             const mockCdp = { isConnected: () => true } as any;
             mockPool.getOrConnect.mockResolvedValue(mockCdp);
-            mockService.activateSessionByTitle.mockResolvedValue({ ok: false, error: 'Title not found' });
+            mockRuntime.activateSessionByTitle.mockResolvedValue({ ok: false, error: 'Title not found' });
 
             const interaction = {
                 guild: mockGuild,
@@ -358,6 +381,7 @@ describe('JoinCommandHandler', () => {
         });
 
         it('turns mirroring ON when no detector is active', async () => {
+            const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
             bindingRepo.upsert({ channelId: 'ch-1', workspacePath: 'my-project', guildId: 'guild-1' });
             mockPool.getUserMessageDetector.mockReturnValue(undefined);
             const mockCdp = { isConnected: () => true, getPrimaryContextId: () => 42 } as any;
@@ -368,6 +392,14 @@ describe('JoinCommandHandler', () => {
 
             await handler.handleMirror(interaction as any, bridge);
 
+            expect(ensureWorkspaceRuntime).toHaveBeenCalledWith(
+                bridge,
+                '/workspace/base/my-project',
+                expect.objectContaining({
+                    userMessageSinkKey: 'discord:mirror:my-project',
+                    onUserMessage: expect.any(Function),
+                }),
+            );
             expect(interaction.editReply).toHaveBeenCalledWith(
                 expect.objectContaining({
                     embeds: expect.arrayContaining([

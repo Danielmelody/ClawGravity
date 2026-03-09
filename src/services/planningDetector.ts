@@ -16,10 +16,8 @@ export interface PlanningInfo {
 }
 
 export interface PlanningDetectorOptions {
-    /** CDP service instance (used only for gRPC client access and VS Code commands) */
+    /** CDP service instance (used only for VS Code commands) */
     cdpService: CdpService;
-    /** Poll interval in milliseconds (default: 2000ms) */
-    pollIntervalMs?: number;
     /** Callback when planning buttons are detected */
     onPlanningRequired: (info: PlanningInfo) => void;
     /** Callback when a previously detected planning state is resolved */
@@ -27,21 +25,22 @@ export interface PlanningDetectorOptions {
 }
 
 /**
- * Detects planning mode state via gRPC trajectory polling.
+ * Detects planning mode state from cascade trajectory data.
  *
  * Zero DOM operations — detection is based on cascade trajectory:
  * When the cascade has a planner response with a plan (toolCalls listing
  * planned actions) and status=IDLE, planning mode is active.
  *
+ * This detector is passive: it does not poll. Call `evaluate()` to feed
+ * it trajectory data from the TrajectoryStreamRouter.
+ *
  * Actions are performed via VS Code extension commands.
  */
 export class PlanningDetector {
     private cdpService: CdpService;
-    private pollIntervalMs: number;
     private onPlanningRequired: (info: PlanningInfo) => void;
     private onResolved?: () => void;
 
-    private pollTimer: NodeJS.Timeout | null = null;
     private isRunning: boolean = false;
     /** Key of the last detected planning info (for duplicate notification prevention) */
     private lastDetectedKey: string | null = null;
@@ -58,28 +57,22 @@ export class PlanningDetector {
 
     constructor(options: PlanningDetectorOptions) {
         this.cdpService = options.cdpService;
-        this.pollIntervalMs = options.pollIntervalMs ?? 2000;
         this.onPlanningRequired = options.onPlanningRequired;
         this.onResolved = options.onResolved;
     }
 
-    /** Start monitoring. */
+    /** Start monitoring (marks active — must be called before evaluate()). */
     start(): void {
         if (this.isRunning) return;
         this.isRunning = true;
         this.lastDetectedKey = null;
         this.lastDetectedInfo = null;
         this.lastNotifiedAt = 0;
-        this.schedulePoll();
     }
 
     /** Stop monitoring. */
     async stop(): Promise<void> {
         this.isRunning = false;
-        if (this.pollTimer) {
-            clearTimeout(this.pollTimer);
-            this.pollTimer = null;
-        }
     }
 
     /** Return the last detected planning info. Returns null if nothing has been detected. */
@@ -168,43 +161,18 @@ export class PlanningDetector {
         }
     }
 
-    /** Schedule the next poll. */
-    private schedulePoll(): void {
-        if (!this.isRunning) return;
-        this.pollTimer = setTimeout(async () => {
-            await this.poll();
-            if (this.isRunning) {
-                this.schedulePoll();
-            }
-        }, this.pollIntervalMs);
-    }
-
     /**
-     * Single poll iteration via gRPC trajectory:
-     *   1. Get active cascade trajectory via gRPC
-     *   2. Check if the latest step contains a plan (planner response with toolCalls)
-     *   3. Notify via callback only on new detection (prevent duplicates)
-     *   4. Reset when planning state is resolved
+     * Evaluate trajectory data to detect planning state.
+     * Called by TrajectoryStreamRouter when stream events arrive.
+     *
+     * @param cascadeId  The active cascade ID
+     * @param steps      Trajectory steps array
+     * @param runStatus  Cascade run status string
      */
-    private async poll(): Promise<void> {
+    evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
+        if (!this.isRunning) return;
+
         try {
-            const client = await this.cdpService.getGrpcClient();
-            if (!client) return;
-
-            const cascadeId = await this.cdpService.getActiveCascadeId();
-            if (!cascadeId) return;
-
-            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
-            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
-            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
-
-            const runStatus =
-                trajectory?.cascadeRunStatus
-                || trajectoryResp?.cascadeRunStatus
-                || trajectory?.status
-                || trajectoryResp?.status
-                || null;
-
             const info = this.extractPlanningFromTrajectory(steps, runStatus);
 
             if (info) {
@@ -235,11 +203,7 @@ export class PlanningDetector {
                 }
             }
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (message.includes('WebSocket is not connected') || message.includes('Not connected')) {
-                return;
-            }
-            logger.error('[PlanningDetector] Error during gRPC polling:', error);
+            logger.error('[PlanningDetector] Error during evaluation:', error);
         }
     }
 
@@ -262,10 +226,8 @@ export class PlanningDetector {
                 const toolCalls = plannerResponse?.toolCalls;
 
                 // Filter to only include tool calls that are actually pending.
-                // Tool calls without a status or with a 'done'/etc status have already been handled.
                 const pendingToolCalls = Array.isArray(toolCalls)
                     ? toolCalls.filter((tc: any) => {
-                        // Check if the tool call already has a result
                         const hasResult = tc?.result !== undefined
                             || tc?.output !== undefined
                             || tc?.toolCallResult !== undefined;
@@ -282,9 +244,7 @@ export class PlanningDetector {
                     })
                     : [];
 
-                // Planning mode requires actual planned tool calls — the agent proposes
-                // a set of actions and waits for user approval before executing.
-                // A long response text alone is NOT sufficient; that's just a normal reply.
+                // Planning mode requires actual planned tool calls
                 const hasToolPlan = pendingToolCalls.length > 0;
 
                 if (!hasToolPlan) return null;

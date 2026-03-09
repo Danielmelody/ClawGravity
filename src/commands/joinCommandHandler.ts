@@ -12,11 +12,12 @@ import { ChannelManager } from '../services/channelManager';
 import { CdpConnectionPool } from '../services/cdpConnectionPool';
 import {
     CdpBridge,
-    ensureUserMessageDetector,
+    ensureWorkspaceRuntime,
     getCurrentChatTitle,
 } from '../services/cdpBridgeManager';
 import { CdpService } from '../services/cdpService';
 import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
+import { WorkspaceRuntime } from '../services/workspaceRuntime';
 import { WorkspaceService } from '../services/workspaceService';
 import { buildSessionPickerUI } from '../ui/sessionPickerUi';
 import { logger } from '../utils/logger';
@@ -32,6 +33,7 @@ const MAX_EMBED_DESC = 4000;
  * /mirror — Toggle PC-to-Discord message mirroring ON/OFF.
  */
 export class JoinCommandHandler {
+    private static readonly DISCORD_MIRROR_SINK_PREFIX = 'discord:mirror:';
     private readonly chatSessionService: ChatSessionService;
     private readonly chatSessionRepo: ChatSessionRepository;
     private readonly bindingRepo: WorkspaceBindingRepository;
@@ -72,6 +74,10 @@ export class JoinCommandHandler {
         return this.workspaceService.getWorkspacePath(projectName);
     }
 
+    private getMirrorSinkKey(projectName: string): string {
+        return `${JoinCommandHandler.DISCORD_MIRROR_SINK_PREFIX}${projectName}`;
+    }
+
     private getSendableChannel(channelId: string): { send: (...args: any[]) => Promise<any> } | null {
         const channel = this.client.channels.cache.get(channelId);
         return channel && 'send' in channel ? channel as { send: (...args: any[]) => Promise<any> } : null;
@@ -101,20 +107,16 @@ export class JoinCommandHandler {
 
     private async replayRecentMessagesToSession(
         interaction: StringSelectMenuInteraction,
-        cdp: CdpService,
-        projectName: string,
+        runtime: WorkspaceRuntime,
         targetChannelId: string,
     ): Promise<string[]> {
         const messages = await this.getRecentMessagesToReplay(interaction, 2);
         if (messages.length === 0) return [];
 
-        const detector = this.pool.getUserMessageDetector(projectName);
         const replayed: string[] = [];
 
         for (const text of messages) {
-            detector?.addEchoHash?.(text);
-
-            const injectResult = await cdp.injectMessage(text);
+            const injectResult = await runtime.sendPrompt({ text, echoText: text });
             if (!injectResult.ok) {
                 logger.warn(`[Join] Failed to replay message into joined session: ${injectResult.error}`);
                 continue;
@@ -164,9 +166,10 @@ export class JoinCommandHandler {
 
         const projectPath = this.resolveProjectPath(projectName);
 
-        let cdp;
+        let runtime;
         try {
-            cdp = await this.pool.getOrConnect(projectPath);
+            const prepared = await ensureWorkspaceRuntime(bridge, projectPath);
+            runtime = prepared.runtime;
         } catch (e: any) {
             await interaction.editReply({
                 content: t(`⚠️ Failed to connect to project: ${e.message}`),
@@ -174,7 +177,7 @@ export class JoinCommandHandler {
             return;
         }
 
-        const sessions = await this.chatSessionService.listAllSessions(cdp);
+        const sessions = await runtime.listAllSessions(this.chatSessionService);
         const { embeds, components } = buildSessionPickerUI(sessions);
 
         await interaction.editReply({ embeds, components });
@@ -224,16 +227,17 @@ export class JoinCommandHandler {
         }
 
         // Step 2: Connect to CDP
-        let cdp;
+        let runtime;
         try {
-            cdp = await this.pool.getOrConnect(projectPath);
+            const prepared = await ensureWorkspaceRuntime(bridge, projectPath);
+            runtime = prepared.runtime;
         } catch (e: any) {
             await interaction.editReply({ content: t(`⚠️ Failed to connect to project: ${e.message}`) });
             return;
         }
 
         // Step 3: Activate the session in Antigravity
-        const activateResult = await this.chatSessionService.activateSessionByTitle(cdp, selectedTitle);
+        const activateResult = await runtime.activateSessionByTitle(this.chatSessionService, selectedTitle);
         if (!activateResult.ok) {
             await interaction.editReply({ content: t(`⚠️ Failed to join session: ${activateResult.error}`) });
             return;
@@ -265,12 +269,15 @@ export class JoinCommandHandler {
         this.chatSessionRepo.updateDisplayName(newChannelId, selectedTitle);
 
         // Step 6: Start mirroring (routes dynamically to all bound session channels)
-        this.startMirroring(bridge, cdp, projectName);
+        try {
+            await this.startMirroring(bridge, projectPath, projectName);
+        } catch (error) {
+            logger.warn('[Join] Failed to start mirroring after joining session:', error);
+        }
 
         const replayedMessages = await this.replayRecentMessagesToSession(
             interaction,
-            cdp,
-            projectName,
+            runtime,
             newChannelId,
         );
 
@@ -307,11 +314,16 @@ export class JoinCommandHandler {
         }
 
         const projectPath = this.resolveProjectPath(projectName);
+        const runtime = this.pool.getOrCreateRuntime(projectPath);
         const detector = this.pool.getUserMessageDetector(projectName);
 
         if (detector?.isActive()) {
-            // Turn OFF — stop user message detector and any active response monitor
-            detector.stop();
+            // Turn OFF — remove this handler's sink, then stop the detector only if
+            // no other runtime consumers are still subscribed.
+            runtime.removeUserMessageSink(this.getMirrorSinkKey(projectName));
+            if (!runtime.hasUserMessageSinks()) {
+                detector.stop();
+            }
             const responseMonitor = this.activeResponseMonitors.get(projectName);
             if (responseMonitor?.isActive()) {
                 await responseMonitor.stop();
@@ -326,17 +338,14 @@ export class JoinCommandHandler {
             await interaction.editReply({ embeds: [embed] });
         } else {
             // Turn ON
-            let cdp;
             try {
-                cdp = await this.pool.getOrConnect(projectPath);
+                await this.startMirroring(bridge, projectPath, projectName);
             } catch (e: any) {
                 await interaction.editReply({
                     content: t(`⚠️ Failed to connect to project: ${e.message}`),
                 });
                 return;
             }
-
-            this.startMirroring(bridge, cdp, projectName);
 
             const embed = new EmbedBuilder()
                 .setTitle(t('📡 Mirroring ON'))
@@ -357,25 +366,30 @@ export class JoinCommandHandler {
      * channel via chatSessionRepo.findByDisplayName. Only explicitly joined
      * sessions (with a displayName binding) receive mirrored messages.
      */
-    private startMirroring(
+    private async startMirroring(
         bridge: CdpBridge,
-        cdp: CdpService,
+        projectPath: string,
         projectName: string,
-    ): void {
-        // Force re-prime: stop existing detector so that ensureUserMessageDetector
-        // creates a fresh one. This prevents the detector from treating the
-        // new session's last message as a "new" user message after /history.
+    ): Promise<void> {
+        // Force re-prime the runtime-backed detector so it does not treat the
+        // newly joined session's last visible message as a fresh PC input.
         const existing = this.pool.getUserMessageDetector(projectName);
         if (existing?.isActive()) {
             existing.stop();
         }
 
-        ensureUserMessageDetector(bridge, cdp, projectName, (info) => {
-            this.routeMirroredMessage(cdp, projectName, info)
-                .catch((err) => {
-                    logger.error('[Mirror] Error routing mirrored message:', err);
-                });
+        let runtimeCdp: CdpService | null = null;
+        const prepared = await ensureWorkspaceRuntime(bridge, projectPath, {
+            userMessageSinkKey: this.getMirrorSinkKey(projectName),
+            onUserMessage: (info) => {
+                if (!runtimeCdp) return;
+                this.routeMirroredMessage(runtimeCdp, projectName, info)
+                    .catch((err) => {
+                        logger.error('[Mirror] Error routing mirrored message:', err);
+                    });
+            },
         });
+        runtimeCdp = prepared.cdp;
     }
 
     /**

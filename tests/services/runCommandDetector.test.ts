@@ -1,11 +1,8 @@
 /**
  * Run command dialog detection and remote execution TDD test
  *
- * Test strategy:
- *   - RunCommandDetector class is the test target
- *   - Mock CdpService with gRPC client to simulate trajectory polling
- *   - Verify that onRunCommandRequired callback is called upon detection
- *   - Verify duplicate prevention, stop behavior, and button clicks
+ * The detector is now passive: evaluate() is called by TrajectoryStreamRouter
+ * with trajectory data. Tests feed data directly via evaluate().
  */
 
 import { RunCommandDetector, RunCommandDetectorOptions, RunCommandInfo } from '../../src/services/runCommandDetector';
@@ -17,18 +14,11 @@ const MockedCdpService = CdpService as jest.MockedClass<typeof CdpService>;
 describe('RunCommandDetector - run command dialog detection and remote execution', () => {
     let detector: RunCommandDetector;
     let mockCdpService: jest.Mocked<CdpService>;
-    let mockGrpcClient: { rawRPC: jest.Mock };
 
     beforeEach(() => {
-        jest.useFakeTimers();
         mockCdpService = new MockedCdpService() as jest.Mocked<CdpService>;
         mockCdpService.getPrimaryContextId = jest.fn().mockReturnValue(42);
         mockCdpService.executeVscodeCommand = jest.fn();
-
-        mockGrpcClient = { rawRPC: jest.fn() };
-        (mockCdpService as any).getGrpcClient = jest.fn().mockResolvedValue(mockGrpcClient);
-        (mockCdpService as any).getActiveCascadeId = jest.fn().mockResolvedValue('cascade-456');
-
         jest.clearAllMocks();
     });
 
@@ -36,124 +26,79 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         if (detector) {
             await detector.stop();
         }
-        jest.useRealTimers();
     });
 
-    function makeRunCommandInfo(overrides: Partial<RunCommandInfo> = {}): RunCommandInfo {
-        return {
-            commandText: 'python3 -m http.server 8000',
-            workingDirectory: '~/Code/login',
-            runText: 'Run',
-            rejectText: 'Reject',
-            ...overrides,
-        };
-    }
+    const IDLE = 'CASCADE_RUN_STATUS_IDLE';
+    const RUNNING = 'CASCADE_RUN_STATUS_RUNNING';
 
-    /**
-     * Helper to build a gRPC trajectory with a pending terminal command.
-     * Requires explicit pending status (matching the fix).
-     */
-    function makeTrajectoryWithCommand(opts: {
+    function makeSteps(opts: {
         command?: string;
         cwd?: string;
         toolName?: string;
         status?: string;
-        cascadeStatus?: string;
-    } = {}): any {
+    } = {}): any[] {
         const {
             command = 'python3 -m http.server 8000',
             cwd = '~/Code/login',
             toolName = 'run_command',
             status = 'pending',
-            cascadeStatus = 'CASCADE_RUN_STATUS_IDLE',
         } = opts;
-        return {
-            trajectory: {
-                cascadeRunStatus: cascadeStatus,
-                steps: [
-                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { text: 'start server' } },
-                    {
-                        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
-                        plannerResponse: {
-                            toolCalls: [{
-                                name: toolName,
-                                status,
-                                arguments: { command, cwd },
-                            }],
-                        },
-                    },
-                ],
+        return [
+            { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { text: 'start server' } },
+            {
+                type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                plannerResponse: {
+                    toolCalls: [{
+                        name: toolName,
+                        status,
+                        arguments: { command, cwd },
+                    }],
+                },
             },
-        };
+        ];
     }
 
-    /** Helper for empty trajectory (no pending commands). */
-    function makeEmptyTrajectory(): any {
-        return {
-            trajectory: {
-                cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
-                steps: [],
+    function makeStepsWithoutStatus(): any[] {
+        return [
+            { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { text: 'hi' } },
+            {
+                type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                plannerResponse: {
+                    toolCalls: [{
+                        name: 'run_command',
+                        // No status field!
+                        arguments: { command: 'echo hi' },
+                    }],
+                },
             },
-        };
+        ];
     }
 
-    /** Helper for trajectory with tool call without status (should NOT trigger). */
-    function makeTrajectoryWithoutStatus(): any {
-        return {
-            trajectory: {
-                cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
-                steps: [
-                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { text: 'hi' } },
-                    {
-                        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
-                        plannerResponse: {
-                            toolCalls: [{
-                                name: 'run_command',
-                                // No status field!
-                                arguments: { command: 'echo hi' },
-                            }],
-                        },
-                    },
-                ],
+    function makeStepsWithEmptyCommand(): any[] {
+        return [
+            { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { text: 'hi' } },
+            {
+                type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                plannerResponse: {
+                    toolCalls: [{
+                        name: 'run_command',
+                        status: 'pending',
+                        arguments: {},
+                    }],
+                },
             },
-        };
+        ];
     }
 
-    /** Helper for trajectory with empty command text (should NOT trigger). */
-    function makeTrajectoryWithEmptyCommand(): any {
-        return {
-            trajectory: {
-                cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
-                steps: [
-                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { text: 'hi' } },
-                    {
-                        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
-                        plannerResponse: {
-                            toolCalls: [{
-                                name: 'run_command',
-                                status: 'pending',
-                                arguments: {},
-                            }],
-                        },
-                    },
-                ],
-            },
-        };
-    }
-
-    it('calls the onRunCommandRequired callback when a pending command is detected', async () => {
+    it('calls the onRunCommandRequired callback when a pending command is detected', () => {
         const onRunCommandRequired = jest.fn();
-
-        mockGrpcClient.rawRPC.mockResolvedValue(makeTrajectoryWithCommand());
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeSteps(), IDLE);
 
         expect(onRunCommandRequired).toHaveBeenCalledTimes(1);
         expect(onRunCommandRequired).toHaveBeenCalledWith(
@@ -166,89 +111,70 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         );
     });
 
-    it('does not call the callback when no pending command exists', async () => {
+    it('does not call the callback when no pending command exists', () => {
         const onRunCommandRequired = jest.fn();
-        mockGrpcClient.rawRPC.mockResolvedValue(makeEmptyTrajectory());
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', [], IDLE);
 
         expect(onRunCommandRequired).not.toHaveBeenCalled();
     });
 
-    it('does NOT trigger for tool calls without explicit pending status', async () => {
+    it('does NOT trigger for tool calls without explicit pending status', () => {
         const onRunCommandRequired = jest.fn();
-        mockGrpcClient.rawRPC.mockResolvedValue(makeTrajectoryWithoutStatus());
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeStepsWithoutStatus(), IDLE);
 
         expect(onRunCommandRequired).not.toHaveBeenCalled();
     });
 
-    it('does NOT trigger for pending tool calls with empty command text', async () => {
+    it('does NOT trigger for pending tool calls with empty command text', () => {
         const onRunCommandRequired = jest.fn();
-        mockGrpcClient.rawRPC.mockResolvedValue(makeTrajectoryWithEmptyCommand());
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeStepsWithEmptyCommand(), IDLE);
 
         expect(onRunCommandRequired).not.toHaveBeenCalled();
     });
 
-    it('does not call the callback multiple times for the same command', async () => {
+    it('does not call the callback multiple times for the same command', () => {
         const onRunCommandRequired = jest.fn();
-
-        mockGrpcClient.rawRPC.mockResolvedValue(makeTrajectoryWithCommand());
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeSteps(), IDLE);
+        detector.evaluate('cascade-456', makeSteps(), IDLE);
+        detector.evaluate('cascade-456', makeSteps(), IDLE);
 
         expect(onRunCommandRequired).toHaveBeenCalledTimes(1);
     });
 
-    it('calls callback again when a different command appears', async () => {
+    it('calls callback again when a different command appears', () => {
         const onRunCommandRequired = jest.fn();
-
-        mockGrpcClient.rawRPC
-            .mockResolvedValueOnce(makeTrajectoryWithCommand({ command: 'npm install' }))
-            .mockResolvedValueOnce(makeTrajectoryWithCommand({ command: 'npm test' }));
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeSteps({ command: 'npm install' }), IDLE);
+        detector.evaluate('cascade-456', makeSteps({ command: 'npm test' }), IDLE);
 
         expect(onRunCommandRequired).toHaveBeenCalledTimes(2);
         expect(onRunCommandRequired).toHaveBeenNthCalledWith(1, expect.objectContaining({ commandText: 'npm install' }));
@@ -257,10 +183,8 @@ describe('RunCommandDetector - run command dialog detection and remote execution
 
     it('executes the backend command when runButton() is called', async () => {
         mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
         });
 
@@ -272,10 +196,8 @@ describe('RunCommandDetector - run command dialog detection and remote execution
 
     it('executes the backend command when rejectButton() is called', async () => {
         mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: true } as any);
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
         });
 
@@ -285,64 +207,33 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.terminalCommand.reject');
     });
 
-    it('stops polling and no longer calls the callback after stop()', async () => {
+    it('does not invoke callback after stop()', async () => {
         const onRunCommandRequired = jest.fn();
-
-        mockGrpcClient.rawRPC.mockResolvedValue(makeTrajectoryWithCommand());
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeSteps(), IDLE);
         expect(onRunCommandRequired).toHaveBeenCalledTimes(1);
 
         await detector.stop();
 
-        await jest.advanceTimersByTimeAsync(1000);
+        detector.evaluate('cascade-456', makeSteps({ command: 'other cmd' }), IDLE);
         expect(onRunCommandRequired).toHaveBeenCalledTimes(1);
     });
 
-    it('continues monitoring even when a gRPC error occurs', async () => {
-        const onRunCommandRequired = jest.fn();
-
-        mockGrpcClient.rawRPC
-            .mockRejectedValueOnce(new Error('gRPC error'))
-            .mockResolvedValueOnce(makeTrajectoryWithCommand());
-
+    it('getLastDetectedInfo() returns the detected RunCommandInfo', () => {
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
-            onRunCommandRequired,
-        });
-        detector.start();
-
-        await jest.advanceTimersByTimeAsync(500); // error
-        await jest.advanceTimersByTimeAsync(500); // success
-
-        expect(onRunCommandRequired).toHaveBeenCalledWith(
-            expect.objectContaining({ commandText: 'python3 -m http.server 8000' }),
-        );
-    });
-
-    it('getLastDetectedInfo() returns the detected RunCommandInfo', async () => {
-        mockGrpcClient.rawRPC.mockResolvedValue(
-            makeTrajectoryWithCommand({ command: 'ls -la', cwd: '~/projects' }),
-        );
-
-        detector = new RunCommandDetector({
-            cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
         });
 
         expect(detector.getLastDetectedInfo()).toBeNull();
 
         detector.start();
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeSteps({ command: 'ls -la', cwd: '~/projects' }), IDLE);
 
         const info = detector.getLastDetectedInfo();
         expect(info).not.toBeNull();
@@ -350,31 +241,24 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         expect(info?.workingDirectory).toBe('~/projects');
     });
 
-    it('getLastDetectedInfo() returns null when the dialog disappears', async () => {
-        mockGrpcClient.rawRPC
-            .mockResolvedValueOnce(makeTrajectoryWithCommand())
-            .mockResolvedValueOnce(makeEmptyTrajectory());
-
+    it('getLastDetectedInfo() returns null when the dialog disappears', () => {
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeSteps(), IDLE);
         expect(detector.getLastDetectedInfo()).not.toBeNull();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', [], IDLE);
         expect(detector.getLastDetectedInfo()).toBeNull();
     });
 
     it('runButton() returns false when the backend command is unavailable', async () => {
         mockCdpService.executeVscodeCommand.mockResolvedValue({ ok: false } as any);
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
         });
         const result = await detector.runButton();
@@ -385,10 +269,8 @@ describe('RunCommandDetector - run command dialog detection and remote execution
 
     it('rejectButton() returns false when the backend command is unavailable', async () => {
         mockCdpService.executeVscodeCommand.mockRejectedValue(new Error('command failed'));
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
         });
         const result = await detector.rejectButton();
@@ -397,61 +279,46 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         expect(mockCdpService.executeVscodeCommand).toHaveBeenCalledWith('antigravity.terminalCommand.reject');
     });
 
-    it('does not detect command when cascade status is RUNNING', async () => {
+    it('does not detect command when cascade status is RUNNING', () => {
         const onRunCommandRequired = jest.fn();
-        mockGrpcClient.rawRPC.mockResolvedValue(
-            makeTrajectoryWithCommand({ cascadeStatus: 'CASCADE_RUN_STATUS_RUNNING' }),
-        );
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeSteps(), RUNNING);
 
         expect(onRunCommandRequired).not.toHaveBeenCalled();
     });
 
-    it('calls onResolved when dialog disappears after detection', async () => {
+    it('calls onResolved when dialog disappears after detection', () => {
         const onResolved = jest.fn();
-
-        mockGrpcClient.rawRPC
-            .mockResolvedValueOnce(makeTrajectoryWithCommand())
-            .mockResolvedValueOnce(makeEmptyTrajectory());
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
             onResolved,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', makeSteps(), IDLE);
         expect(onResolved).not.toHaveBeenCalled();
 
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', [], IDLE);
         expect(onResolved).toHaveBeenCalledTimes(1);
     });
 
-    it('does not call onResolved when dialog was never detected', async () => {
+    it('does not call onResolved when dialog was never detected', () => {
         const onResolved = jest.fn();
-
-        mockGrpcClient.rawRPC.mockResolvedValue(makeEmptyTrajectory());
-
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 500,
             onRunCommandRequired: jest.fn(),
             onResolved,
         });
         detector.start();
 
-        await jest.advanceTimersByTimeAsync(500);
-        await jest.advanceTimersByTimeAsync(500);
+        detector.evaluate('cascade-456', [], IDLE);
+        detector.evaluate('cascade-456', [], IDLE);
 
         expect(onResolved).not.toHaveBeenCalled();
     });

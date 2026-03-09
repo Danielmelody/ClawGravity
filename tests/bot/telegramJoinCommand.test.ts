@@ -17,6 +17,11 @@ jest.mock('../../src/utils/logger', () => ({
     },
 }));
 
+jest.mock('../../src/services/cdpBridgeManager', () => ({
+    ...jest.requireActual('../../src/services/cdpBridgeManager'),
+    ensureWorkspaceRuntime: jest.fn(),
+}));
+
 function createMessage(chatId = 'chat-1'): PlatformMessage {
     return {
         id: 'msg-1',
@@ -113,11 +118,27 @@ describe('TelegramSessionStateStore', () => {
 });
 
 describe('handleTelegramJoinCommand', () => {
+    beforeEach(() => {
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
+        ensureWorkspaceRuntime.mockImplementation(async (bridge: any, workspacePath: string) => {
+            const cdp = await bridge.pool.getOrConnect(workspacePath);
+            return {
+                runtime: {
+                    listAllSessions: jest.fn().mockImplementation(async (chatSessionService: any) => chatSessionService.listAllSessions(cdp)),
+                    getConversationHistory: jest.fn().mockImplementation(async (chatSessionService: any, options: any) => chatSessionService.getConversationHistory(cdp, options)),
+                    setActiveCascade: jest.fn().mockImplementation(async (cascadeId: string) => cdp.setCachedCascadeId?.(cascadeId)),
+                },
+                cdp,
+                projectName: bridge.pool.extractProjectName?.(workspacePath) ?? workspacePath,
+            };
+        });
+    });
+
     it('shows a select menu with history sessions', async () => {
         const message = createMessage();
         const cdp = {};
         const deps = {
-            bridge: { pool: { getOrConnect: jest.fn().mockResolvedValue(cdp) } },
+            bridge: { pool: { getOrConnect: jest.fn().mockResolvedValue(cdp), extractProjectName: jest.fn().mockReturnValue('DeepMarket') } },
             telegramBindingRepo: { findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-1', workspacePath: 'DeepMarket' }) },
             workspaceService: { getWorkspacePath: jest.fn().mockReturnValue('/workspace/DeepMarket') },
             chatSessionService: {
@@ -148,13 +169,29 @@ describe('handleTelegramJoinCommand', () => {
 });
 
 describe('handleTelegramJoinSelect', () => {
+    beforeEach(() => {
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
+        ensureWorkspaceRuntime.mockImplementation(async (bridge: any, workspacePath: string) => {
+            const cdp = await bridge.pool.getOrConnect(workspacePath);
+            return {
+                runtime: {
+                    listAllSessions: jest.fn().mockImplementation(async (chatSessionService: any) => chatSessionService.listAllSessions(cdp)),
+                    getConversationHistory: jest.fn().mockImplementation(async (chatSessionService: any, options: any) => chatSessionService.getConversationHistory(cdp, options)),
+                    setActiveCascade: jest.fn().mockImplementation(async (cascadeId: string) => cdp.setCachedCascadeId?.(cascadeId)),
+                },
+                cdp,
+                projectName: bridge.pool.extractProjectName?.(workspacePath) ?? workspacePath,
+            };
+        });
+    });
+
     it('activates selected session and sends extracted history to Telegram', async () => {
         const interaction = createInteraction('History A');
         const cdp = { setCachedCascadeId: jest.fn() };
         const store = new TelegramSessionStateStore();
 
         const deps = {
-            bridge: { pool: { getOrConnect: jest.fn().mockResolvedValue(cdp) } },
+            bridge: { pool: { getOrConnect: jest.fn().mockResolvedValue(cdp), extractProjectName: jest.fn().mockReturnValue('DeepMarket') } },
             telegramBindingRepo: { findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-1', workspacePath: 'DeepMarket' }) },
             workspaceService: { getWorkspacePath: jest.fn().mockReturnValue('/workspace/DeepMarket') },
             chatSessionService: {

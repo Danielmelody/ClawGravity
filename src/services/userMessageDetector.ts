@@ -13,8 +13,6 @@ export interface UserMessageInfo {
 export interface UserMessageDetectorOptions {
     /** CDP service instance */
     cdpService: CdpService;
-    /** Poll interval in milliseconds (default: 2000ms) */
-    pollIntervalMs?: number;
     /** Callback when a new user message is detected */
     onUserMessage: (info: UserMessageInfo) => void;
 }
@@ -35,15 +33,15 @@ function computeEchoHash(text: string): string {
 }
 
 /**
- * Detects user messages by polling the gRPC Language Server backend.
- * Completely bypasses the DOM.
+ * Detects user messages from cascade trajectory summaries.
+ *
+ * This detector is passive: it does not poll. Call `evaluateSummaries()` to
+ * feed it cascade summaries from the TrajectoryStreamRouter.
  */
 export class UserMessageDetector {
     private readonly cdpService: CdpService;
-    private readonly pollIntervalMs: number;
     private readonly onUserMessage: (info: UserMessageInfo) => void;
 
-    private pollTimer: NodeJS.Timeout | null = null;
     private isRunning: boolean = false;
 
     /** High-water mark for the strictly increasing lastUserInputTime across all cascades */
@@ -55,12 +53,11 @@ export class UserMessageDetector {
     private readonly seenHashes = new Set<string>();
     private static readonly MAX_SEEN_HASHES = 50;
 
-    /** True during the first poll — seeds existing state without firing callback */
+    /** True during the first evaluation — seeds existing state without firing callback */
     private isPriming: boolean = false;
 
     constructor(options: UserMessageDetectorOptions) {
         this.cdpService = options.cdpService;
-        this.pollIntervalMs = options.pollIntervalMs ?? 2000;
         this.onUserMessage = options.onUserMessage;
     }
 
@@ -75,23 +72,18 @@ export class UserMessageDetector {
         }, 60000);
     }
 
-    /** Start monitoring. */
+    /** Start monitoring (marks active — must be called before evaluateSummaries()). */
     start(): void {
         if (this.isRunning) return;
         this.isRunning = true;
         this.lastMaxUserInputTimeMs = 0;
         this.seenHashes.clear();
         this.isPriming = true;
-        this.schedulePoll();
     }
 
     /** Stop monitoring. */
     stop(): void {
         this.isRunning = false;
-        if (this.pollTimer) {
-            clearTimeout(this.pollTimer);
-            this.pollTimer = null;
-        }
     }
 
     isActive(): boolean {
@@ -108,26 +100,20 @@ export class UserMessageDetector {
         this.seenHashes.add(hash);
     }
 
-    private schedulePoll(): void {
+    /**
+     * Evaluate cascade summaries to detect new user messages.
+     * Called by TrajectoryStreamRouter when stream events arrive.
+     *
+     * The router fetches GetAllCascadeTrajectories and passes in the summaries.
+     * If a new user message is detected, the detailed trajectory is fetched
+     * on-demand to extract the message text.
+     *
+     * @param summaries  The trajectorySummaries object from GetAllCascadeTrajectories
+     */
+    async evaluateSummaries(summaries: Record<string, any>): Promise<void> {
         if (!this.isRunning) return;
-        this.pollTimer = setTimeout(async () => {
-            await this.poll();
-            if (this.isRunning) {
-                this.schedulePoll();
-            }
-        }, this.pollIntervalMs);
-    }
 
-    private async poll(): Promise<void> {
         try {
-            const client = await this.cdpService.getGrpcClient();
-            if (!client) {
-                return; // Not ready
-            }
-
-            const resp = await client.rawRPC('GetAllCascadeTrajectories', {});
-            const summaries = resp?.trajectorySummaries || {};
-
             let newestId: string | null = null;
             let currentPollMaxMs = 0;
 
@@ -164,6 +150,9 @@ export class UserMessageDetector {
             // New User Input detected!
             this.lastMaxUserInputTimeMs = currentPollMaxMs;
 
+            const client = await this.cdpService.getGrpcClient();
+            if (!client) return;
+
             const traj = await client.rawRPC('GetCascadeTrajectory', { cascadeId: newestId });
             const stepIndex = (summaries as any)[newestId].lastUserInputStepIndex;
 
@@ -199,7 +188,7 @@ export class UserMessageDetector {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             if (message.includes('ECONNREFUSED')) return;
-            logger.error('[UserMessageDetector] Error during gRPC polling:', error);
+            logger.error('[UserMessageDetector] Error during evaluation:', error);
         }
     }
 }

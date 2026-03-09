@@ -71,5 +71,14 @@ describe('GrpcCascadeClient createCascade', () => {
 
         await expect(client.createCascade('hello', 1154)).resolves.toBeNull();
         expect(client.sendMessage).toHaveBeenCalledWith('cascade-123', 'hello', 1154);
+        expect(client.getLastOperationError()).toBe('missing model');
+    });
+
+    it('stores the StartCascade RPC error for later diagnostics', async () => {
+        const client = new GrpcCascadeClient();
+        jest.spyOn(client as any, 'rpc').mockRejectedValue(new Error('LS StartCascade: 400 - bad request'));
+
+        await expect(client.createCascade('hello')).resolves.toBeNull();
+        expect(client.getLastOperationError()).toBe('LS StartCascade: 400 - bad request');
     });
 });

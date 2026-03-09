@@ -14,10 +14,8 @@ export interface RunCommandInfo {
 }
 
 export interface RunCommandDetectorOptions {
-    /** CDP service instance (used only for gRPC client access and VS Code commands) */
+    /** CDP service instance (used only for VS Code commands) */
     cdpService: CdpService;
-    /** Poll interval in milliseconds (default: 2000ms) */
-    pollIntervalMs?: number;
     /** Callback when a run command dialog is detected */
     onRunCommandRequired: (info: RunCommandInfo) => void;
     /** Callback when a previously detected dialog is resolved (disappeared) */
@@ -25,21 +23,22 @@ export interface RunCommandDetectorOptions {
 }
 
 /**
- * Class that detects "Run command?" state via gRPC trajectory polling.
+ * Detects "Run command?" state from cascade trajectory data.
  *
  * Zero DOM operations — detection is based on cascade trajectory:
  * When the cascade has status=IDLE and the latest step contains a terminal/command
  * tool call pending approval, the agent is waiting for run command confirmation.
  *
+ * This detector is passive: it does not poll. Call `evaluate()` to feed
+ * it trajectory data from the TrajectoryStreamRouter.
+ *
  * Actions (run/reject) are performed via VS Code extension commands.
  */
 export class RunCommandDetector {
     private cdpService: CdpService;
-    private pollIntervalMs: number;
     private onRunCommandRequired: (info: RunCommandInfo) => void;
     private onResolved?: () => void;
 
-    private pollTimer: NodeJS.Timeout | null = null;
     private isRunning: boolean = false;
     /** Key of the last detected dialog (for duplicate notification prevention) */
     private lastDetectedKey: string | null = null;
@@ -52,12 +51,11 @@ export class RunCommandDetector {
 
     constructor(options: RunCommandDetectorOptions) {
         this.cdpService = options.cdpService;
-        this.pollIntervalMs = options.pollIntervalMs ?? 2000;
         this.onRunCommandRequired = options.onRunCommandRequired;
         this.onResolved = options.onResolved;
     }
 
-    /** Start monitoring. */
+    /** Start monitoring (marks active — must be called before evaluate()). */
     start(): void {
         if (this.isRunning) return;
         this.isRunning = true;
@@ -65,16 +63,11 @@ export class RunCommandDetector {
         this.lastDetectedInfo = null;
         // Note: notifiedKeys is NOT cleared on start — it persists across
         // stop/start cycles to prevent stale cross-session re-notifications.
-        this.schedulePoll();
     }
 
     /** Stop monitoring. */
     async stop(): Promise<void> {
         this.isRunning = false;
-        if (this.pollTimer) {
-            clearTimeout(this.pollTimer);
-            this.pollTimer = null;
-        }
     }
 
     /** Return the last detected run command info. */
@@ -82,43 +75,23 @@ export class RunCommandDetector {
         return this.lastDetectedInfo;
     }
 
-    /** Schedule the next poll */
-    private schedulePoll(): void {
-        if (!this.isRunning) return;
-        this.pollTimer = setTimeout(async () => {
-            await this.poll();
-            if (this.isRunning) {
-                this.schedulePoll();
-            }
-        }, this.pollIntervalMs);
+    /** Returns whether monitoring is currently active */
+    isActive(): boolean {
+        return this.isRunning;
     }
 
     /**
-     * Single poll iteration via gRPC trajectory:
-     *   1. Get active cascade trajectory via gRPC
-     *   2. Check if status=IDLE and latest step has a terminal command tool call
-     *   3. Notify via callback only on new detection (prevent duplicates)
-     *   4. Reset when command dialog is resolved
+     * Evaluate trajectory data to detect run command state.
+     * Called by TrajectoryStreamRouter when stream events arrive.
+     *
+     * @param cascadeId  The active cascade ID
+     * @param steps      Trajectory steps array
+     * @param runStatus  Cascade run status string
      */
-    private async poll(): Promise<void> {
+    evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
+        if (!this.isRunning) return;
+
         try {
-            const client = await this.cdpService.getGrpcClient();
-            if (!client) return;
-
-            const cascadeId = await this.cdpService.getActiveCascadeId();
-            if (!cascadeId) return;
-
-            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
-            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
-            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
-
-            const runStatus =
-                trajectory?.cascadeRunStatus
-                || trajectoryResp?.cascadeRunStatus
-                || trajectory?.status
-                || trajectoryResp?.status
-                || null;
-
             const info = this.extractRunCommandFromTrajectory(steps, runStatus);
 
             if (info) {
@@ -147,11 +120,7 @@ export class RunCommandDetector {
                 }
             }
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (message.includes('WebSocket is not connected') || message.includes('Not connected')) {
-                return;
-            }
-            logger.error('[RunCommandDetector] Error during gRPC polling:', error);
+            logger.error('[RunCommandDetector] Error during evaluation:', error);
         }
     }
 
@@ -199,7 +168,6 @@ export class RunCommandDetector {
                     if (isCompleted) continue;
 
                     // Require an explicit pending-like status to avoid false positives
-                    // on tool calls that are completed but missing a status field.
                     const isPending = status === 'pending'
                         || status === 'waiting'
                         || status === 'needs_approval'
@@ -228,7 +196,6 @@ export class RunCommandDetector {
 
                 // If we reach the end of the latest planner response and found
                 // no pending terminal commands, then there are none awaiting user action.
-                // Do not search older responses from this same turn.
                 return null;
             }
         }
@@ -270,10 +237,5 @@ export class RunCommandDetector {
             logger.error('[RunCommandDetector] Reject command failed:', error);
             return false;
         }
-    }
-
-    /** Returns whether monitoring is currently active */
-    isActive(): boolean {
-        return this.isRunning;
     }
 }

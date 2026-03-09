@@ -20,11 +20,7 @@ jest.mock('../../src/utils/logger', () => ({
 
 jest.mock('../../src/services/cdpBridgeManager', () => ({
     registerApprovalWorkspaceChannel: jest.fn(),
-    ensureApprovalDetector: jest.fn(),
-    ensureErrorPopupDetector: jest.fn(),
-    ensurePlanningDetector: jest.fn(),
-    ensureRunCommandDetector: jest.fn(),
-    ensureUserMessageDetector: jest.fn(),
+    ensureWorkspaceRuntime: jest.fn(),
     getCurrentCdp: jest.fn().mockReturnValue(null),
 }));
 
@@ -100,12 +96,58 @@ function createMockMessage(overrides: Record<string, unknown> = {}) {
 function createMockCdp() {
     return {
         injectMessage: jest.fn().mockResolvedValue({ ok: true, cascadeId: 'test-cascade-id' }),
+        injectMessageWithImageFiles: jest.fn().mockResolvedValue({ ok: true, cascadeId: 'test-cascade-id' }),
         setCachedCascadeId: jest.fn(),
         getGrpcClient: jest.fn().mockResolvedValue({ isReady: () => true }),
         getActiveCascadeId: jest.fn().mockResolvedValue('test-cascade-id'),
         getActiveSessionInfo: jest.fn().mockResolvedValue({ title: 'Session Title', summary: 'Summary' }),
         getCurrentModel: jest.fn().mockResolvedValue(null),
         setUiMode: jest.fn().mockResolvedValue({ ok: true }),
+    };
+}
+
+function createMockRuntime(cdp = createMockCdp(), projectName = 'test-project') {
+    const sendPrompt = jest.fn().mockImplementation(async (options: any) => {
+        if (options.imageFilePaths && options.imageFilePaths.length > 0) {
+            if (options.overrideCascadeId) {
+                return cdp.injectMessageWithImageFiles(options.text, [...options.imageFilePaths], options.overrideCascadeId);
+            }
+            return cdp.injectMessageWithImageFiles(options.text, [...options.imageFilePaths]);
+        }
+        if (options.overrideCascadeId) {
+            return cdp.injectMessage(options.text, options.overrideCascadeId);
+        }
+        return cdp.injectMessage(options.text);
+    });
+
+    const getMonitoringTarget = jest.fn().mockImplementation(async (preferredCascadeId?: string | null) => {
+        const grpcClient = await cdp.getGrpcClient();
+        if (!grpcClient) return null;
+        const cascadeId = preferredCascadeId || await cdp.getActiveCascadeId();
+        if (!cascadeId) return null;
+        return { grpcClient, cascadeId };
+    });
+
+    return {
+        getProjectName: jest.fn().mockReturnValue(projectName),
+        setActiveCascade: jest.fn().mockImplementation(async (cascadeId: string | null) => {
+            cdp.setCachedCascadeId(cascadeId);
+        }),
+        syncUiMode: jest.fn().mockImplementation(async (modeName: string) => cdp.setUiMode(modeName)),
+        sendPrompt,
+        sendPromptWithMonitoringTarget: jest.fn().mockImplementation(async (options: any) => {
+            const injectResult = await sendPrompt(options);
+            if (!injectResult.ok) {
+                return { injectResult, monitoringTarget: null };
+            }
+            return {
+                injectResult,
+                monitoringTarget: await getMonitoringTarget(injectResult.cascadeId || options.overrideCascadeId || null),
+            };
+        }),
+        getCurrentModel: jest.fn().mockImplementation(async () => cdp.getCurrentModel()),
+        getActiveSessionInfo: jest.fn().mockImplementation(async () => cdp.getActiveSessionInfo()),
+        getMonitoringTarget,
     };
 }
 
@@ -141,6 +183,16 @@ function createTelegramBindingRepo(binding?: { chatId: string; workspacePath: st
 describe('createTelegramMessageHandler', () => {
     beforeEach(() => {
         jest.clearAllMocks();
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
+        ensureWorkspaceRuntime.mockImplementation(async (bridge: any, workspacePath: string) => {
+            const cdp = await bridge.pool.getOrConnect(workspacePath);
+            const projectName = bridge.pool.extractProjectName(workspacePath);
+            return {
+                runtime: createMockRuntime(cdp, projectName),
+                cdp,
+                projectName,
+            };
+        });
     });
 
     it('returns a function', () => {
@@ -184,6 +236,7 @@ describe('createTelegramMessageHandler', () => {
     });
 
     it('connects to CDP and sends prompt', async () => {
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
         const bridge = createBridge(pool);
@@ -194,7 +247,15 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        expect(pool.getOrConnect).toHaveBeenCalledWith('/workspace/a');
+        expect(ensureWorkspaceRuntime).toHaveBeenCalledWith(
+            bridge,
+            '/workspace/a',
+            expect.objectContaining({
+                enableActionDetectors: true,
+                userMessageSinkKey: 'telegram:chat-123',
+                onUserMessage: expect.any(Function),
+            }),
+        );
         expect(mockCdp.injectMessage).toHaveBeenCalledWith('test prompt');
     });
 
@@ -271,8 +332,9 @@ describe('createTelegramMessageHandler', () => {
     });
 
     it('handles CDP connection errors gracefully', async () => {
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
         const pool = createMockPool();
-        pool.getOrConnect.mockRejectedValue(new Error('Connection refused'));
+        ensureWorkspaceRuntime.mockRejectedValueOnce(new Error('Connection refused'));
         const bridge = createBridge(pool);
         const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
         const telegramBindingRepo = createTelegramBindingRepo(binding);
@@ -307,10 +369,7 @@ describe('createTelegramMessageHandler', () => {
     it('registers approval workspace channel and starts detectors', async () => {
         const {
             registerApprovalWorkspaceChannel,
-            ensureApprovalDetector,
-            ensureErrorPopupDetector,
-            ensurePlanningDetector,
-            ensureRunCommandDetector,
+            ensureWorkspaceRuntime,
         } = jest.requireMock('../../src/services/cdpBridgeManager');
 
         const mockCdp = createMockCdp();
@@ -328,10 +387,15 @@ describe('createTelegramMessageHandler', () => {
             'test-project',
             message.channel,
         );
-        expect(ensureApprovalDetector).toHaveBeenCalledWith(bridge, mockCdp, 'test-project');
-        expect(ensureErrorPopupDetector).toHaveBeenCalledWith(bridge, mockCdp, 'test-project');
-        expect(ensurePlanningDetector).toHaveBeenCalledWith(bridge, mockCdp, 'test-project');
-        expect(ensureRunCommandDetector).toHaveBeenCalledWith(bridge, mockCdp, 'test-project');
+        expect(ensureWorkspaceRuntime).toHaveBeenCalledWith(
+            bridge,
+            '/workspace/a',
+            expect.objectContaining({
+                enableActionDetectors: true,
+                userMessageSinkKey: 'telegram:chat-123',
+                onUserMessage: expect.any(Function),
+            }),
+        );
     });
 
     it('sets lastActiveWorkspace and lastActiveChannel on bridge', async () => {
@@ -461,13 +525,17 @@ describe('createTelegramMessageHandler', () => {
     });
 
     it('does not block subsequent messages when a task fails', async () => {
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
         const mockCdp = createMockCdp();
         // First call fails, second succeeds
         const pool = createMockPool(mockCdp);
-        pool.getOrConnect
+        ensureWorkspaceRuntime
             .mockRejectedValueOnce(new Error('first failure'))
-            .mockResolvedValueOnce(mockCdp);
-
+            .mockResolvedValueOnce({
+                runtime: createMockRuntime(mockCdp, 'test-project'),
+                cdp: mockCdp,
+                projectName: 'test-project',
+            });
         const bridge = createBridge(pool);
         const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
         const telegramBindingRepo = createTelegramBindingRepo(binding);
@@ -500,6 +568,7 @@ describe('createTelegramMessageHandler', () => {
     });
 
     it('intercepts /project command and does not reach CDP path', async () => {
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
         const bridge = createBridge(pool);
@@ -515,7 +584,7 @@ describe('createTelegramMessageHandler', () => {
         await handler(message as any);
 
         // /project should be handled by project command, NOT reach CDP
-        expect(pool.getOrConnect).not.toHaveBeenCalled();
+        expect(ensureWorkspaceRuntime).not.toHaveBeenCalled();
         expect(mockCdp.injectMessage).not.toHaveBeenCalled();
         // Should reply with workspace list (via project command handler)
         expect(message.reply).toHaveBeenCalled();
@@ -669,6 +738,7 @@ describe('createTelegramMessageHandler', () => {
     it.each(['/help', '/status', '/stop', '/ping', '/start'])(
         'intercepts %s command and does not reach CDP path',
         async (cmd) => {
+            const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
             const mockCdp = createMockCdp();
             const pool = createMockPool(mockCdp);
             const bridge = createBridge(pool);
@@ -682,7 +752,7 @@ describe('createTelegramMessageHandler', () => {
             await handler(message as any);
 
             // Built-in commands should NOT reach CDP
-            expect(pool.getOrConnect).not.toHaveBeenCalled();
+            expect(ensureWorkspaceRuntime).not.toHaveBeenCalled();
             expect(mockCdp.injectMessage).not.toHaveBeenCalled();
             // Should reply with command-specific text
             expect(message.reply).toHaveBeenCalled();
@@ -827,6 +897,7 @@ describe('createTelegramMessageHandler', () => {
         });
 
         it('passes activeMonitors to command handler for /stop access', async () => {
+            const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
             const mockCdp = createMockCdp();
             const pool = createMockPool(mockCdp);
             const bridge = createBridge(pool);
@@ -841,11 +912,12 @@ describe('createTelegramMessageHandler', () => {
             await handler(message as any);
 
             // /stop is intercepted as a command — CDP path not reached
-            expect(pool.getOrConnect).not.toHaveBeenCalled();
+            expect(ensureWorkspaceRuntime).not.toHaveBeenCalled();
         });
     });
 
     it('forwards unknown slash commands to Antigravity as normal messages', async () => {
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
         const bridge = createBridge(pool);
@@ -857,7 +929,7 @@ describe('createTelegramMessageHandler', () => {
         await handler(message as any);
 
         // Unknown commands should be forwarded to Antigravity via CDP
-        expect(pool.getOrConnect).toHaveBeenCalled();
+        expect(ensureWorkspaceRuntime).toHaveBeenCalled();
         expect(mockCdp.injectMessage).toHaveBeenCalledWith('/unknown_command');
     });
 });

@@ -226,7 +226,17 @@ describe('CdpConnectionPool', () => {
     });
 
     describe('ApprovalDetector management', () => {
-        it('can register with registerApprovalDetector and retrieve with getApprovalDetector', () => {
+        it('can register with registerApprovalDetector and retrieve with getApprovalDetector', async () => {
+            const mockCdp = {
+                isConnected: jest.fn().mockReturnValue(true),
+                discoverAndConnectForWorkspace: jest.fn().mockResolvedValue(true),
+                on: jest.fn(),
+                disconnect: jest.fn().mockResolvedValue(undefined),
+            };
+            (CdpService as jest.MockedClass<typeof CdpService>).mockImplementation(() => mockCdp as any);
+
+            await pool.getOrConnect('/path/to/ProjectA');
+
             const mockDetector = {
                 isActive: jest.fn().mockReturnValue(true),
                 stop: jest.fn(),
@@ -238,7 +248,17 @@ describe('CdpConnectionPool', () => {
             expect(pool.getApprovalDetector('ProjectA')).toBe(mockDetector);
         });
 
-        it('stops the old detector when replacing an existing one', () => {
+        it('stops the old detector when replacing an existing one', async () => {
+            const mockCdp = {
+                isConnected: jest.fn().mockReturnValue(true),
+                discoverAndConnectForWorkspace: jest.fn().mockResolvedValue(true),
+                on: jest.fn(),
+                disconnect: jest.fn().mockResolvedValue(undefined),
+            };
+            (CdpService as jest.MockedClass<typeof CdpService>).mockImplementation(() => mockCdp as any);
+
+            await pool.getOrConnect('/path/to/ProjectA');
+
             const oldDetector = {
                 isActive: jest.fn().mockReturnValue(true),
                 stop: jest.fn().mockResolvedValue(undefined),

@@ -23,7 +23,7 @@ import type { PlatformMessage, MessagePayload } from '../platform/types';
 import type { TelegramBotLike } from '../platform/telegram/wrappers';
 import type { CdpBridge } from '../services/cdpBridgeManager';
 import type { WorkspaceService } from '../services/workspaceService';
-import { getCurrentCdp } from '../services/cdpBridgeManager';
+import { ensureWorkspaceRuntime, getCurrentCdp } from '../services/cdpBridgeManager';
 import type { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import type { ModeService } from '../services/modeService';
 import type { ModelService } from '../services/modelService';
@@ -386,32 +386,45 @@ async function handleMode(deps: TelegramCommandDeps, message: PlatformMessage): 
     await message.reply(payload).catch(logger.error);
 }
 
-async function handleModel(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
-    let cdp = getCurrentCdp(deps.bridge);
-    if (!cdp) {
-        const chatId = message.channel.id;
-        const binding = deps.telegramBindingRepo?.findByChatId(chatId);
-        if (!binding) {
-            await message.reply({ text: 'Not connected to Antigravity.' }).catch(logger.error);
-            return;
-        }
-
-        try {
-            const workspacePath = deps.workspaceService
-                ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
-                : binding.workspacePath;
-            cdp = await deps.bridge.pool.getOrConnect(workspacePath);
-            deps.bridge.lastActiveWorkspace = deps.bridge.pool.extractProjectName(workspacePath);
-            deps.bridge.lastActiveChannel = message.channel;
-        } catch (err: any) {
-            logger.error('[TelegramCommand:model] CDP connection failed:', err?.message || err);
-            await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
-            return;
-        }
+async function ensureTelegramRuntimeForChat(
+    deps: TelegramCommandDeps,
+    message: PlatformMessage,
+): Promise<Awaited<ReturnType<typeof ensureWorkspaceRuntime>> | null> {
+    const chatId = message.channel.id;
+    const binding = deps.telegramBindingRepo?.findByChatId(chatId);
+    const activeWorkspaces = deps.bridge.pool.getActiveWorkspaceNames();
+    const fallbackWorkspace = activeWorkspaces.length === 1 ? activeWorkspaces[0] : null;
+    const workspaceName = binding?.workspacePath ?? deps.bridge.lastActiveWorkspace ?? fallbackWorkspace;
+    if (!workspaceName) {
+        return null;
     }
 
-    const models = await cdp.getUiModels();
-    const currentModel = await cdp.getCurrentModel();
+    const workspacePath = deps.workspaceService
+        ? deps.workspaceService.getWorkspacePath(workspaceName)
+        : workspaceName;
+    const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath);
+    deps.bridge.lastActiveWorkspace = prepared.projectName;
+    deps.bridge.lastActiveChannel = message.channel;
+    return prepared;
+}
+
+async function handleModel(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
+    let runtimePrepared: Awaited<ReturnType<typeof ensureWorkspaceRuntime>> | null = null;
+    try {
+        runtimePrepared = await ensureTelegramRuntimeForChat(deps, message);
+    } catch (err: any) {
+        logger.error('[TelegramCommand:model] runtime bootstrap failed:', err?.message || err);
+        await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
+        return;
+    }
+
+    if (!runtimePrepared) {
+        await message.reply({ text: 'Not connected to Antigravity.' }).catch(logger.error);
+        return;
+    }
+
+    const models = await runtimePrepared.runtime.getUiModels();
+    const currentModel = await runtimePrepared.runtime.getCurrentModel();
     const quotaData = deps.fetchQuota ? await deps.fetchQuota() : [];
     const defaultModel = deps.modelService?.getDefaultModel() ?? null;
 
@@ -582,21 +595,23 @@ async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): P
     }
 
     // Resolve workspace path and connect to CDP
-    let cdp;
+    let runtimePrepared;
     try {
-        const workspacePath = deps.workspaceService
-            ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
-            : binding.workspacePath;
-        cdp = await deps.bridge.pool.getOrConnect(workspacePath);
+        runtimePrepared = await ensureWorkspaceRuntime(
+            deps.bridge,
+            deps.workspaceService
+                ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
+                : binding.workspacePath,
+        );
     } catch (err: any) {
-        logger.error('[TelegramCommand:new] CDP connection failed:', err?.message || err);
+        logger.error('[TelegramCommand:new] runtime bootstrap failed:', err?.message || err);
         await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
         return;
     }
 
     // Start a new chat session
     try {
-        const result = await deps.chatSessionService.startNewChat(cdp);
+        const result = await runtimePrepared.runtime.startNewChat(deps.chatSessionService);
         if (result.ok) {
             deps.sessionStateStore?.clearSelectedSession(message.channel.id);
             await message.reply({ text: 'New chat session started.' }).catch(logger.error);
@@ -629,21 +644,23 @@ async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage):
     }
 
     // Resolve workspace path and connect to CDP
-    let cdp;
+    let runtimePrepared;
     try {
-        const workspacePath = deps.workspaceService
-            ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
-            : binding.workspacePath;
-        cdp = await deps.bridge.pool.getOrConnect(workspacePath);
+        runtimePrepared = await ensureWorkspaceRuntime(
+            deps.bridge,
+            deps.workspaceService
+                ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
+                : binding.workspacePath,
+        );
     } catch (err: any) {
-        logger.error('[TelegramCommand:clear] CDP connection failed:', err?.message || err);
+        logger.error('[TelegramCommand:clear] runtime bootstrap failed:', err?.message || err);
         await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
         return;
     }
 
     // Start a new chat session (effectively clearing the backend history)
     try {
-        const result = await deps.chatSessionService.startNewChat(cdp);
+        const result = await runtimePrepared.runtime.startNewChat(deps.chatSessionService);
         if (result.ok) {
             deps.sessionStateStore?.clearSelectedSession(chatId);
 

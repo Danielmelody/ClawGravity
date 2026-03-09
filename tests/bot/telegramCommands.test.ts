@@ -16,6 +16,7 @@ jest.mock('../../src/utils/logger', () => ({
 
 jest.mock('../../src/services/cdpBridgeManager', () => ({
     getCurrentCdp: jest.fn(),
+    ensureWorkspaceRuntime: jest.fn(),
 }));
 
 jest.mock('../../src/ui/modeUi', () => ({
@@ -53,7 +54,7 @@ jest.mock('../../src/services/processRestartService', () => ({
     restartCurrentProcess: jest.fn(),
 }));
 
-import { getCurrentCdp } from '../../src/services/cdpBridgeManager';
+import { ensureWorkspaceRuntime, getCurrentCdp } from '../../src/services/cdpBridgeManager';
 import { buildModePayload } from '../../src/ui/modeUi';
 import { buildModelsPayload } from '../../src/ui/modelsUi';
 import { buildAutoAcceptPayload } from '../../src/ui/autoAcceptUi';
@@ -91,6 +92,7 @@ function createMockBridge(overrides: Record<string, unknown> = {}) {
         pool: {
             getActiveWorkspaceNames: jest.fn().mockReturnValue([]),
             getConnected: jest.fn().mockReturnValue(null),
+            getOrCreateRuntime: jest.fn(),
         },
         lastActiveWorkspace: null,
         lastActiveChannel: null,
@@ -511,6 +513,10 @@ describe('handleTelegramCommand — /mode', () => {
 // ---------------------------------------------------------------------------
 
 describe('handleTelegramCommand — /model', () => {
+    beforeEach(() => {
+        (ensureWorkspaceRuntime as jest.Mock).mockReset();
+    });
+
     it('returns error when CDP is not connected', async () => {
         (getCurrentCdp as jest.Mock).mockReturnValue(null);
         const message = createMockMessage();
@@ -522,15 +528,18 @@ describe('handleTelegramCommand — /model', () => {
     });
 
     it('connects to the bound workspace when no CDP is active yet', async () => {
-        const mockCdp = {
+        const mockRuntime = {
             getUiModels: jest.fn().mockResolvedValue(['model-a', 'model-b']),
             getCurrentModel: jest.fn().mockResolvedValue('model-a'),
         };
         (getCurrentCdp as jest.Mock).mockReturnValue(null);
+        (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({
+            runtime: mockRuntime,
+            projectName: 'TestProject',
+            cdp: {},
+        });
         const message = createMockMessage();
         const bridge = createMockBridge();
-        bridge.pool.getOrConnect = jest.fn().mockResolvedValue(mockCdp);
-        bridge.pool.extractProjectName = jest.fn().mockReturnValue('TestProject');
         const telegramBindingRepo = {
             findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-123', workspacePath: 'TestProject' }),
         } as any;
@@ -545,19 +554,23 @@ describe('handleTelegramCommand — /model', () => {
         );
 
         expect(workspaceService.getWorkspacePath).toHaveBeenCalledWith('TestProject');
-        expect(bridge.pool.getOrConnect).toHaveBeenCalledWith('/full/path/TestProject');
+        expect(ensureWorkspaceRuntime).toHaveBeenCalledWith(bridge, '/full/path/TestProject');
         expect(bridge.lastActiveWorkspace).toBe('TestProject');
         expect(buildModelsPayload).toHaveBeenCalledWith(['model-a', 'model-b'], 'model-a', [], null);
     });
 
     it('sends model payload when CDP is available', async () => {
-        const mockCdp = {
+        const mockRuntime = {
             getUiModels: jest.fn().mockResolvedValue(['model-a', 'model-b']),
             getCurrentModel: jest.fn().mockResolvedValue('model-a'),
         };
-        (getCurrentCdp as jest.Mock).mockReturnValue(mockCdp);
+        (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({
+            runtime: mockRuntime,
+            projectName: 'ActiveProject',
+            cdp: {},
+        });
         const message = createMockMessage();
-        const bridge = createMockBridge();
+        const bridge = createMockBridge({ lastActiveWorkspace: 'ActiveProject' });
         const fetchQuota = jest.fn().mockResolvedValue([]);
 
         await handleTelegramCommand({ bridge, fetchQuota }, message as any, { command: 'model', args: '' });
@@ -567,14 +580,18 @@ describe('handleTelegramCommand — /model', () => {
     });
 
     it('shows error when no models are available', async () => {
-        const mockCdp = {
+        const mockRuntime = {
             getUiModels: jest.fn().mockResolvedValue([]),
             getCurrentModel: jest.fn().mockResolvedValue(null),
         };
-        (getCurrentCdp as jest.Mock).mockReturnValue(mockCdp);
+        (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({
+            runtime: mockRuntime,
+            projectName: 'ActiveProject',
+            cdp: {},
+        });
         (buildModelsPayload as jest.Mock).mockReturnValueOnce(null);
         const message = createMockMessage();
-        const bridge = createMockBridge();
+        const bridge = createMockBridge({ lastActiveWorkspace: 'ActiveProject' });
 
         await handleTelegramCommand({ bridge }, message as any, { command: 'model', args: '' });
 
@@ -1027,6 +1044,10 @@ describe('handleTelegramCommand — /project_create', () => {
 // ---------------------------------------------------------------------------
 
 describe('handleTelegramCommand — /new', () => {
+    beforeEach(() => {
+        (ensureWorkspaceRuntime as jest.Mock).mockReset();
+    });
+
     it('returns error when chatSessionService is not available', async () => {
         const message = createMockMessage();
         const bridge = createMockBridge();
@@ -1057,7 +1078,7 @@ describe('handleTelegramCommand — /new', () => {
     it('returns error when CDP connection fails', async () => {
         const message = createMockMessage();
         const bridge = createMockBridge();
-        bridge.pool.getOrConnect = jest.fn().mockRejectedValue(new Error('Connection timeout'));
+        (ensureWorkspaceRuntime as jest.Mock).mockRejectedValue(new Error('Connection timeout'));
         const chatSessionService = { startNewChat: jest.fn() } as any;
         const telegramBindingRepo = {
             findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-123', workspacePath: 'TestProject' }),
@@ -1077,12 +1098,12 @@ describe('handleTelegramCommand — /new', () => {
 
     it('starts a new chat session successfully', async () => {
         const message = createMockMessage();
-        const mockCdp = { getContexts: jest.fn().mockReturnValue([]) };
-        const bridge = createMockBridge();
-        bridge.pool.getOrConnect = jest.fn().mockResolvedValue(mockCdp);
-        const chatSessionService = {
+        const mockRuntime = {
             startNewChat: jest.fn().mockResolvedValue({ ok: true }),
-        } as any;
+        };
+        const bridge = createMockBridge();
+        (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({ runtime: mockRuntime, projectName: 'TestProject', cdp: {} });
+        const chatSessionService = {} as any;
         const telegramBindingRepo = {
             findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-123', workspacePath: 'TestProject' }),
         } as any;
@@ -1093,7 +1114,7 @@ describe('handleTelegramCommand — /new', () => {
             { command: 'new', args: '' },
         );
 
-        expect(chatSessionService.startNewChat).toHaveBeenCalledWith(mockCdp);
+        expect(mockRuntime.startNewChat).toHaveBeenCalledWith(chatSessionService);
         expect(message.reply).toHaveBeenCalledTimes(1);
         const text = message.reply.mock.calls[0][0].text;
         expect(text).toContain('New chat session started');
@@ -1101,12 +1122,12 @@ describe('handleTelegramCommand — /new', () => {
 
     it('reports failure when startNewChat fails', async () => {
         const message = createMockMessage();
-        const mockCdp = { getContexts: jest.fn().mockReturnValue([]) };
-        const bridge = createMockBridge();
-        bridge.pool.getOrConnect = jest.fn().mockResolvedValue(mockCdp);
-        const chatSessionService = {
+        const mockRuntime = {
             startNewChat: jest.fn().mockResolvedValue({ ok: false, error: 'New chat button not found' }),
-        } as any;
+        };
+        const bridge = createMockBridge();
+        (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({ runtime: mockRuntime, projectName: 'TestProject', cdp: {} });
+        const chatSessionService = {} as any;
         const telegramBindingRepo = {
             findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-123', workspacePath: 'TestProject' }),
         } as any;
@@ -1125,12 +1146,12 @@ describe('handleTelegramCommand — /new', () => {
 
     it('uses workspaceService to resolve workspace path when available', async () => {
         const message = createMockMessage();
-        const mockCdp = { getContexts: jest.fn().mockReturnValue([]) };
-        const bridge = createMockBridge();
-        bridge.pool.getOrConnect = jest.fn().mockResolvedValue(mockCdp);
-        const chatSessionService = {
+        const mockRuntime = {
             startNewChat: jest.fn().mockResolvedValue({ ok: true }),
-        } as any;
+        };
+        const bridge = createMockBridge();
+        (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({ runtime: mockRuntime, projectName: 'TestProject', cdp: {} });
+        const chatSessionService = {} as any;
         const telegramBindingRepo = {
             findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-123', workspacePath: 'TestProject' }),
         } as any;
@@ -1145,17 +1166,17 @@ describe('handleTelegramCommand — /new', () => {
         );
 
         expect(workspaceService.getWorkspacePath).toHaveBeenCalledWith('TestProject');
-        expect(bridge.pool.getOrConnect).toHaveBeenCalledWith('/full/path/TestProject');
+        expect(ensureWorkspaceRuntime).toHaveBeenCalledWith(bridge, '/full/path/TestProject');
     });
 
     it('handles unexpected startNewChat exceptions', async () => {
         const message = createMockMessage();
-        const mockCdp = { getContexts: jest.fn().mockReturnValue([]) };
-        const bridge = createMockBridge();
-        bridge.pool.getOrConnect = jest.fn().mockResolvedValue(mockCdp);
-        const chatSessionService = {
+        const mockRuntime = {
             startNewChat: jest.fn().mockRejectedValue(new Error('unexpected failure')),
-        } as any;
+        };
+        const bridge = createMockBridge();
+        (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({ runtime: mockRuntime, projectName: 'TestProject', cdp: {} });
+        const chatSessionService = {} as any;
         const telegramBindingRepo = {
             findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-123', workspacePath: 'TestProject' }),
         } as any;
@@ -1166,7 +1187,7 @@ describe('handleTelegramCommand — /new', () => {
             { command: 'new', args: '' },
         );
 
-        expect(chatSessionService.startNewChat).toHaveBeenCalledWith(mockCdp);
+        expect(mockRuntime.startNewChat).toHaveBeenCalledWith(chatSessionService);
         expect(message.reply).toHaveBeenCalledTimes(1);
         expect(message.reply).toHaveBeenCalledWith({ text: 'Failed to start new chat.' });
     });

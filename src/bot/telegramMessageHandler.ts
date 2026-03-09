@@ -12,7 +12,7 @@
 import type { PlatformMessage, PlatformChannel, PlatformSentMessage } from '../platform/types';
 import type { TelegramBindingRepository } from '../database/telegramBindingRepository';
 import type { WorkspaceService } from '../services/workspaceService';
-import { CdpBridge, registerApprovalWorkspaceChannel, ensureApprovalDetector, ensureErrorPopupDetector, ensurePlanningDetector, ensureRunCommandDetector, ensureUserMessageDetector } from '../services/cdpBridgeManager';
+import { CdpBridge, ensureWorkspaceRuntime, registerApprovalWorkspaceChannel } from '../services/cdpBridgeManager';
 import type { UserMessageInfo } from '../services/userMessageDetector';
 import { CdpService } from '../services/cdpService';
 import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
@@ -36,6 +36,7 @@ import type { ScheduleRecord } from '../database/scheduleRepository';
 import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
 import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
+import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 
 export interface TelegramMessageHandlerDeps {
     readonly bridge: CdpBridge;
@@ -184,9 +185,26 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
             const cdpStartTime = Date.now();
             logger.debug(`[TelegramHandler] getOrConnect start (elapsed=${cdpStartTime - handlerEntryTime}ms)`);
+            let runtime: WorkspaceRuntime;
             let cdp: CdpService;
+            let projectName: string;
+            let preparedRuntime: WorkspaceRuntime | null = null;
+            let preparedProjectName = '';
             try {
-                cdp = await deps.bridge.pool.getOrConnect(workspacePath);
+                const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath, {
+                    enableActionDetectors: true,
+                    userMessageSinkKey: `telegram:${chatId}`,
+                    onUserMessage: (info: UserMessageInfo) => {
+                        if (!preparedRuntime || !preparedProjectName) return;
+                        handlePassiveUserMessage(message.channel, preparedRuntime, info, deps.activeMonitors, deps.extractionMode)
+                            .catch((err: any) => logger.error('[TelegramPassive] Error handling PC message:', err));
+                    },
+                });
+                runtime = prepared.runtime;
+                cdp = prepared.cdp;
+                projectName = prepared.projectName;
+                preparedRuntime = runtime;
+                preparedProjectName = projectName;
             } catch (e: any) {
                 await message.reply({
                     text: `Failed to connect to workspace: ${e.message}`,
@@ -195,7 +213,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             }
             logger.debug(`[TelegramHandler] getOrConnect done (took=${Date.now() - cdpStartTime}ms)`);
 
-            const projectName = deps.bridge.pool.extractProjectName(workspacePath);
             deps.bridge.lastActiveWorkspace = projectName;
             deps.bridge.lastActiveChannel = message.channel;
             registerApprovalWorkspaceChannel(deps.bridge, projectName, message.channel);
@@ -203,7 +220,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             const selectedSession = deps.sessionStateStore?.getSelectedSession(chatId);
             const currentCascadeId = deps.sessionStateStore?.getCurrentCascadeId(chatId) || selectedSession?.id || undefined;
             if (currentCascadeId) {
-                cdp.setCachedCascadeId(currentCascadeId);
+                await runtime.setActiveCascade(currentCascadeId);
             }
 
             // Always push ModeService's mode to Antigravity on CDP connect.
@@ -212,7 +229,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             // while the user believes they're in Fast mode.
             if (deps.modeService) {
                 const currentMode = deps.modeService.getCurrentMode();
-                const syncRes = await cdp.setUiMode(currentMode);
+                const syncRes = await runtime.syncUiMode(currentMode);
                 if (syncRes.ok) {
                     deps.modeService.markSynced();
                     logger.debug(`[TelegramHandler] Mode pushed to Antigravity: ${currentMode}`);
@@ -228,18 +245,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     await message.reply({ text: modelResult.staleMessage }).catch(logger.error);
                 }
             }
-
-            // Start detectors (platform-agnostic now)
-            ensureApprovalDetector(deps.bridge, cdp, projectName);
-            ensureErrorPopupDetector(deps.bridge, cdp, projectName);
-            ensurePlanningDetector(deps.bridge, cdp, projectName);
-            ensureRunCommandDetector(deps.bridge, cdp, projectName);
-
-            // Start passive mirroring: forward PC-typed messages + AI responses to Telegram
-            ensureUserMessageDetector(deps.bridge, cdp, projectName, (info: UserMessageInfo) => {
-                handlePassiveUserMessage(message.channel, cdp, projectName, info, deps.activeMonitors, deps.extractionMode)
-                    .catch((err: any) => logger.error('[TelegramPassive] Error handling PC message:', err));
-            });
 
             // Download image attachments if present
             let inboundImages: InboundImageAttachment[] = [];
@@ -266,33 +271,18 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             // otherwise fall back to regular prompt or default for image-only messages
             const effectivePrompt = forwardedPrompt || promptText || 'Please review the attached images and respond accordingly.';
 
-            // Register echo hash so UserMessageDetector skips this message
-            // (prevents Telegram-sent messages from being echoed back as "PC" messages)
-            const userMsgDetector = deps.bridge.pool.getUserMessageDetector?.(projectName);
-            if (userMsgDetector) {
-                userMsgDetector.addEchoHash(effectivePrompt);
-            }
-
             // Inject prompt (with or without images) into Antigravity
             logger.prompt(effectivePrompt);
             let injectResult;
+            let initialMonitoringTarget = null;
             try {
-                if (inboundImages.length > 0) {
-                    injectResult = currentCascadeId
-                        ? await cdp.injectMessageWithImageFiles(
-                            effectivePrompt,
-                            inboundImages.map((img) => img.localPath),
-                            currentCascadeId,
-                        )
-                        : await cdp.injectMessageWithImageFiles(
-                            effectivePrompt,
-                            inboundImages.map((img) => img.localPath),
-                        );
-                } else {
-                    injectResult = currentCascadeId
-                        ? await cdp.injectMessage(effectivePrompt, currentCascadeId)
-                        : await cdp.injectMessage(effectivePrompt);
-                }
+                const sendResult = await runtime.sendPromptWithMonitoringTarget({
+                    text: effectivePrompt,
+                    overrideCascadeId: currentCascadeId,
+                    imageFilePaths: inboundImages.map((img) => img.localPath),
+                });
+                injectResult = sendResult.injectResult;
+                initialMonitoringTarget = sendResult.monitoringTarget;
             } finally {
                 // Cleanup temp files regardless of outcome
                 if (inboundImages.length > 0) {
@@ -321,7 +311,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
             const localMode = deps.modeService?.getCurrentMode() || 'fast';
             const currentModeName = MODE_UI_NAMES[localMode] || localMode;
-            const currentModelByCdp = await cdp.getCurrentModel().catch(() => null);
+            const currentModelByCdp = await runtime.getCurrentModel().catch(() => null);
             const currentModel = currentModelByCdp || deps.modelService?.getCurrentModel() || 'Auto (UI)';
             const headerLines = buildModeModelLines(currentModeName, currentModel, currentModel);
 
@@ -387,7 +377,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             };
 
             // Prefetch session info once (or periodically)
-            cdp.getActiveSessionInfo().then(async info => {
+            runtime.getActiveSessionInfo().then(async info => {
                 if (info) {
                     const { buildSessionLines } = await import('../utils/streamMessageFormatter');
                     sessionLines = buildSessionLines(info.title, info.summary);
@@ -411,13 +401,14 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     resolve();
                 };
 
-                const grpcClient = await cdp.getGrpcClient();
-                if (!grpcClient) {
+                const monitoringTarget = initialMonitoringTarget
+                    ?? await runtime.getMonitoringTarget(injectResult.cascadeId || currentCascadeId || null);
+                if (!monitoringTarget) {
                     await channel.send({ text: '❌ gRPC client unavailable — cannot monitor response.' }).catch(logger.error);
                     settle();
                     return;
                 }
-                const cascadeId = injectResult.cascadeId || currentCascadeId || await cdp.getActiveCascadeId();
+                const { grpcClient, cascadeId } = monitoringTarget;
 
                 const monitorConfig = {
                     onProcessLog: (logText: string) => {
@@ -504,6 +495,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                 const MAX_CLAW_DEPTH = 3;
                                 let currentText = finalOutputText;
                                 let clawDepth = 0;
+                                let activeCascadeId = injectResult.cascadeId
+                                    || deps.sessionStateStore?.getCurrentCascadeId(chatId)
+                                    || cascadeId;
 
                                 while (clawDepth < MAX_CLAW_DEPTH) {
                                     const clawResults = await deps.clawInterceptor.execute(currentText);
@@ -521,10 +515,11 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                     const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
 
                                     await new Promise(r => setTimeout(r, 2000));
-                                    const followUpCascadeId = deps.sessionStateStore?.getCurrentCascadeId(chatId) || cascadeId;
-                                    const ir = followUpCascadeId
-                                        ? await cdp.injectMessage(feedback, followUpCascadeId)
-                                        : await cdp.injectMessage(feedback);
+                                    const followUpResult = await runtime.sendPromptWithMonitoringTarget({
+                                        text: feedback,
+                                        overrideCascadeId: activeCascadeId || undefined,
+                                    });
+                                    const ir = followUpResult.injectResult;
                                     if (!ir.ok) {
                                         logger.error(`[TelegramHandler] Failed to inject @claw results: ${ir.error}`);
                                         break;
@@ -535,16 +530,17 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                                     logger.done(`[TelegramHandler] @claw results injected — awaiting follow-up (depth=${clawDepth + 1})...`);
 
-                                    const fuClient = await cdp.getGrpcClient();
-                                    const fuCascadeId = ir.cascadeId || (fuClient ? await cdp.getActiveCascadeId() : null);
-                                    if (!fuClient || !fuCascadeId) {
+                                    const followUpTarget = followUpResult.monitoringTarget
+                                        ?? await runtime.getMonitoringTarget(ir.cascadeId || activeCascadeId || null);
+                                    if (!followUpTarget) {
                                         logger.warn('[TelegramHandler] @claw follow-up: gRPC unavailable');
                                         break;
                                     }
+                                    activeCascadeId = followUpTarget.cascadeId;
                                     currentText = await new Promise<string>((resolve) => {
                                         const followUp = new GrpcResponseMonitor({
-                                            grpcClient: fuClient,
-                                            cascadeId: fuCascadeId,
+                                            grpcClient: followUpTarget.grpcClient,
+                                            cascadeId: followUpTarget.cascadeId,
                                             maxDurationMs: 300_000,
                                             expectedUserMessage: feedback,
                                             onComplete: async (text: string) => resolve(text?.trim() || ''),
@@ -744,23 +740,29 @@ function buildTelegramStatusText(options: {
         const breakIdx = tail.indexOf('\n');
         preview = '...' + (breakIdx > 0 ? tail.slice(breakIdx) : tail);
     }
-    const previewSection = preview ? `[streaming preview]\n${preview}` : '';
 
-    // Activity log fills remaining space after preview
-    const reservedChars = header.length + footer.length + previewSection.length + 100;
-    const remainingForLog = Math.max(0, MAX_LENGTH - reservedChars);
+    // Merge activity log + preview into a single linear output
+    const activityLog = options.activityLogText.trim();
+    const previewSnippet = preview ? `✍️ ${preview}` : '';
 
-    let activityLog = options.activityLogText.trim();
-    if (activityLog.length > remainingForLog) {
-        if (remainingForLog < 60) {
-            activityLog = '';  // No room — skip activity log entirely
+    // Combine: activity entries followed by streaming preview (all linear)
+    const combinedParts: string[] = [];
+    if (activityLog) combinedParts.push(activityLog);
+    if (previewSnippet) combinedParts.push(previewSnippet);
+    let combined = combinedParts.join('\n');
+
+    // Truncate combined if too long
+    const reservedChars = header.length + footer.length + 100;
+    const remainingForBody = Math.max(0, MAX_LENGTH - reservedChars);
+    if (combined.length > remainingForBody) {
+        if (remainingForBody < 60) {
+            combined = '';
         } else {
             const prefix = '...\n';
-            const tailLength = Math.max(0, remainingForLog - prefix.length);
-            activityLog = prefix + activityLog.slice(-tailLength);
+            const tailLength = Math.max(0, remainingForBody - prefix.length);
+            combined = prefix + combined.slice(-tailLength);
         }
     }
-    const activitySection = activityLog ? `[activity]\n${activityLog}` : '';
 
     const sections: string[] = [];
     if (stateBar) sections.push(stateBar);
@@ -768,8 +770,7 @@ function buildTelegramStatusText(options: {
     if (options.sessionLines && options.sessionLines.length > 0) {
         sections.push(options.sessionLines.join('\n'));
     }
-    if (activitySection) sections.push(activitySection);
-    if (previewSection) sections.push(previewSection);
+    if (combined) sections.push(combined);
     sections.push(footer);
 
     const body = sections.join('\n\n');
@@ -790,19 +791,19 @@ const passiveResponseMonitors = new Map<string, GrpcResponseMonitor>();
  */
 export async function handlePassiveUserMessage(
     channel: PlatformChannel,
-    cdp: CdpService,
-    projectName: string,
+    runtime: WorkspaceRuntime,
     info: UserMessageInfo,
     activeMonitors?: Map<string, GrpcResponseMonitor>,
     extractionMode?: ExtractionMode,
     clawInterceptor?: ClawCommandInterceptor,
 ): Promise<void> {
+    const projectName = runtime.getProjectName();
     // Forward the user message
     const preview = info.text.length > 200 ? info.text.slice(0, 200) + '…' : info.text;
     await channel.send({ text: `🖥️ ${preview}` }).catch(logger.error);
 
     // Start passive backend response monitor to capture the AI response
-    startPassiveResponseMonitor(channel, cdp, projectName, info, activeMonitors, extractionMode, clawInterceptor);
+    startPassiveResponseMonitor(channel, runtime, projectName, info, activeMonitors, extractionMode, clawInterceptor);
 }
 
 /**
@@ -812,7 +813,7 @@ export async function handlePassiveUserMessage(
  */
 async function startPassiveResponseMonitor(
     channel: PlatformChannel,
-    cdp: CdpService,
+    runtime: WorkspaceRuntime,
     projectName: string,
     info: UserMessageInfo,
     activeMonitors?: Map<string, GrpcResponseMonitor>,
@@ -890,7 +891,7 @@ async function startPassiveResponseMonitor(
     };
 
     // Prefetch session info
-    cdp.getActiveSessionInfo().then(async sessionInfo => {
+    runtime.getActiveSessionInfo().then(async sessionInfo => {
         if (sessionInfo) {
             const { buildSessionLines } = await import('../utils/streamMessageFormatter');
             sessionLines = buildSessionLines(sessionInfo.title, sessionInfo.summary);
@@ -905,8 +906,7 @@ async function startPassiveResponseMonitor(
         }
     };
 
-    const grpcClient = await cdp.getGrpcClient();
-    const cascadeId = info.cascadeId || (grpcClient ? await cdp.getActiveCascadeId() : null);
+    const initialMonitoringTarget = await runtime.getMonitoringTarget(info.cascadeId || null);
 
     const monitorConfig = {
         onProcessLog: (logText: string) => {
@@ -948,6 +948,7 @@ async function startPassiveResponseMonitor(
             let currentText = finalText;
             let clawDepth = 0;
             const MAX_CLAW_DEPTH = 3;
+            let activeCascadeId = initialMonitoringTarget?.cascadeId || info.cascadeId || null;
 
             while (clawDepth < MAX_CLAW_DEPTH) {
                 const clawResults = await clawInterceptor.execute(currentText);
@@ -966,20 +967,29 @@ async function startPassiveResponseMonitor(
                     await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
                 }
 
-                const ir = await cdp.injectMessage(feedback);
+                const followUpResult = await runtime.sendPromptWithMonitoringTarget({
+                    text: feedback,
+                    overrideCascadeId: activeCascadeId || undefined,
+                });
+                const ir = followUpResult.injectResult;
+                if (!ir.ok) {
+                    logger.warn(`[TelegramPassive] Failed to inject @claw results: ${ir.error}`);
+                    break;
+                }
                 logger.debug(`[TelegramPassive] Injected @claw results back to Antigravity (length: ${feedback.length})`);
 
-                const fuClient = await cdp.getGrpcClient();
-                const fuCascadeId = ir.cascadeId || (fuClient ? await cdp.getActiveCascadeId() : null);
-                if (!fuClient || !fuCascadeId) {
+                const followUpTarget = followUpResult.monitoringTarget
+                    ?? await runtime.getMonitoringTarget(ir.cascadeId || activeCascadeId || null);
+                if (!followUpTarget) {
                     logger.warn('[TelegramPassive] @claw follow-up: gRPC unavailable');
                     break;
                 }
+                activeCascadeId = followUpTarget.cascadeId;
 
                 const followUpPromise = new Promise<string>((resolve) => {
                     const followUpMonitor = new GrpcResponseMonitor({
-                        grpcClient: fuClient,
-                        cascadeId: fuCascadeId,
+                        grpcClient: followUpTarget.grpcClient,
+                        cascadeId: followUpTarget.cascadeId,
                         expectedUserMessage: feedback,
                         onComplete: (followUpText: string) => resolve(followUpText),
                         onTimeout: (lastText: string) => resolve(lastText || ''),
@@ -1052,13 +1062,13 @@ async function startPassiveResponseMonitor(
         },
     };
 
-    if (!grpcClient || !cascadeId) {
+    if (!initialMonitoringTarget) {
         logger.warn('[TelegramPassive] gRPC client or cascadeId unavailable — cannot start passive monitor');
         return;
     }
     const monitor = new GrpcResponseMonitor({
-        grpcClient,
-        cascadeId,
+        grpcClient: initialMonitoringTarget.grpcClient,
+        cascadeId: initialMonitoringTarget.cascadeId,
         maxDurationMs: 600_000,
         expectedUserMessage: info.text,
         ...monitorConfig

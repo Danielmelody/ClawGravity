@@ -4,6 +4,7 @@ import type { TelegramRecentMessageRepository } from '../database/telegramRecent
 import type { WorkspaceService } from '../services/workspaceService';
 import type { ChatSessionService, ConversationHistoryEntry } from '../services/chatSessionService';
 import type { CdpBridge } from '../services/cdpBridgeManager';
+import { ensureWorkspaceRuntime } from '../services/cdpBridgeManager';
 import { escapeHtml } from '../platform/telegram/telegramFormatter';
 import { logger } from '../utils/logger';
 
@@ -91,15 +92,16 @@ export async function handleTelegramJoinCommand(
         ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
         : binding.workspacePath;
 
-    let cdp;
+    let runtime;
     try {
-        cdp = await deps.bridge.pool.getOrConnect(workspacePath);
+        const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath);
+        runtime = prepared.runtime;
     } catch (err: any) {
         await message.reply({ text: `Failed to connect to project: ${escapeHtml(err?.message || 'unknown error')}` }).catch(logger.error);
         return;
     }
 
-    const sessions = await deps.chatSessionService.listAllSessions(cdp);
+    const sessions = await runtime.listAllSessions(deps.chatSessionService);
     if (sessions.length === 0) {
         await message.reply({ text: 'No history sessions found in the Antigravity side panel.' }).catch(logger.error);
         return;
@@ -142,9 +144,10 @@ export async function handleTelegramJoinSelect(
         ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
         : binding.workspacePath;
 
-    let cdp;
+    let runtime;
     try {
-        cdp = await deps.bridge.pool.getOrConnect(workspacePath);
+        const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath);
+        runtime = prepared.runtime;
     } catch (err: any) {
         await interaction.reply({
             text: `Failed to connect to project: ${escapeHtml(err?.message || 'unknown error')}`,
@@ -152,14 +155,14 @@ export async function handleTelegramJoinSelect(
         return;
     }
 
-    const sessions = await deps.chatSessionService.listAllSessions(cdp);
+    const sessions = await runtime.listAllSessions(deps.chatSessionService);
     const selectedSession = sessions.find(s => s.title === selectedTitle);
     const cascadeId = selectedSession?.cascadeId || '';
 
     deps.sessionStateStore.setSelectedSession(chatId, selectedTitle, cascadeId);
 
     if (cascadeId) {
-        cdp.setCachedCascadeId(cascadeId);
+        await runtime.setActiveCascade(cascadeId);
     }
 
     await interaction.update({
@@ -167,7 +170,7 @@ export async function handleTelegramJoinSelect(
         components: [],
     }).catch(logger.error);
 
-    const history = await deps.chatSessionService.getConversationHistory(cdp, {
+    const history = await runtime.getConversationHistory(deps.chatSessionService, {
         maxMessages: 500,
         maxScrollSteps: 40,
     });

@@ -61,11 +61,7 @@ import { ScheduleService } from '../services/scheduleService';
 import {
     buildApprovalCustomId,
     CdpBridge,
-    ensureApprovalDetector,
-    ensureErrorPopupDetector,
-    ensurePlanningDetector,
-    ensureRunCommandDetector,
-    ensureUserMessageDetector,
+    ensureWorkspaceRuntime,
     getCurrentCdp,
     initCdpBridge,
     parseApprovalCustomId,
@@ -102,6 +98,7 @@ import { TelegramAdapter } from '../platform/telegram/telegramAdapter';
 import { TelegramBindingRepository } from '../database/telegramBindingRepository';
 import { TelegramRecentMessageRepository } from '../database/telegramRecentMessageRepository';
 import { TelegramMessageTracker } from '../services/telegramMessageTracker';
+import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 import { createTelegramMessageHandler, handlePassiveUserMessage } from './telegramMessageHandler';
 import { wrapTelegramChannel } from '../platform/telegram/wrappers';
 import { createTelegramSelectHandler } from './telegramProjectCommand';
@@ -192,8 +189,11 @@ async function restoreDiscordSessionsOnStartup(
 
         try {
             const resolvedWorkspacePath = workspaceService.getWorkspacePath(binding.workspacePath);
-            const cdp = await bridge.pool.getOrConnect(resolvedWorkspacePath);
-            const projectName = bridge.pool.extractProjectName(resolvedWorkspacePath);
+            const prepared = await ensureWorkspaceRuntime(bridge, resolvedWorkspacePath, {
+                enableActionDetectors: true,
+            });
+            const runtime = prepared.runtime;
+            const projectName = prepared.projectName;
             const channelManager = (client.channels as any);
             const discordChannel = channelManager?.fetch
                 ? await channelManager.fetch(session.channelId).catch(() => null)
@@ -210,12 +210,7 @@ async function restoreDiscordSessionsOnStartup(
             registerApprovalWorkspaceChannel(bridge, projectName, platformChannel);
             registerApprovalSessionChannel(bridge, projectName, session.displayName, platformChannel);
 
-            ensureApprovalDetector(bridge, cdp, projectName);
-            ensureErrorPopupDetector(bridge, cdp, projectName);
-            ensurePlanningDetector(bridge, cdp, projectName);
-            ensureRunCommandDetector(bridge, cdp, projectName);
-
-            const activationResult = await chatSessionService.activateSessionByTitle(cdp, session.displayName);
+            const activationResult = await runtime.activateSessionByTitle(chatSessionService, session.displayName);
             if (!activationResult.ok) {
                 logger.warn(
                     `[StartupRestore] Failed to restore session "${session.displayName}" for ${binding.workspacePath}: ` +
@@ -1361,8 +1356,9 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
     const scheduleJobCallback = async (schedule: ScheduleRecord) => {
         logger.info(`[ScheduleJob] Firing schedule #${schedule.id}: "${schedule.prompt.slice(0, 80)}..." → claw-workspace=${clawWorkspacePath}`);
         try {
-            const cdp = await bridge.pool.getOrConnect(clawWorkspacePath);
-            const projectName = bridge.pool.extractProjectName(clawWorkspacePath);
+            const prepared = await ensureWorkspaceRuntime(bridge, clawWorkspacePath);
+            const cdp = prepared.cdp;
+            const projectName = prepared.projectName;
 
             // Safety check: is the claw workspace currently generating from a previous task?
             const busy = await isAntigravityBusy(cdp);
@@ -1382,7 +1378,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             bridge.lastActiveWorkspace = projectName;
 
             // Open a new Antigravity session for this task
-            const newChatResult = await chatSessionService.startNewChat(cdp);
+            const newChatResult = await prepared.runtime.startNewChat(chatSessionService);
             if (newChatResult.ok) {
                 logger.debug(`[ScheduleJob] Schedule #${schedule.id}: New session opened`);
                 await new Promise(r => setTimeout(r, 1500));
@@ -1390,7 +1386,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Could not open new session: ${newChatResult.error}`);
             }
 
-            const injectResult = await cdp.injectMessage(schedule.prompt);
+            const injectResult = await prepared.runtime.sendPrompt({ text: schedule.prompt });
             if (!injectResult.ok) {
                 logger.error(`[ScheduleJob] Schedule #${schedule.id} inject failed: ${injectResult.error}`);
                 return;
@@ -1398,9 +1394,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
             logger.done(`[ScheduleJob] Schedule #${schedule.id} prompt injected — monitoring response...`);
 
-            const grpcClient = await cdp.getGrpcClient();
-            const cascadeId = injectResult.cascadeId || (grpcClient ? await cdp.getActiveCascadeId() : null);
-            if (!grpcClient || !cascadeId) {
+            const monitoringTarget = await prepared.runtime.getMonitoringTarget(injectResult.cascadeId);
+            if (!monitoringTarget) {
                 logger.error(`[ScheduleJob] Schedule #${schedule.id}: gRPC monitor unavailable`);
                 if (telegramNotify) {
                     await (telegramNotify as (text: string) => Promise<void>)(
@@ -1412,8 +1407,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
             // Monitor the AI response and relay to Telegram
             const monitor = new GrpcResponseMonitor({
-                grpcClient,
-                cascadeId,
+                grpcClient: monitoringTarget.grpcClient,
+                cascadeId: monitoringTarget.cascadeId,
                 maxDurationMs: 300_000,
                 onComplete: async (finalText) => {
                     let outputText = finalText?.trim() || '';
@@ -1459,7 +1454,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
 
                         await new Promise(r => setTimeout(r, 2000));
-                        const injectResult = await cdp.injectMessage(feedback);
+                        const injectResult = await prepared.runtime.sendPrompt({ text: feedback });
                         if (!injectResult.ok) {
                             logger.error(`[ScheduleJob] Failed to inject @claw results: ${injectResult.error}`);
                             break;
@@ -1468,17 +1463,16 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         logger.done(`[ScheduleJob] @claw results injected — awaiting follow-up (depth=${clawDepth + 1})...`);
 
                         // Wait for the follow-up AI response
-                        const followUpGrpcClient = await cdp.getGrpcClient();
-                        const followUpCascadeId = injectResult.cascadeId || (followUpGrpcClient ? await cdp.getActiveCascadeId() : null);
-                        if (!followUpGrpcClient || !followUpCascadeId) {
+                        const followUpTarget = await prepared.runtime.getMonitoringTarget(injectResult.cascadeId);
+                        if (!followUpTarget) {
                             logger.error(`[ScheduleJob] Schedule #${schedule.id}: gRPC monitor unavailable for @claw follow-up`);
                             break;
                         }
 
                         outputText = await new Promise<string>((resolve) => {
                             const followUp = new GrpcResponseMonitor({
-                                grpcClient: followUpGrpcClient,
-                                cascadeId: followUpCascadeId,
+                                grpcClient: followUpTarget.grpcClient,
+                                cascadeId: followUpTarget.cascadeId,
                                 maxDurationMs: 300_000,
                                 onComplete: async (text) => resolve(text?.trim() || ''),
                                 onTimeout: async () => {
@@ -1536,8 +1530,9 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         onAgentResponse: async (fromAgent: string, summary: string, outputPath: string) => {
             // Inject the concise summary back to the parent agent (context-safe)
             try {
-                const senderCdp = getCurrentCdp(bridge);
-                if (senderCdp) {
+                const activeWorkspace = bridge.lastActiveWorkspace;
+                if (activeWorkspace) {
+                    const runtime = bridge.pool.getOrCreateRuntime(workspaceService.getWorkspacePath(activeWorkspace));
                     const notification = [
                         `[Sub-Agent Result from: ${fromAgent}]`,
                         '',
@@ -1546,7 +1541,10 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         outputPath ? `Full output saved to: ${outputPath}` : '',
                     ].filter(Boolean).join('\n');
 
-                    await senderCdp.injectMessage(notification);
+                    const injectResult = await runtime.sendPrompt({ text: notification });
+                    if (!injectResult.ok) {
+                        throw new Error(injectResult.error || 'unknown injection error');
+                    }
                     logger.done(`[Claw] Injected sub-agent summary from "${fromAgent}" (${summary.length} chars)`);
                 } else {
                     logger.warn(`[Claw] Cannot inject sub-agent result from "${fromAgent}": no active CDP connection`);
@@ -1599,7 +1597,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     let cdpMode: string | null = null;
                     if (projects.length > 0) {
                         try {
-                            const cdp = await bridge.pool.getOrConnect(projects[0]);
+                            const prepared = await ensureWorkspaceRuntime(bridge, projects[0]);
+                            const cdp = prepared.cdp;
                             cdpModel = await cdp.getCurrentModel();
                             cdpMode = await cdp.getCurrentMode();
                         } catch (e) {
@@ -1735,8 +1734,11 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     let cdp: CdpService | null = null;
                     if (workspacePath) {
                         try {
-                            cdp = await bridge.pool.getOrConnect(workspacePath);
-                            const projectName = bridge.pool.extractProjectName(workspacePath);
+                            const prepared = await ensureWorkspaceRuntime(bridge, workspacePath, {
+                                enableActionDetectors: true,
+                            });
+                            cdp = prepared.cdp;
+                            const projectName = prepared.projectName;
                             bridge.lastActiveWorkspace = projectName;
                             const platformCh = wrapDiscordChannel(interaction.channel as any);
                             bridge.lastActiveChannel = platformCh;
@@ -1745,10 +1747,6 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                             if (session?.displayName) {
                                 registerApprovalSessionChannel(bridge, projectName, session.displayName, platformCh);
                             }
-                            ensureApprovalDetector(bridge, cdp, projectName);
-                            ensureErrorPopupDetector(bridge, cdp, projectName);
-                            ensurePlanningDetector(bridge, cdp, projectName);
-                            ensureRunCommandDetector(bridge, cdp, projectName);
                         } catch (e: any) {
                             await interaction.followUp({
                                 content: `Failed to connect to workspace: ${e.message}`,
@@ -2011,7 +2009,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 let tgCdpMode: string | null = null;
 
                 try {
-                    const cdp = await bridge.pool.getOrConnect(clawWorkspacePath);
+                    const prepared = await ensureWorkspaceRuntime(bridge, clawWorkspacePath);
+                    const cdp = prepared.cdp;
                     tgCdpModel = await cdp.getCurrentModel();
                     tgCdpMode = await cdp.getCurrentMode();
                 } catch (e) {
@@ -2076,16 +2075,18 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 for (const binding of bindings) {
                     try {
                         const bWorkspacePath = workspaceService.getWorkspacePath(binding.workspacePath);
-                        const cdp = await bridge.pool.getOrConnect(bWorkspacePath);
-                        const bProjectName = bridge.pool.extractProjectName(bWorkspacePath);
                         const tgChannel = wrapTelegramChannel(telegramBot.api as any, binding.chatId, (data: Buffer, filename?: string) => new InputFile(data, filename));
-
-                        // Start the UserMessageDetector with passive notification callback
-                        ensureUserMessageDetector(bridge, cdp, bProjectName, (info) => {
-                            handlePassiveUserMessage(tgChannel, cdp, bProjectName, info, activeMonitors, config.extractionMode)
-                                .catch((err: any) => logger.error('[TelegramPassive:Startup] Error handling PC message:', err?.message || err));
+                        let startupRuntime: WorkspaceRuntime | null = null;
+                        const prepared = await ensureWorkspaceRuntime(bridge, bWorkspacePath, {
+                            userMessageSinkKey: `telegram:${binding.chatId}`,
+                            onUserMessage: (info) => {
+                                if (!startupRuntime) return;
+                                handlePassiveUserMessage(tgChannel, startupRuntime, info, activeMonitors, config.extractionMode)
+                                    .catch((err: any) => logger.error('[TelegramPassive:Startup] Error handling PC message:', err?.message || err));
+                            },
                         });
-                        logger.info(`[TelegramPassive] Eager mirroring started for ${bProjectName} → chat ${binding.chatId}`);
+                        startupRuntime = prepared.runtime;
+                        logger.info(`[TelegramPassive] Eager mirroring started for ${prepared.projectName} → chat ${binding.chatId}`);
                     } catch (e: any) {
                         logger.warn(`[TelegramPassive] Failed to start eager mirroring for ${binding.workspacePath}: ${e?.message || e}`);
                     }

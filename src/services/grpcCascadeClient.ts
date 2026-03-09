@@ -85,6 +85,7 @@ export class GrpcCascadeClient extends EventEmitter {
     private connection: LSConnection | null = null;
     private agent: https.Agent;
     private httpAgent: http.Agent;
+    private lastOperationError: string | null = null;
 
     constructor() {
         super();
@@ -107,6 +108,10 @@ export class GrpcCascadeClient extends EventEmitter {
         return this.connection !== null;
     }
 
+    getLastOperationError(): string | null {
+        return this.lastOperationError;
+    }
+
     /**
      * Create a new headless cascade and optionally send a message.
      *
@@ -115,22 +120,36 @@ export class GrpcCascadeClient extends EventEmitter {
      * @returns cascadeId or null
      */
     async createCascade(text?: string, model?: ModelId): Promise<string | null> {
-        const startResp = await this.rpc('StartCascade', { source: 0 });
+        this.lastOperationError = null;
+
+        let startResp: any;
+        try {
+            startResp = await this.rpc('StartCascade', { source: 0 });
+        } catch (err: any) {
+            this.lastOperationError = err?.message || String(err);
+            logger.error(`[GrpcCascadeClient] StartCascade failed: ${this.lastOperationError}`);
+            return null;
+        }
+
         const cascadeId = startResp?.cascadeId;
         if (!cascadeId) {
+            this.lastOperationError = 'StartCascade returned no cascadeId';
             logger.error('[GrpcCascadeClient] StartCascade returned no cascadeId');
             return null;
         }
+
         logger.info(`[GrpcCascadeClient] Cascade created: ${cascadeId}`);
 
         if (text) {
             const sendResult = await this.sendMessage(cascadeId, text, model);
             if (!sendResult.ok) {
+                this.lastOperationError = sendResult.error || 'Initial send failed';
                 logger.warn(`[GrpcCascadeClient] Initial send failed for cascade ${cascadeId}: ${sendResult.error}`);
                 return null;
             }
         }
 
+        this.lastOperationError = null;
         return cascadeId;
     }
 
@@ -169,9 +188,11 @@ export class GrpcCascadeClient extends EventEmitter {
 
         try {
             const result = await this.rpc('SendUserCascadeMessage', payload);
+            this.lastOperationError = null;
             return { ok: true, data: result };
         } catch (err: any) {
-            return { ok: false, error: err.message || String(err) };
+            this.lastOperationError = err.message || String(err);
+            return { ok: false, error: this.lastOperationError || undefined };
         }
     }
 
@@ -599,14 +620,72 @@ export async function discoverLSConnection(workspaceHint?: string): Promise<LSCo
 }
 
 /**
- * Phase 1: Find the Language Server process and extract CLI args.
+ * Discover ALL LS connections when multiple Antigravity instances are running.
+ *
+ * When multiple LS processes exist (multi-workspace), the caller should probe
+ * each connection to determine which one belongs to the desired workspace.
+ * This avoids the fallback-to-first-process problem in `discoverLSConnection`.
+ *
+ * @returns Array of candidate connections (may be empty)
  */
-async function findLSProcess(
-    platform: string,
-    workspaceHint?: string,
-): Promise<{ pid: number; csrfToken: string; extPort: number } | null> {
-    let output: string;
+export async function discoverAllLSConnections(): Promise<LSConnection[]> {
+    try {
+        const platform = process.platform;
+        const allProcesses = await findAllLSProcesses(platform);
+        if (allProcesses.length === 0) {
+            logger.debug('[GrpcDiscovery] No LS processes found');
+            return [];
+        }
 
+        logger.debug(`[GrpcDiscovery] Found ${allProcesses.length} LS processes`);
+
+        const connections: LSConnection[] = [];
+        for (const proc of allProcesses) {
+            const connectPort = await findConnectPort(platform, proc.pid, proc.extPort);
+            if (connectPort) {
+                connections.push({
+                    port: connectPort.port,
+                    csrfToken: proc.csrfToken,
+                    useTls: connectPort.tls,
+                });
+            }
+        }
+
+        logger.debug(`[GrpcDiscovery] Resolved ${connections.length} candidate connections from ${allProcesses.length} processes`);
+        return connections;
+    } catch (err: any) {
+        logger.debug(`[GrpcDiscovery] Multi-discovery failed: ${err.message}`);
+        return [];
+    }
+}
+
+/**
+ * Shared parser: extract {pid, csrfToken, extPort} from a process command line.
+ */
+function parseLSProcessLine(
+    platform: string,
+    line: string,
+): { pid: number; csrfToken: string; extPort: number } | null {
+    let pid: number;
+    if (platform === 'win32') {
+        pid = parseInt(line.split('|')[0].trim(), 10);
+    } else {
+        pid = parseInt(line.trim().split(/\s+/)[0], 10);
+    }
+
+    const csrfToken = extractArg(line, 'csrf_token');
+    const extPortStr = extractArg(line, 'extension_server_port');
+    const extPort = extPortStr ? parseInt(extPortStr, 10) : 0;
+
+    if (!csrfToken || isNaN(pid)) return null;
+    return { pid, csrfToken, extPort };
+}
+
+/**
+ * Get raw output lines from LS process enumeration.
+ */
+async function getLSProcessLines(platform: string): Promise<string[]> {
+    let output: string;
     try {
         if (platform === 'win32') {
             const psScript = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'language_server' -and $_.CommandLine -match 'csrf_token' } | ForEach-Object { $_.ProcessId.ToString() + '|' + $_.CommandLine }";
@@ -624,10 +703,19 @@ async function findLSProcess(
             output = result.stdout;
         }
     } catch {
-        return null;
+        return [];
     }
+    return output.split('\n').filter(l => l.trim().length > 0);
+}
 
-    const lines = output.split('\n').filter(l => l.trim().length > 0);
+/**
+ * Phase 1: Find the Language Server process and extract CLI args.
+ */
+async function findLSProcess(
+    platform: string,
+    workspaceHint?: string,
+): Promise<{ pid: number; csrfToken: string; extPort: number } | null> {
+    const lines = await getLSProcessLines(platform);
     if (lines.length === 0) return null;
 
     // Pick the best line (matching workspace if possible)
@@ -642,21 +730,22 @@ async function findLSProcess(
     }
     if (!bestLine) bestLine = lines[0];
 
-    // Extract PID
-    let pid: number;
-    if (platform === 'win32') {
-        pid = parseInt(bestLine.split('|')[0].trim(), 10);
-    } else {
-        pid = parseInt(bestLine.trim().split(/\s+/)[0], 10);
+    return parseLSProcessLine(platform, bestLine);
+}
+
+/**
+ * Find ALL Language Server processes (for multi-workspace support).
+ */
+async function findAllLSProcesses(
+    platform: string,
+): Promise<{ pid: number; csrfToken: string; extPort: number }[]> {
+    const lines = await getLSProcessLines(platform);
+    const results: { pid: number; csrfToken: string; extPort: number }[] = [];
+    for (const line of lines) {
+        const parsed = parseLSProcessLine(platform, line);
+        if (parsed) results.push(parsed);
     }
-
-    const csrfToken = extractArg(bestLine, 'csrf_token');
-    const extPortStr = extractArg(bestLine, 'extension_server_port');
-    const extPort = extPortStr ? parseInt(extPortStr, 10) : 0;
-
-    if (!csrfToken || isNaN(pid)) return null;
-
-    return { pid, csrfToken, extPort };
+    return results;
 }
 
 /**

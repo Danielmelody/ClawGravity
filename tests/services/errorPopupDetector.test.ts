@@ -1,8 +1,8 @@
 /**
  * ErrorPopupDetector test — gRPC trajectory-based detection.
  *
- * The source was refactored from CDP DOM detection to gRPC trajectory polling.
- * Tests mock the gRPC client to simulate error trajectories.
+ * The detector is now passive: evaluate() is called by TrajectoryStreamRouter
+ * with trajectory data. Tests feed data directly via evaluate().
  */
 
 import { ErrorPopupDetector, ErrorPopupDetectorOptions, ErrorPopupInfo } from '../../src/services/errorPopupDetector';
@@ -13,28 +13,11 @@ const MockedCdpService = CdpService as jest.MockedClass<typeof CdpService>;
 
 describe('ErrorPopupDetector', () => {
     let mockCdpService: jest.Mocked<CdpService>;
-    let mockGrpcClient: { rawRPC: jest.Mock };
 
     beforeEach(() => {
-        jest.useFakeTimers({ doNotFake: ['setImmediate'] });
         mockCdpService = new MockedCdpService() as jest.Mocked<CdpService>;
-        mockGrpcClient = { rawRPC: jest.fn() };
-        (mockCdpService as any).getGrpcClient = jest.fn().mockResolvedValue(mockGrpcClient);
-        (mockCdpService as any).getActiveCascadeId = jest.fn().mockResolvedValue('cascade-1');
         (mockCdpService as any).executeVscodeCommand = jest.fn().mockResolvedValue({ ok: true });
     });
-
-    afterEach(() => {
-        jest.useRealTimers();
-    });
-
-    /** Flush all pending microtasks and timers to let async poll() complete */
-    async function flushPromises() {
-        // Use real setImmediate to let the promise chain fully drain
-        for (let i = 0; i < 10; i++) {
-            await new Promise(resolve => setImmediate(resolve));
-        }
-    }
 
     function createDetector(overrides: Partial<ErrorPopupDetectorOptions> = {}): {
         detector: ErrorPopupDetector;
@@ -45,7 +28,6 @@ describe('ErrorPopupDetector', () => {
         const onResolved = jest.fn();
         const detector = new ErrorPopupDetector({
             cdpService: mockCdpService,
-            pollIntervalMs: 100,
             onErrorPopup,
             onResolved,
             ...overrides,
@@ -53,24 +35,13 @@ describe('ErrorPopupDetector', () => {
         return { detector, onErrorPopup, onResolved };
     }
 
-    function makeTrajectory(steps: any[], status?: string) {
-        return {
-            trajectory: {
-                steps,
-                cascadeRunStatus: status || 'CASCADE_RUN_STATUS_IDLE',
-            },
-        };
-    }
+    const IDLE = 'CASCADE_RUN_STATUS_IDLE';
 
-    it('calls the onErrorPopup callback when an error step is detected', async () => {
-        mockGrpcClient.rawRPC.mockResolvedValue(
-            makeTrajectory([{ error: 'Something went wrong badly' }]),
-        );
-
+    it('calls the onErrorPopup callback when an error step is detected', () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+
+        detector.evaluate('cascade-1', [{ error: 'Something went wrong badly' }], IDLE);
 
         expect(onErrorPopup).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -78,130 +49,74 @@ describe('ErrorPopupDetector', () => {
                 body: expect.stringContaining('Something went wrong badly'),
             }),
         );
-
-        await detector.stop();
     });
 
-    it('does not call the callback multiple times when the same error is detected consecutively', async () => {
-        mockGrpcClient.rawRPC.mockResolvedValue(
-            makeTrajectory([{ error: 'Repeated error message' }]),
-        );
-
+    it('does not call the callback multiple times when the same error is detected consecutively', () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
 
-        // First poll
-        jest.advanceTimersByTime(200);
-        await flushPromises();
-        // Second poll with same error
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+        detector.evaluate('cascade-1', [{ error: 'Repeated error message' }], IDLE);
+        detector.evaluate('cascade-1', [{ error: 'Repeated error message' }], IDLE);
 
         expect(onErrorPopup).toHaveBeenCalledTimes(1);
-        await detector.stop();
     });
 
-    it('stops polling and no longer calls the callback after stop()', async () => {
-        mockGrpcClient.rawRPC.mockResolvedValue(
-            makeTrajectory([{ error: 'Error after stop' }]),
-        );
-
+    it('does not invoke callback after stop()', async () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
         await detector.stop();
 
-        jest.advanceTimersByTime(500);
-        await flushPromises();
+        detector.evaluate('cascade-1', [{ error: 'Error after stop' }], IDLE);
 
         expect(onErrorPopup).not.toHaveBeenCalled();
     });
 
-    it('continues monitoring even when a gRPC error occurs', async () => {
-        let callCount = 0;
-        mockGrpcClient.rawRPC.mockImplementation(async () => {
-            callCount++;
-            if (callCount === 1) throw new Error('Transient gRPC error');
-            return makeTrajectory([{ error: 'Real error after recovery' }]);
-        });
-
+    it('continues working even when evaluate data varies', () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
 
-        // First poll — throws
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+        // First call with no error
+        detector.evaluate('cascade-1', [], IDLE);
         expect(onErrorPopup).not.toHaveBeenCalled();
 
-        // Second poll — succeeds with error
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+        // Second call with error
+        detector.evaluate('cascade-1', [{ error: 'Real error after recovery' }], IDLE);
         expect(onErrorPopup).toHaveBeenCalled();
-
-        await detector.stop();
     });
 
-    it('getLastDetectedInfo() returns the detected ErrorPopupInfo', async () => {
-        mockGrpcClient.rawRPC.mockResolvedValue(
-            makeTrajectory([{ plannerResponse: { error: 'Test error' } }]),
-        );
-
+    it('getLastDetectedInfo() returns the detected ErrorPopupInfo', () => {
         const { detector } = createDetector();
         detector.start();
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+
+        detector.evaluate('cascade-1', [{ plannerResponse: { error: 'Test error' } }], IDLE);
 
         const info = detector.getLastDetectedInfo();
         expect(info).not.toBeNull();
         expect(info?.title).toBe('Agent Error');
-
-        await detector.stop();
     });
 
-    it('getLastDetectedInfo() returns null when error disappears', async () => {
-        let hasError = true;
-        mockGrpcClient.rawRPC.mockImplementation(async () => {
-            if (hasError) {
-                return makeTrajectory([{ error: 'Transient' }]);
-            }
-            return makeTrajectory([{ type: 'CORTEX_STEP_TYPE_USER_INPUT' }]);
-        });
-
+    it('getLastDetectedInfo() returns null when error disappears', () => {
         const { detector } = createDetector();
         detector.start();
 
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+        detector.evaluate('cascade-1', [{ error: 'Transient' }], IDLE);
         expect(detector.getLastDetectedInfo()).not.toBeNull();
 
-        hasError = false;
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+        // Error resolved
+        detector.evaluate('cascade-1', [{ type: 'CORTEX_STEP_TYPE_USER_INPUT' }], IDLE);
         expect(detector.getLastDetectedInfo()).toBeNull();
-
-        await detector.stop();
     });
 
-    it('calls onResolved when error state disappears', async () => {
-        let hasError = true;
-        mockGrpcClient.rawRPC.mockImplementation(async () => {
-            if (hasError) {
-                return makeTrajectory([{ error: 'Will resolve' }]);
-            }
-            return makeTrajectory([]);
-        });
-
+    it('calls onResolved when error state disappears', () => {
         const { detector, onResolved } = createDetector();
         detector.start();
 
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+        detector.evaluate('cascade-1', [{ error: 'Will resolve' }], IDLE);
 
-        hasError = false;
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+        // Error resolved
+        detector.evaluate('cascade-1', [], IDLE);
 
         expect(onResolved).toHaveBeenCalled();
-        await detector.stop();
     });
 
     it('clickRetryButton() executes VS Code command', async () => {
@@ -229,24 +144,20 @@ describe('ErrorPopupDetector', () => {
         expect(result).toBeNull();
     });
 
-    it('detects error patterns in response text when IDLE', async () => {
-        mockGrpcClient.rawRPC.mockResolvedValue(
-            makeTrajectory(
-                [{ plannerResponse: { response: 'Agent terminated due to an error.' } }],
-                'CASCADE_RUN_STATUS_IDLE',
-            ),
-        );
-
+    it('detects error patterns in response text when IDLE', () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
-        jest.advanceTimersByTime(200);
-        await flushPromises();
+
+        detector.evaluate(
+            'cascade-1',
+            [{ plannerResponse: { response: 'Agent terminated due to an error.' } }],
+            IDLE,
+        );
 
         expect(onErrorPopup).toHaveBeenCalledWith(
             expect.objectContaining({
                 title: 'Agent Error',
             }),
         );
-        await detector.stop();
     });
 });

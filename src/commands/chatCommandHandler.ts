@@ -84,10 +84,11 @@ export class ChatCommandHandler {
         const workspacePath = this.workspaceService.getWorkspacePath(workspaceName);
 
         // Switch project (connect to the correct workbench page)
-        let workspaceCdp;
+        let runtime;
         if (this.pool) {
             try {
-                workspaceCdp = await this.pool.getOrConnect(workspacePath);
+                runtime = this.pool.getOrCreateRuntime(workspacePath);
+                await runtime.ready();
             } catch (e: any) {
                 await interaction.editReply({
                     content: t(`⚠️ Failed to switch project: ${e.message}`),
@@ -96,7 +97,7 @@ export class ChatCommandHandler {
             }
         }
 
-        if (!workspaceCdp) {
+        if (!runtime) {
             await interaction.editReply({
                 content: t('⚠️ CDP pool is not initialized or cannot connect to workspace.'),
             });
@@ -156,10 +157,10 @@ export class ChatCommandHandler {
 
         const workspacePath = this.workspaceService.getWorkspacePath(workspaceName);
 
-        let workspaceCdp;
+        let runtime;
         if (this.pool) {
             try {
-                workspaceCdp = await this.pool.getOrConnect(workspacePath);
+                runtime = this.pool.getOrCreateRuntime(workspacePath);
             } catch (e: any) {
                 await interaction.editReply({
                     content: t(`⚠️ Failed to connect: ${e.message}`),
@@ -168,7 +169,7 @@ export class ChatCommandHandler {
             }
         }
 
-        if (!workspaceCdp) {
+        if (!runtime) {
             await interaction.editReply({
                 content: t('⚠️ CDP pool is not initialized or cannot connect to workspace.'),
             });
@@ -176,7 +177,7 @@ export class ChatCommandHandler {
         }
 
         try {
-            const result = await this.chatSessionService.startNewChat(workspaceCdp);
+            const result = await runtime.startNewChat(this.chatSessionService);
             if (result.ok) {
                 const embed = new EmbedBuilder()
                     .setTitle(t('🗑️ History Cleared'))

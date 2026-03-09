@@ -56,6 +56,9 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
         jest.spyOn(service as any, 'call').mockResolvedValue({ result: { value: '' } });
         // Mock probeWorkbenchPages to return false (no existing pages match)
         jest.spyOn(service as any, 'probeWorkbenchPages').mockResolvedValue(false);
+
+        // Clear static launch cooldown timestamps to prevent cross-test interference
+        CdpService.clearLaunchCooldowns();
     });
 
     afterEach(() => {

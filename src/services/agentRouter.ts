@@ -3,9 +3,9 @@ import * as path from 'path';
 import { logger } from '../utils/logger';
 import type { ExtractionMode } from '../utils/config';
 import { CdpConnectionPool } from './cdpConnectionPool';
-import { CdpService } from './cdpService';
 import { ChatSessionService } from './chatSessionService';
 import { GrpcResponseMonitor } from './grpcResponseMonitor';
+import { WorkspaceRuntime } from './workspaceRuntime';
 import { WorkspaceService } from './workspaceService';
 
 /**
@@ -121,9 +121,10 @@ export class AgentRouter {
         }
 
         // 2. Connect to the sub-agent's Antigravity instance
-        let cdp: CdpService;
+        let runtime: WorkspaceRuntime;
         try {
-            cdp = await this.pool.getOrConnect(targetPath);
+            runtime = this.pool.getOrCreateRuntime(targetPath);
+            await runtime.ready();
         } catch (err: any) {
             return {
                 ok: false,
@@ -133,7 +134,7 @@ export class AgentRouter {
 
         // 3. Isolate: open a new chat session
         try {
-            const newChat = await this.chatSessionService.startNewChat(cdp);
+            const newChat = await runtime.startNewChat(this.chatSessionService);
             if (newChat.ok) {
                 logger.debug(`[AgentRouter] New session opened on "${targetAgent}"`);
                 await new Promise(r => setTimeout(r, 1500));
@@ -148,7 +149,7 @@ export class AgentRouter {
         const prompt = this.buildTaskPrompt(parentAgent, taskDescription);
 
         // 5. Inject into sub-agent
-        const injectResult = await cdp.injectMessage(prompt);
+        const injectResult = await runtime.sendPrompt({ text: prompt });
         if (!injectResult.ok) {
             return { ok: false, error: `Failed to inject task into "${targetAgent}": ${injectResult.error}` };
         }
@@ -157,7 +158,7 @@ export class AgentRouter {
 
         // 6. Wait for response, extract summary, save full output
         try {
-            const fullResponse = await this.waitForResponse(cdp, prompt);
+            const fullResponse = await this.waitForResponse(runtime, prompt, injectResult.cascadeId);
             if (!fullResponse) {
                 return { ok: false, error: `Sub-agent "${targetAgent}" returned an empty response` };
             }
@@ -251,10 +252,13 @@ export class AgentRouter {
     /**
      * Wait for the sub-agent to complete its response.
      */
-    private async waitForResponse(cdp: CdpService, expectedUserMessage?: string): Promise<string | null> {
-        const grpcClient = await cdp.getGrpcClient();
-        const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
-        if (!grpcClient || !cascadeId) {
+    private async waitForResponse(
+        runtime: WorkspaceRuntime,
+        expectedUserMessage?: string,
+        preferredCascadeId?: string,
+    ): Promise<string | null> {
+        const target = await runtime.getMonitoringTarget(preferredCascadeId);
+        if (!target) {
             throw new Error('gRPC monitor unavailable for sub-agent response');
         }
 
@@ -268,8 +272,8 @@ export class AgentRouter {
             };
 
             const monitor = new GrpcResponseMonitor({
-                grpcClient,
-                cascadeId,
+                grpcClient: target.grpcClient,
+                cascadeId: target.cascadeId,
                 maxDurationMs: this.responseTimeoutMs,
                 expectedUserMessage,
                 ...monitorConfig

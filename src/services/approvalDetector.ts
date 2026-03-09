@@ -14,10 +14,8 @@ export interface ApprovalInfo {
 }
 
 export interface ApprovalDetectorOptions {
-    /** CDP service instance (used only for gRPC client access and VS Code commands) */
+    /** CDP service instance (used only for VS Code commands) */
     cdpService: CdpService;
-    /** Poll interval in milliseconds (default: 2000ms) */
-    pollIntervalMs?: number;
     /** Callback when an approval button is detected */
     onApprovalRequired: (info: ApprovalInfo) => void;
     /** Callback when a previously detected approval is resolved (buttons disappeared) */
@@ -25,21 +23,22 @@ export interface ApprovalDetectorOptions {
 }
 
 /**
- * Class that detects approval-pending state via gRPC trajectory polling.
+ * Detects approval-pending state from cascade trajectory data.
  *
  * Zero DOM operations — detection is based on cascade trajectory status:
  * When the cascade has status=IDLE and the latest assistant step contains
  * tool calls, the agent is waiting for user approval.
  *
+ * This detector is passive: it does not poll. Call `evaluate()` to feed
+ * it trajectory data from the TrajectoryStreamRouter.
+ *
  * Actions (approve/deny) are performed via VS Code extension commands.
  */
 export class ApprovalDetector {
     private cdpService: CdpService;
-    private pollIntervalMs: number;
     private onApprovalRequired: (info: ApprovalInfo) => void;
     private onResolved?: () => void;
 
-    private pollTimer: NodeJS.Timeout | null = null;
     private isRunning: boolean = false;
     /** Key of the last detected approval state (for duplicate notification prevention) */
     private lastDetectedKey: string | null = null;
@@ -52,13 +51,12 @@ export class ApprovalDetector {
 
     constructor(options: ApprovalDetectorOptions) {
         this.cdpService = options.cdpService;
-        this.pollIntervalMs = options.pollIntervalMs ?? 2000;
         this.onApprovalRequired = options.onApprovalRequired;
         this.onResolved = options.onResolved;
     }
 
     /**
-     * Start monitoring.
+     * Start monitoring (marks active — must be called before evaluate()).
      */
     start(): void {
         if (this.isRunning) return;
@@ -67,7 +65,6 @@ export class ApprovalDetector {
         this.lastDetectedInfo = null;
         // Note: notifiedKeys is NOT cleared on start — it persists across
         // stop/start cycles to prevent stale cross-session re-notifications.
-        this.schedulePoll();
     }
 
     /**
@@ -75,10 +72,6 @@ export class ApprovalDetector {
      */
     async stop(): Promise<void> {
         this.isRunning = false;
-        if (this.pollTimer) {
-            clearTimeout(this.pollTimer);
-            this.pollTimer = null;
-        }
     }
 
     /**
@@ -89,45 +82,18 @@ export class ApprovalDetector {
         return this.lastDetectedInfo;
     }
 
-    /** Schedule the next poll */
-    private schedulePoll(): void {
-        if (!this.isRunning) return;
-        this.pollTimer = setTimeout(async () => {
-            await this.poll();
-            if (this.isRunning) {
-                this.schedulePoll();
-            }
-        }, this.pollIntervalMs);
-    }
-
     /**
-     * Single poll iteration via gRPC trajectory:
-     *   1. Get active cascade trajectory via gRPC
-     *   2. Check if status=IDLE and latest step has toolCalls (waiting for approval)
-     *   3. Notify via callback only on new detection (prevent duplicates)
-     *   4. Reset lastDetectedKey when approval is resolved
+     * Evaluate trajectory data to detect approval-pending state.
+     * Called by TrajectoryStreamRouter when stream events arrive.
+     *
+     * @param cascadeId  The active cascade ID
+     * @param steps      Trajectory steps array
+     * @param runStatus  Cascade run status string
      */
-    private async poll(): Promise<void> {
+    evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
+        if (!this.isRunning) return;
+
         try {
-            const client = await this.cdpService.getGrpcClient();
-            if (!client) return;
-
-            const cascadeId = await this.cdpService.getActiveCascadeId();
-            if (!cascadeId) return;
-
-            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
-            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
-            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
-
-            const runStatus =
-                trajectory?.cascadeRunStatus
-                || trajectoryResp?.cascadeRunStatus
-                || trajectory?.status
-                || trajectoryResp?.status
-                || null;
-
-            // Detect approval-pending state:
-            // Cascade is IDLE + last assistant step has tool calls = waiting for user approval
             const info = this.extractApprovalFromTrajectory(steps, runStatus);
 
             if (info) {
@@ -156,11 +122,7 @@ export class ApprovalDetector {
                 }
             }
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (message.includes('WebSocket is not connected') || message.includes('Not connected')) {
-                return;
-            }
-            logger.error('[ApprovalDetector] Error during gRPC polling:', error);
+            logger.error('[ApprovalDetector] Error during evaluation:', error);
         }
     }
 
@@ -203,6 +165,17 @@ export class ApprovalDetector {
                 });
 
                 if (pendingToolCalls.length === 0) return null;
+
+                const responseText = typeof step?.plannerResponse?.response === 'string'
+                    ? step.plannerResponse.response.trim()
+                    : '';
+
+                // Planning mode already surfaces PLANNER_RESPONSE steps that contain
+                // a generated plan plus pending tool calls. Ignore those here so the
+                // user does not get a duplicate Approval Required card for the same state.
+                if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && responseText.length > 0) {
+                    return null;
+                }
 
                 // Build description from tool call details
                 const toolNames = pendingToolCalls.map((tc: any) =>

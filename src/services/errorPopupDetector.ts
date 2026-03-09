@@ -12,10 +12,8 @@ export interface ErrorPopupInfo {
 }
 
 export interface ErrorPopupDetectorOptions {
-    /** CDP service instance (used only for gRPC client access and VS Code commands) */
+    /** CDP service instance (used only for VS Code commands) */
     cdpService: CdpService;
-    /** Poll interval in milliseconds (default: 3000ms) */
-    pollIntervalMs?: number;
     /** Callback when an error popup is detected */
     onErrorPopup: (info: ErrorPopupInfo) => void;
     /** Callback when a previously detected error popup is resolved */
@@ -23,21 +21,22 @@ export interface ErrorPopupDetectorOptions {
 }
 
 /**
- * Detects error states via gRPC trajectory polling.
+ * Detects error states from cascade trajectory data.
  *
  * Zero DOM operations — detection is based on cascade trajectory:
  * When the cascade has status=IDLE and the latest step contains error
  * information, an error has occurred.
  *
+ * This detector is passive: it does not poll. Call `evaluate()` to feed
+ * it trajectory data from the TrajectoryStreamRouter.
+ *
  * Actions are performed via VS Code extension commands.
  */
 export class ErrorPopupDetector {
     private cdpService: CdpService;
-    private pollIntervalMs: number;
     private onErrorPopup: (info: ErrorPopupInfo) => void;
     private onResolved?: () => void;
 
-    private pollTimer: NodeJS.Timeout | null = null;
     private isRunning: boolean = false;
     /** Key of the last detected error popup (for duplicate notification prevention) */
     private lastDetectedKey: string | null = null;
@@ -54,28 +53,22 @@ export class ErrorPopupDetector {
 
     constructor(options: ErrorPopupDetectorOptions) {
         this.cdpService = options.cdpService;
-        this.pollIntervalMs = options.pollIntervalMs ?? 3000;
         this.onErrorPopup = options.onErrorPopup;
         this.onResolved = options.onResolved;
     }
 
-    /** Start monitoring. */
+    /** Start monitoring (marks active — must be called before evaluate()). */
     start(): void {
         if (this.isRunning) return;
         this.isRunning = true;
         this.lastDetectedKey = null;
         this.lastDetectedInfo = null;
         this.lastNotifiedAt = 0;
-        this.schedulePoll();
     }
 
     /** Stop monitoring. */
     async stop(): Promise<void> {
         this.isRunning = false;
-        if (this.pollTimer) {
-            clearTimeout(this.pollTimer);
-            this.pollTimer = null;
-        }
     }
 
     /** Return the last detected error popup info. Returns null if nothing has been detected. */
@@ -134,43 +127,18 @@ export class ErrorPopupDetector {
         return null;
     }
 
-    /** Schedule the next poll. */
-    private schedulePoll(): void {
-        if (!this.isRunning) return;
-        this.pollTimer = setTimeout(async () => {
-            await this.poll();
-            if (this.isRunning) {
-                this.schedulePoll();
-            }
-        }, this.pollIntervalMs);
-    }
-
     /**
-     * Single poll iteration via gRPC trajectory:
-     *   1. Get active cascade trajectory via gRPC
-     *   2. Check for error states in the trajectory
-     *   3. Notify via callback only on new detection (prevent duplicates)
-     *   4. Reset when error state is resolved
+     * Evaluate trajectory data to detect error states.
+     * Called by TrajectoryStreamRouter when stream events arrive.
+     *
+     * @param cascadeId  The active cascade ID
+     * @param steps      Trajectory steps array
+     * @param runStatus  Cascade run status string
      */
-    private async poll(): Promise<void> {
+    evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
+        if (!this.isRunning) return;
+
         try {
-            const client = await this.cdpService.getGrpcClient();
-            if (!client) return;
-
-            const cascadeId = await this.cdpService.getActiveCascadeId();
-            if (!cascadeId) return;
-
-            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
-            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
-            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
-
-            const runStatus =
-                trajectory?.cascadeRunStatus
-                || trajectoryResp?.cascadeRunStatus
-                || trajectory?.status
-                || trajectoryResp?.status
-                || null;
-
             const info = this.extractErrorFromTrajectory(steps, runStatus);
 
             if (info) {
@@ -201,11 +169,7 @@ export class ErrorPopupDetector {
                 }
             }
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (message.includes('WebSocket is not connected') || message.includes('Not connected')) {
-                return;
-            }
-            logger.error('[ErrorPopupDetector] Error during gRPC polling:', error);
+            logger.error('[ErrorPopupDetector] Error during evaluation:', error);
         }
     }
 

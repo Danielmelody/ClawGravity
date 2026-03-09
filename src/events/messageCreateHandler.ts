@@ -10,10 +10,7 @@ import type { PlatformChannel } from '../platform/types';
 import { wrapDiscordChannel } from '../platform/discord/wrappers';
 import {
     CdpBridge,
-    ensureApprovalDetector as ensureApprovalDetectorFn,
-    ensureErrorPopupDetector as ensureErrorPopupDetectorFn,
-    ensurePlanningDetector as ensurePlanningDetectorFn,
-    ensureRunCommandDetector as ensureRunCommandDetectorFn,
+    ensureWorkspaceRuntime as ensureWorkspaceRuntimeFn,
     getCurrentCdp as getCurrentCdpFn,
     registerApprovalSessionChannel as registerApprovalSessionChannelFn,
     registerApprovalWorkspaceChannel as registerApprovalWorkspaceChannelFn,
@@ -31,6 +28,7 @@ import {
     isImageAttachment as isImageAttachmentFn,
 } from '../utils/imageHandler';
 import { logger } from '../utils/logger';
+import { WorkspaceRuntime } from '../services/workspaceRuntime';
 
 export interface MessageCreateHandlerDeps {
     config: { allowedUserIds: string[]; extractionMode?: import('../utils/config').ExtractionMode };
@@ -63,10 +61,11 @@ export interface MessageCreateHandlerDeps {
     ) => Promise<void>;
     handleScreenshot: (target: Message, cdp: CdpService | null) => Promise<void>;
     getCurrentCdp?: (bridge: CdpBridge) => CdpService | null;
-    ensureApprovalDetector?: (bridge: CdpBridge, cdp: CdpService, projectName: string) => void;
-    ensureErrorPopupDetector?: (bridge: CdpBridge, cdp: CdpService, projectName: string) => void;
-    ensurePlanningDetector?: (bridge: CdpBridge, cdp: CdpService, projectName: string) => void;
-    ensureRunCommandDetector?: (bridge: CdpBridge, cdp: CdpService, projectName: string) => void;
+    ensureWorkspaceRuntime?: (
+        bridge: CdpBridge,
+        workspacePath: string,
+        options?: { enableActionDetectors?: boolean },
+    ) => Promise<{ runtime: WorkspaceRuntime; cdp: CdpService; projectName: string }>;
     registerApprovalWorkspaceChannel?: (bridge: CdpBridge, projectName: string, channel: PlatformChannel) => void;
     registerApprovalSessionChannel?: (bridge: CdpBridge, projectName: string, sessionTitle: string, channel: PlatformChannel) => void;
     downloadInboundImageAttachments?: (message: Message) => Promise<InboundImageAttachment[]>;
@@ -77,10 +76,7 @@ export interface MessageCreateHandlerDeps {
 
 export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
     const getCurrentCdp = deps.getCurrentCdp ?? getCurrentCdpFn;
-    const ensureApprovalDetector = deps.ensureApprovalDetector ?? ensureApprovalDetectorFn;
-    const ensureErrorPopupDetector = deps.ensureErrorPopupDetector ?? ensureErrorPopupDetectorFn;
-    const ensurePlanningDetector = deps.ensurePlanningDetector ?? ensurePlanningDetectorFn;
-    const ensureRunCommandDetector = deps.ensureRunCommandDetector ?? ensureRunCommandDetectorFn;
+    const ensureWorkspaceRuntime = deps.ensureWorkspaceRuntime ?? ensureWorkspaceRuntimeFn;
     const registerApprovalWorkspaceChannel = deps.registerApprovalWorkspaceChannel ?? registerApprovalWorkspaceChannelFn;
     const registerApprovalSessionChannel = deps.registerApprovalSessionChannel ?? registerApprovalSessionChannelFn;
     const downloadInboundImageAttachments = deps.downloadInboundImageAttachments ?? downloadInboundImageAttachmentsFn;
@@ -258,18 +254,17 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                         }
 
                         try {
-                            const cdp = await deps.bridge.pool.getOrConnect(workspacePath);
-                            const projectName = deps.bridge.pool.extractProjectName(workspacePath);
+                            const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath, {
+                                enableActionDetectors: true,
+                            });
+                            const runtime = prepared.runtime;
+                            const cdp = prepared.cdp;
+                            const projectName = prepared.projectName;
 
                             deps.bridge.lastActiveWorkspace = projectName;
                             const platformChannel = wrapDiscordChannel(message.channel as TextChannel);
                             deps.bridge.lastActiveChannel = platformChannel;
                             registerApprovalWorkspaceChannel(deps.bridge, projectName, platformChannel);
-
-                            ensureApprovalDetector(deps.bridge, cdp, projectName);
-                            ensureErrorPopupDetector(deps.bridge, cdp, projectName);
-                            ensurePlanningDetector(deps.bridge, cdp, projectName);
-                            ensureRunCommandDetector(deps.bridge, cdp, projectName);
 
                             const session = deps.chatSessionRepo.findByChannelId(message.channelId);
                             if (session?.displayName) {
@@ -277,7 +272,7 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                             }
 
                             if (session?.isRenamed && session.displayName) {
-                                const activationResult = await deps.chatSessionService.activateSessionByTitle(cdp, session.displayName);
+                                const activationResult = await runtime.activateSessionByTitle(deps.chatSessionService, session.displayName);
                                 if (!activationResult.ok) {
                                     const reason = activationResult.error ? ` (${activationResult.error})` : '';
                                     await message.reply(
@@ -288,7 +283,7 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                                 }
                             } else if (session && !session.isRenamed) {
                                 try {
-                                    const chatResult = await deps.chatSessionService.startNewChat(cdp);
+                                    const chatResult = await runtime.startNewChat(deps.chatSessionService);
                                     if (!chatResult.ok) {
                                         logger.warn('[MessageCreate] Failed to start new chat in Antigravity:', chatResult.error);
                                         (message.channel as any).send(`⚠️ Could not open a new chat in Antigravity. Sending to existing chat.`).catch(() => { });

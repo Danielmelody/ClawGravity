@@ -12,12 +12,27 @@ function mockSendPromptImmediate() {
 
 /** Helper: build minimal deps with overrides */
 function buildDeps(overrides: Record<string, any> = {}) {
+    const cdp = {
+        setCachedCascadeId: jest.fn(),
+    };
+    const runtime = {
+        activateSessionByTitle: jest.fn().mockImplementation(async (chatSessionService: any, title: string) => (
+            chatSessionService.activateSessionByTitle
+                ? chatSessionService.activateSessionByTitle(cdp, title)
+                : { ok: true }
+        )),
+        startNewChat: jest.fn().mockImplementation(async (chatSessionService: any) => (
+            chatSessionService.startNewChat
+                ? chatSessionService.startNewChat(cdp)
+                : { ok: true }
+        )),
+    };
     return {
         config: { allowedUserIds: ['u1'] },
         bridge: {
             autoAccept: { handle: jest.fn(), isEnabled: jest.fn() },
             pool: {
-                getOrConnect: jest.fn().mockResolvedValue({}),
+                getOrConnect: jest.fn().mockResolvedValue(cdp),
                 extractProjectName: jest.fn().mockReturnValue('proj-a'),
             },
         } as any,
@@ -36,10 +51,11 @@ function buildDeps(overrides: Record<string, any> = {}) {
         autoRenameChannel: jest.fn().mockResolvedValue(undefined),
         handleScreenshot: jest.fn(),
         getCurrentCdp: jest.fn(),
-        ensureApprovalDetector: jest.fn(),
-        ensureErrorPopupDetector: jest.fn(),
-        ensurePlanningDetector: jest.fn(),
-        ensureRunCommandDetector: jest.fn(),
+        ensureWorkspaceRuntime: jest.fn().mockImplementation(async (bridge: any, workspacePath: string) => ({
+            cdp: await bridge.pool.getOrConnect(workspacePath),
+            projectName: bridge.pool.extractProjectName(workspacePath),
+            runtime,
+        })),
         registerApprovalWorkspaceChannel: jest.fn(),
         registerApprovalSessionChannel: jest.fn(),
         downloadInboundImageAttachments: jest.fn().mockResolvedValue([]),

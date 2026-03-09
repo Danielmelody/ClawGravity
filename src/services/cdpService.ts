@@ -5,7 +5,7 @@ import * as http from 'http';
 import { spawn } from 'child_process';
 import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
 import WebSocket from 'ws';
-import { GrpcCascadeClient, ModelId, discoverLSConnection } from './grpcCascadeClient';
+import { GrpcCascadeClient, ModelId, discoverAllLSConnections } from './grpcCascadeClient';
 
 export interface CdpServiceOptions {
     portsToScan?: number[];
@@ -42,6 +42,18 @@ export interface ExtractedResponseImage {
     url?: string;
 }
 
+type PendingWorkspaceBlock =
+    | {
+        kind: 'planning';
+        message: string;
+        cascadeId: string;
+    }
+    | {
+        kind: 'approval';
+        message: string;
+        cascadeId: string;
+    };
+
 /** UI sync operation result type (Step 9) */
 export interface UiSyncResult {
     ok: boolean;
@@ -70,6 +82,8 @@ export class CdpService extends EventEmitter {
     /** Lazy-initialized gRPC client for direct API communication */
     private grpcClient: GrpcCascadeClient | null = null;
     private grpcAuthAttempted: boolean = false;
+    private grpcInitPromise: Promise<GrpcCascadeClient | null> | null = null;
+    private lastGrpcUnavailableReason: string | null = null;
     /** Cached cascade ID for gRPC calls */
     private cachedCascadeId: string | null = null;
     /** Newly created cascade ID awaiting visibility in listCascades() */
@@ -94,6 +108,15 @@ export class CdpService extends EventEmitter {
     private currentWorkspacePath: string | null = null;
     /** Workspace switching flag (suppresses disconnected event) */
     private isSwitchingWorkspace: boolean = false;
+    /** Timestamps of recent workspace launches to prevent duplicate launches */
+    private static recentLaunchTimestamps = new Map<string, number>();
+    /** Cooldown period for workspace launches (ms) */
+    private static readonly LAUNCH_COOLDOWN_MS = 60_000;
+
+    /** Clear launch cooldown timestamps (for testing) */
+    static clearLaunchCooldowns(): void {
+        CdpService.recentLaunchTimestamps.clear();
+    }
 
     constructor(options: CdpServiceOptions = {}) {
         super();
@@ -290,6 +313,7 @@ export class CdpService extends EventEmitter {
         // Reset gRPC state so next connection re-probes auth
         this.grpcClient = null;
         this.grpcAuthAttempted = false;
+        this.grpcInitPromise = null;
         this.cachedCascadeId = null;
         this.recentCreatedCascadeId = null;
         this.recentCreatedCascadeAt = 0;
@@ -419,7 +443,42 @@ export class CdpService extends EventEmitter {
             return true;
         }
 
-        // 3. If not found by probe either, launch a new window
+        // 3. Fallback: if only 1 workbench page exists, only reuse it if it
+        //    looks like an untitled/fresh page. If its title clearly indicates
+        //    a different workspace, launch a new window instead of hijacking it.
+        if (workbenchPages.length === 1) {
+            const singlePage = workbenchPages[0];
+            const pageTitle = (singlePage.title || '').trim();
+            const isFreshOrUntitled = !pageTitle || pageTitle === 'Untitled (Workspace)' || pageTitle.includes('Untitled');
+            const belongsToDifferentWorkspace = pageTitle && !isFreshOrUntitled
+                && !pageTitle.toLowerCase().includes(projectName.toLowerCase());
+
+            if (belongsToDifferentWorkspace) {
+                logger.warn(
+                    `[CdpService] Single workbench page belongs to different workspace "${pageTitle}" ` +
+                    `(target="${projectName}") — launching new window instead of reusing`,
+                );
+                // Fall through to launch
+            } else {
+                logger.warn(`[CdpService] Single workbench page found (title="${pageTitle}") — connecting to it for workspace "${projectName}"`);
+                return this.connectToPage(singlePage, projectName);
+            }
+        }
+
+        // 4. Multiple workbench pages exist but none matched.
+        //    Try connecting to the most recently created / untitled page.
+        if (workbenchPages.length > 1) {
+            const untitledPage = workbenchPages.find(
+                (t: any) => !t.title || t.title.includes('Untitled') || t.title.trim() === '',
+            );
+            if (untitledPage) {
+                logger.warn(`[CdpService] Found untitled workbench page among ${workbenchPages.length} pages — connecting to prevent window spam`);
+                return this.connectToPage(untitledPage, projectName);
+            }
+        }
+
+        // 5. No workbench pages at all, no suitable fallback, or single page belongs to another workspace.
+        //    Launch a new window for this workspace.
         return this.launchAndConnectWorkspace(workspacePath, projectName);
     }
 
@@ -434,6 +493,16 @@ export class CdpService extends EventEmitter {
         }
 
         this.disconnectQuietly();
+
+        // Reset gRPC state so ensureGrpcClient() re-discovers the correct LS
+        // process for the NEW workspace page. Without this, the old gRPC client
+        // continues pointing to the previous workspace's LS process (cross-talk bug).
+        this.grpcClient = null;
+        this.grpcAuthAttempted = false;
+        this.cachedCascadeId = null;
+        this.recentCreatedCascadeId = null;
+        this.recentCreatedCascadeAt = 0;
+
         this.targetUrl = page.webSocketDebuggerUrl;
         this.targetFrameId = typeof page?.id === 'string' ? page.id : null;
         await this.connect();
@@ -573,11 +642,23 @@ export class CdpService extends EventEmitter {
         workspacePath: string,
         projectName: string,
     ): Promise<boolean> {
+        // Guard: prevent launching the same workspace multiple times within cooldown period.
+        const lastLaunch = CdpService.recentLaunchTimestamps.get(projectName);
+        const now = Date.now();
+        if (lastLaunch && (now - lastLaunch) < CdpService.LAUNCH_COOLDOWN_MS) {
+            const agoSec = Math.round((now - lastLaunch) / 1000);
+            logger.warn(`[CdpService] Suppressing duplicate launch for "${projectName}" — last launch was ${agoSec}s ago (cooldown=${CdpService.LAUNCH_COOLDOWN_MS / 1000}s)`);
+            throw new Error(
+                `Workspace "${projectName}" was launched ${agoSec}s ago. Wait for the previous launch to initialize or connect manually.`,
+            );
+        }
+
         // Open as folder using Antigravity CLI (not as workspace mode).
         // CLI --new-window opens as folder, immediately reflecting directory name in title.
         const antigravityCli = getAntigravityCliPath();
 
         logger.debug(`[CdpService] Launching Antigravity: ${antigravityCli} --new-window ${workspacePath}`);
+        CdpService.recentLaunchTimestamps.set(projectName, now);
         await this.runCommand(antigravityCli, ['--new-window', workspacePath]);
 
         // Poll until a new workbench page appears (max 30 seconds)
@@ -1007,36 +1088,139 @@ export class CdpService extends EventEmitter {
 
     /**
      * Lazy-initialize the gRPC client by discovering the LS process.
-     * Uses compliant discovery (process CLI args for CSRF token, NOT OAuth tokens).
-     * Only attempts discovery once per connection cycle.
+     *
+     * When multiple LS processes exist (multi-workspace), uses CDP to detect
+     * which LS port the currently connected workbench page is talking to
+     * via `performance.getEntriesByType('resource')`.
      */
     private async ensureGrpcClient(): Promise<GrpcCascadeClient | null> {
         if (this.grpcClient?.isReady()) {
+            this.lastGrpcUnavailableReason = null;
             return this.grpcClient;
         }
 
-        // Only attempt discovery once to avoid repeated failures
+        if (this.grpcInitPromise) {
+            return this.grpcInitPromise;
+        }
+
         if (this.grpcAuthAttempted) {
             return this.grpcClient;
         }
         this.grpcAuthAttempted = true;
 
-        try {
-            // Derive workspace hint from the current workspace name
-            const hint = this.currentWorkspaceName
-                ?.replace(/[-. ]/g, '_')
-                .toLowerCase();
+        this.grpcInitPromise = (async () => {
+            try {
+                const allConnections = await discoverAllLSConnections();
+                if (allConnections.length === 0) {
+                    logger.debug('[CdpService] No LS processes found');
+                    this.lastGrpcUnavailableReason = 'gRPC unavailable: no Antigravity Language Server process found.';
+                    // Allow retry — LS process may not have started yet
+                    this.grpcAuthAttempted = false;
+                    return null;
+                }
 
-            const conn = await discoverLSConnection(hint || undefined);
-            if (conn) {
+                let conn = allConnections[0];
+
+                if (allConnections.length > 1) {
+                    // Multiple LS processes — detect which one this workspace uses
+                    let detectedPort = await this.detectLSPortViaCDP();
+
+                    // If first probe fails, wait briefly and try again.
+                    // The workbench page may not have made any LS requests yet
+                    // (e.g., freshly launched window).
+                    if (!detectedPort) {
+                        await new Promise(r => setTimeout(r, 2000));
+                        detectedPort = await this.detectLSPortViaCDP();
+                    }
+
+                    const matched = detectedPort
+                        ? allConnections.find(c => c.port === detectedPort)
+                        : null;
+
+                    if (matched) {
+                        conn = matched;
+                        logger.info(
+                            `[CdpService] gRPC: matched LS port=${detectedPort} via CDP ` +
+                            `for workspace "${this.currentWorkspaceName}" (${allConnections.length} candidates)`
+                        );
+                    } else {
+                        // CRITICAL: Do NOT fall back to first process — this causes cross-talk!
+                        // Instead, allow retry on next call and log a clear warning.
+                        logger.error(
+                            `[CdpService] gRPC: CDP port detection returned ${detectedPort} — ` +
+                            `CANNOT determine which of ${allConnections.length} LS processes belongs to ` +
+                            `workspace "${this.currentWorkspaceName}". Will retry on next attempt.`
+                        );
+                        this.lastGrpcUnavailableReason =
+                            `gRPC unavailable: could not match workspace "${this.currentWorkspaceName || 'unknown'}" ` +
+                            'to a Language Server process.';
+                        this.grpcAuthAttempted = false;
+                        return null;
+                    }
+                }
+
                 this.grpcClient = new GrpcCascadeClient();
                 this.grpcClient.setConnection(conn);
+                this.lastGrpcUnavailableReason = null;
                 logger.info(`[CdpService] gRPC client initialized: port=${conn.port}, tls=${conn.useTls}`);
                 return this.grpcClient;
+            } catch (err: any) {
+                logger.debug(`[CdpService] LS process discovery failed: ${err.message}`);
+                this.lastGrpcUnavailableReason = `gRPC unavailable: ${err?.message || String(err)}`;
+                // Allow retry on next call
+                this.grpcAuthAttempted = false;
+                return null;
+            } finally {
+                this.grpcInitPromise = null;
             }
-            logger.debug('[CdpService] LS process discovery returned null — will use DOM injection');
-        } catch (err: any) {
-            logger.debug(`[CdpService] LS process discovery failed: ${err.message}`);
+        })();
+
+        return this.grpcInitPromise;
+    }
+
+    /**
+     * Detect which LS port the currently connected workbench page is using.
+     *
+     * Each Antigravity workbench page makes HTTP requests to its own LS process
+     * (e.g. `https://127.0.0.1:55692/exa.language_server_pb.LanguageServerService/...`).
+     * The browser's Performance Resource Timing API records these requests,
+     * so we can extract the port from the most recent LS request URL.
+     */
+    private async detectLSPortViaCDP(): Promise<number | null> {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            return null;
+        }
+
+        const script = `(() => {
+            try {
+                const entries = performance.getEntriesByType('resource');
+                const lsEntries = entries.filter(e =>
+                    e.name.includes('127.0.0.1') &&
+                    e.name.includes('language_server_pb')
+                );
+                if (lsEntries.length === 0) return null;
+                const match = lsEntries[lsEntries.length - 1].name.match(/127\\.0\\.0\\.1:(\\d+)/);
+                return match ? parseInt(match[1], 10) : null;
+            } catch (e) {
+                return null;
+            }
+        })()`;
+
+        for (const ctx of this.contexts) {
+            try {
+                const result = await this.call('Runtime.evaluate', {
+                    expression: script,
+                    returnByValue: true,
+                    contextId: ctx.id,
+                });
+
+                const port = result?.result?.value;
+                if (typeof port === 'number' && port > 0) {
+                    return port;
+                }
+            } catch (err: any) {
+                // Try next context
+            }
         }
 
         return null;
@@ -1050,6 +1234,102 @@ export class CdpService extends EventEmitter {
         return this.ensureGrpcClient();
     }
 
+    private getPendingToolCalls(step: any): any[] {
+        const toolCalls = step?.plannerResponse?.toolCalls;
+        if (!Array.isArray(toolCalls)) return [];
+
+        return toolCalls.filter((tc: any) => {
+            const hasResult = tc?.result !== undefined
+                || tc?.output !== undefined
+                || tc?.toolCallResult !== undefined;
+            if (hasResult) return false;
+
+            const status = tc?.status || tc?.toolCallStatus || '';
+            const isCompleted = status === 'completed'
+                || status === 'done'
+                || status === 'success'
+                || status === 'error';
+
+            return !isCompleted;
+        });
+    }
+
+    private describePendingTools(toolCalls: any[]): string {
+        const toolNames = toolCalls.map((tc: any) =>
+            tc?.name || tc?.toolName || tc?.function?.name || 'tool',
+        );
+        return toolNames.length === 1
+            ? `Tool: ${toolNames[0]}`
+            : `Tools: ${toolNames.join(', ')}`;
+    }
+
+    private classifyPendingWorkspaceBlock(
+        cascadeId: string,
+        steps: any[],
+        runStatus: string | null,
+    ): PendingWorkspaceBlock | null {
+        if (!runStatus || runStatus !== 'CASCADE_RUN_STATUS_IDLE') return null;
+        if (!Array.isArray(steps) || steps.length === 0) return null;
+
+        for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i];
+
+            if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') break;
+            if (step?.type !== 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && step?.type !== 'CORTEX_STEP_TYPE_RESPONSE') {
+                continue;
+            }
+
+            const pendingToolCalls = this.getPendingToolCalls(step);
+            if (pendingToolCalls.length === 0) return null;
+
+            const responseText = typeof step?.plannerResponse?.response === 'string'
+                ? step.plannerResponse.response.trim()
+                : '';
+            const description = this.describePendingTools(pendingToolCalls);
+
+            if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && responseText.length > 0) {
+                return {
+                    kind: 'planning',
+                    message: `Waiting for plan review: ${description}. Use Open or Proceed before sending another message.`,
+                    cascadeId,
+                };
+            }
+
+            return {
+                kind: 'approval',
+                message: `Waiting for tool approval: ${description}. Use Allow or Deny before sending another message.`,
+                cascadeId,
+            };
+        }
+
+        return null;
+    }
+
+    private async getPendingWorkspaceBlock(overrideCascadeId?: string): Promise<PendingWorkspaceBlock | null> {
+        const client = await this.ensureGrpcClient();
+        if (!client) return null;
+
+        const cascadeId = overrideCascadeId || this.cachedCascadeId || await this.getActiveCascadeId();
+        if (!cascadeId) return null;
+
+        try {
+            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
+            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
+            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
+            const runStatus =
+                trajectory?.cascadeRunStatus
+                || trajectoryResp?.cascadeRunStatus
+                || trajectory?.status
+                || trajectoryResp?.status
+                || null;
+
+            return this.classifyPendingWorkspaceBlock(cascadeId, steps, runStatus);
+        } catch (error: any) {
+            logger.debug(`[CdpService] Pending workspace block check failed: ${error?.message || error}`);
+            return null;
+        }
+    }
+
     /**
      * Try to inject a message via the gRPC direct API.
      * Bypasses the entire DOM — sends directly to the LanguageServer.
@@ -1059,7 +1339,15 @@ export class CdpService extends EventEmitter {
      */
     private async injectViaGrpc(text: string, overrideCascadeId?: string): Promise<InjectResult | null> {
         const client = await this.ensureGrpcClient();
-        if (!client) return null;
+        if (!client) {
+            return { ok: false, error: this.lastGrpcUnavailableReason || 'gRPC injection failed' };
+        }
+
+        const pendingBlock = await this.getPendingWorkspaceBlock(overrideCascadeId);
+        if (pendingBlock) {
+            logger.warn(`[CdpService] injectViaGrpc blocked by pending ${pendingBlock.kind} on cascade=${pendingBlock.cascadeId.slice(0, 16)}...`);
+            return { ok: false, error: pendingBlock.message, cascadeId: pendingBlock.cascadeId };
+        }
 
         // If we have an explicit cascade ID (e.g. from a previous createCascade), try to reuse it
         let cascadeId = overrideCascadeId || this.cachedCascadeId;
@@ -1093,8 +1381,9 @@ export class CdpService extends EventEmitter {
             return { ok: true, method: 'grpc', cascadeId: newCascadeId };
         }
 
-        logger.error('[CdpService] createCascade returned null — cannot inject');
-        return null;
+        const lastGrpcError = client.getLastOperationError?.() || null;
+        logger.error(`[CdpService] createCascade returned null — cannot inject${lastGrpcError ? `: ${lastGrpcError}` : ''}`);
+        return { ok: false, error: lastGrpcError || 'gRPC injection failed' };
     }
 
     /**
@@ -1105,23 +1394,35 @@ export class CdpService extends EventEmitter {
     async injectMessage(text: string, overrideCascadeId?: string): Promise<InjectResult> {
         // gRPC direct API (no DOM dependency at all)
         const grpcResult = await this.injectViaGrpc(text, overrideCascadeId);
-        if (grpcResult?.ok) {
+        if (grpcResult) {
             return grpcResult;
         }
 
-        return { ok: false, error: grpcResult?.error || 'gRPC injection failed' };
+        return { ok: false, error: 'gRPC injection failed' };
     }
 
     /**
      * Inject a message with image files.
-     * NOTE: gRPC does not support image attachment yet — text is sent via gRPC,
-     * images are logged as unsupported.
+     *
+     * Strategy: attach images via CDP DOM file input, then send text via gRPC.
+     * If CDP is not connected or image attachment fails, falls back to text-only.
      */
     async injectMessageWithImageFiles(text: string, imageFilePaths: string[], overrideCascadeId?: string): Promise<InjectResult> {
         if (imageFilePaths.length > 0) {
-            logger.warn(`[CdpService] Image attachment not supported via gRPC (${imageFilePaths.length} images ignored)`);
+            // Try to attach images via CDP before sending text
+            try {
+                const contextId = this.getPrimaryContextId() ?? undefined;
+                const attachResult = await this.attachImageFiles(imageFilePaths, contextId);
+                if (attachResult.ok) {
+                    logger.info(`[CdpService] ${imageFilePaths.length} image(s) attached via CDP`);
+                } else {
+                    logger.warn(`[CdpService] Image attachment via CDP failed: ${attachResult.error}. Sending text-only.`);
+                }
+            } catch (err: any) {
+                logger.warn(`[CdpService] Image attachment error: ${err?.message || err}. Sending text-only.`);
+            }
         }
-        // Send text-only via gRPC
+        // Send text via gRPC (images are already in the chat input from CDP attachment)
         return this.injectMessage(text, overrideCascadeId);
     }
 

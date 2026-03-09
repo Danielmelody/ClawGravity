@@ -18,6 +18,8 @@ import { PlanningDetector, PlanningInfo } from './planningDetector';
 import { RunCommandDetector, RunCommandInfo } from './runCommandDetector';
 import { QuotaService } from './quotaService';
 import { UserMessageDetector, UserMessageInfo } from './userMessageDetector';
+import { TrajectoryStreamRouter } from './trajectoryStreamRouter';
+import { WorkspaceRuntime } from './workspaceRuntime';
 
 /** CDP connection state management */
 export interface CdpBridge {
@@ -304,7 +306,6 @@ export function ensureApprovalDetector(
 
     const detector = new ApprovalDetector({
         cdpService: cdp,
-        pollIntervalMs: 2000,
         onResolved: () => {
             if (!lastNotification) return;
             const { sent, payload } = lastNotification;
@@ -388,7 +389,6 @@ export function ensurePlanningDetector(
 
     const detector = new PlanningDetector({
         cdpService: cdp,
-        pollIntervalMs: 2000,
         onResolved: () => {
             if (!lastNotification) return;
             const { sent, payload } = lastNotification;
@@ -462,7 +462,6 @@ export function ensureErrorPopupDetector(
 
     const detector = new ErrorPopupDetector({
         cdpService: cdp,
-        pollIntervalMs: 3000,
         onResolved: () => {
             if (!lastNotification) return;
             const { sent, payload } = lastNotification;
@@ -535,7 +534,6 @@ export function ensureRunCommandDetector(
 
     const detector = new RunCommandDetector({
         cdpService: cdp,
-        pollIntervalMs: 2000,
         onResolved: () => {
             if (!lastNotification) return;
             const { sent, payload } = lastNotification;
@@ -618,11 +616,100 @@ export function ensureUserMessageDetector(
 
     const detector = new UserMessageDetector({
         cdpService: cdp,
-        pollIntervalMs: 2000,
         onUserMessage,
     });
 
     detector.start();
     bridge.pool.registerUserMessageDetector(projectName, detector);
     logger.debug(`[UserMessageDetector:${projectName}] Started user message detection`);
+}
+
+/**
+ * Ensure a TrajectoryStreamRouter is running for the workspace.
+ * The router subscribes to the gRPC reactive stream and dispatches
+ * trajectory updates to all registered passive detectors.
+ *
+ * Call this AFTER all detectors have been created and registered.
+ */
+export function ensureStreamRouter(
+    bridge: CdpBridge,
+    cdp: CdpService,
+    projectName: string,
+): void {
+    const existing = bridge.pool.getStreamRouter(projectName);
+    if (existing && existing.isActive()) return;
+
+    const router = new TrajectoryStreamRouter({
+        cdpService: cdp,
+        projectName,
+    });
+
+    // Wire up all detectors that have been registered for this workspace
+    const approval = bridge.pool.getApprovalDetector(projectName);
+    if (approval) router.registerApprovalDetector(approval);
+
+    const errorPopup = bridge.pool.getErrorPopupDetector(projectName);
+    if (errorPopup) router.registerErrorPopupDetector(errorPopup);
+
+    const planning = bridge.pool.getPlanningDetector(projectName);
+    if (planning) router.registerPlanningDetector(planning);
+
+    const runCmd = bridge.pool.getRunCommandDetector(projectName);
+    if (runCmd) router.registerRunCommandDetector(runCmd);
+
+    const userMsg = bridge.pool.getUserMessageDetector(projectName);
+    if (userMsg) router.registerUserMessageDetector(userMsg);
+
+    router.start();
+    bridge.pool.registerStreamRouter(projectName, router);
+    logger.info(`[StreamRouter:${projectName}] Started event-driven trajectory routing`);
+}
+
+export interface EnsureWorkspaceRuntimeOptions {
+    readonly enableActionDetectors?: boolean;
+    readonly onUserMessage?: (info: UserMessageInfo) => void;
+    readonly userMessageSinkKey?: string;
+}
+
+/**
+ * Ensure the workspace runtime is connected and that its passive services are
+ * initialized in a serialized order. This prevents message-send paths from
+ * racing stream-router / gRPC startup for the same workspace.
+ */
+export async function ensureWorkspaceRuntime(
+    bridge: CdpBridge,
+    workspacePath: string,
+    options: EnsureWorkspaceRuntimeOptions = {},
+): Promise<{ runtime: WorkspaceRuntime; cdp: CdpService; projectName: string }> {
+    const runtime = bridge.pool.getOrCreateRuntime(workspacePath);
+    const cdp = await runtime.runExclusive(async (runtimeCdp) => {
+        const projectName = runtime.getProjectName();
+        if (options.enableActionDetectors) {
+            ensureApprovalDetector(bridge, runtimeCdp, projectName);
+            ensureErrorPopupDetector(bridge, runtimeCdp, projectName);
+            ensurePlanningDetector(bridge, runtimeCdp, projectName);
+            ensureRunCommandDetector(bridge, runtimeCdp, projectName);
+        }
+
+        if (options.onUserMessage) {
+            runtime.addUserMessageSink(
+                options.userMessageSinkKey ?? 'default',
+                options.onUserMessage,
+            );
+        }
+
+        if (runtime.hasUserMessageSinks()) {
+            ensureUserMessageDetector(bridge, runtimeCdp, projectName, (info: UserMessageInfo) => {
+                void runtime.dispatchUserMessage(info);
+            });
+        }
+
+        if (options.enableActionDetectors || runtime.hasUserMessageSinks()) {
+            await runtimeCdp.getGrpcClient();
+            ensureStreamRouter(bridge, runtimeCdp, projectName);
+        }
+        return runtimeCdp;
+    });
+
+    return { runtime, cdp, projectName: runtime.getProjectName() };
 }

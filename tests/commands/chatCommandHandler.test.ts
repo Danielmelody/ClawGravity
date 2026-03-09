@@ -16,6 +16,10 @@ describe('ChatCommandHandler', () => {
     let bindingRepo: WorkspaceBindingRepository;
     let channelManager: ChannelManager;
     let mockWorkspaceService: jest.Mocked<WorkspaceService>;
+    let mockRuntime: {
+        ready: jest.Mock;
+        startNewChat: jest.Mock;
+    };
 
     beforeEach(() => {
         mockService = {
@@ -25,11 +29,18 @@ describe('ChatCommandHandler', () => {
 
         mockPool = {
             getOrConnect: jest.fn(),
+            getOrCreateRuntime: jest.fn(),
             getConnected: jest.fn(),
             getActiveWorkspaceNames: jest.fn().mockReturnValue([]),
             getApprovalDetector: jest.fn(),
             extractProjectName: jest.fn((path: string) => path.split(/[/\\]/).filter(Boolean).pop() || path),
         } as any;
+
+        mockRuntime = {
+            ready: jest.fn().mockResolvedValue(undefined),
+            startNewChat: jest.fn(),
+        };
+        mockPool.getOrCreateRuntime.mockReturnValue(mockRuntime as any);
 
         db = new Database(':memory:');
         chatSessionRepo = new ChatSessionRepository(db);
@@ -108,15 +119,6 @@ describe('ChatCommandHandler', () => {
             });
             bindingRepo.upsert({ channelId: 'ch-1', workspacePath: 'my-proj', guildId: 'guild-1' });
 
-            const mockCdp = {
-                isConnected: jest.fn().mockReturnValue(true),
-                getPrimaryContextId: jest.fn().mockReturnValue(1),
-                call: jest.fn(),
-                discoverAndConnectForWorkspace: jest.fn().mockResolvedValue(true),
-            };
-            mockPool.getOrConnect.mockResolvedValue(mockCdp as any);
-            mockService.startNewChat.mockResolvedValue({ ok: true });
-
             const mockGuild = {
                 id: 'guild-1',
                 channels: {
@@ -134,7 +136,8 @@ describe('ChatCommandHandler', () => {
 
             await handler.handleNew(interaction as any);
 
-            expect(mockPool.getOrConnect).toHaveBeenCalledWith('/tmp/workspaces/my-proj');
+            expect(mockPool.getOrCreateRuntime).toHaveBeenCalledWith('/tmp/workspaces/my-proj');
+            expect(mockRuntime.ready).toHaveBeenCalled();
             expect(mockGuild.channels.create).toHaveBeenCalledWith(
                 expect.objectContaining({ name: 'session-2', parent: 'cat-1' })
             );
@@ -157,13 +160,6 @@ describe('ChatCommandHandler', () => {
                 sessionNumber: 1, guildId: 'guild-1',
             });
             bindingRepo.upsert({ channelId: 'ch-1', workspacePath: 'proj', guildId: 'guild-1' });
-
-            const mockCdp = {
-                isConnected: jest.fn().mockReturnValue(true),
-                discoverAndConnectForWorkspace: jest.fn().mockResolvedValue(true),
-            };
-            mockPool.getOrConnect.mockResolvedValue(mockCdp as any);
-            mockService.startNewChat.mockResolvedValue({ ok: false, error: 'ボタンが見つかりません' });
 
             const mockGuild = {
                 id: 'guild-1',
@@ -263,6 +259,31 @@ describe('ChatCommandHandler', () => {
                         }),
                     ]),
                 })
+            );
+        });
+    });
+
+    describe('handleClear()', () => {
+        it('starts a fresh backend session through the runtime', async () => {
+            chatSessionRepo.create({
+                channelId: 'ch-1', categoryId: 'cat-1', workspacePath: 'proj',
+                sessionNumber: 1, guildId: 'guild-1',
+            });
+            mockRuntime.startNewChat.mockResolvedValue({ ok: true });
+
+            const interaction = {
+                channelId: 'ch-1',
+                editReply: jest.fn().mockResolvedValue(undefined),
+            };
+
+            await handler.handleClear(interaction as any);
+
+            expect(mockPool.getOrCreateRuntime).toHaveBeenCalledWith('/tmp/workspaces/proj');
+            expect(mockRuntime.startNewChat).toHaveBeenCalledWith(mockService);
+            expect(interaction.editReply).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    embeds: expect.any(Array),
+                }),
             );
         });
     });

@@ -139,7 +139,10 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
         it('returns error when CDP connection fails', async () => {
             mockWorkspace.getWorkspacePath.mockReturnValue('/base/Target');
             mockWorkspace.exists.mockReturnValue(true);
-            mockPool.getOrConnect.mockRejectedValue(new Error('ECONNREFUSED'));
+            const mockRuntime = {
+                ready: jest.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+            };
+            mockPool.getOrCreateRuntime.mockReturnValue(mockRuntime as any);
 
             const result = await router.delegateTask({
                 parentAgent: 'Parent', targetAgent: 'Target', task: 'test',
@@ -153,13 +156,16 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
             mockWorkspace.getWorkspacePath.mockReturnValue('/base/Target');
             mockWorkspace.exists.mockReturnValue(true);
 
-            const mockCdp = {
-                injectMessage: jest.fn().mockResolvedValue({ ok: true }),
-                getGrpcClient: jest.fn().mockResolvedValue({}),
-                getActiveCascadeId: jest.fn().mockResolvedValue('cascade-123'),
+            const mockRuntime = {
+                ready: jest.fn().mockResolvedValue(undefined),
+                startNewChat: jest.fn().mockResolvedValue({ ok: true }),
+                sendPrompt: jest.fn().mockResolvedValue({ ok: true, cascadeId: 'cascade-123' }),
+                getMonitoringTarget: jest.fn().mockResolvedValue({
+                    grpcClient: {},
+                    cascadeId: 'cascade-123',
+                }),
             };
-            mockPool.getOrConnect.mockResolvedValue(mockCdp as any);
-            mockChatSession.startNewChat.mockResolvedValue({ ok: true });
+            mockPool.getOrCreateRuntime.mockReturnValue(mockRuntime as any);
 
             const fullResponse = [
                 'I analyzed the code and found issues in api.ts.',
@@ -179,6 +185,11 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
             });
 
             expect(result.ok).toBe(true);
+            expect(mockRuntime.startNewChat).toHaveBeenCalledWith(mockChatSession);
+            expect(mockRuntime.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({
+                text: expect.stringContaining('Fix bugs in api.ts'),
+            }));
+            expect(mockRuntime.getMonitoringTarget).toHaveBeenCalledWith('cascade-123');
             expect(result.summary).toBe('Fixed 3 bugs in api.ts. All tests pass now.');
             expect(result.outputPath).toBeDefined();
             expect(result.outputLength).toBe(fullResponse.length);
