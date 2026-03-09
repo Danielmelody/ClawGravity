@@ -257,7 +257,7 @@ export class PlanningDetector {
 
             if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
                 const plannerResponse = step?.plannerResponse;
-                if (!plannerResponse) continue;
+                if (!plannerResponse) return null;
 
                 const toolCalls = plannerResponse?.toolCalls;
 
@@ -265,8 +265,20 @@ export class PlanningDetector {
                 // Tool calls without a status or with a 'done'/etc status have already been handled.
                 const pendingToolCalls = Array.isArray(toolCalls)
                     ? toolCalls.filter((tc: any) => {
-                        const s = tc?.status || tc?.toolCallStatus;
-                        return s === 'pending' || s === 'awaiting_confirmation';
+                        // Check if the tool call already has a result
+                        const hasResult = tc?.result !== undefined
+                            || tc?.output !== undefined
+                            || tc?.toolCallResult !== undefined;
+
+                        if (hasResult) return false;
+
+                        const s = tc?.status || tc?.toolCallStatus || '';
+                        const isCompleted = s === 'completed'
+                            || s === 'done'
+                            || s === 'success'
+                            || s === 'error';
+
+                        return !isCompleted;
                     })
                     : [];
 
@@ -275,7 +287,7 @@ export class PlanningDetector {
                 // A long response text alone is NOT sufficient; that's just a normal reply.
                 const hasToolPlan = pendingToolCalls.length > 0;
 
-                if (!hasToolPlan) continue;
+                if (!hasToolPlan) return null;
 
                 const responseText = plannerResponse?.response || '';
 

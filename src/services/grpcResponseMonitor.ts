@@ -465,7 +465,7 @@ export class GrpcResponseMonitor {
 
     private failStream(message: string): void {
         logger.warn(`[GrpcMonitor] ${message}`);
-        this.setPhase('error', this.lastResponseText);
+        this.setPhase('error', message);
         const text = this.lastResponseText ?? '';
         this.stop().catch(() => { });
         this.onTimeout?.(text);

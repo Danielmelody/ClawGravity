@@ -432,14 +432,17 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     },
 
                     onPhaseChange: (phase: string, text: string | null) => {
+                        const len = text ? text.length : 0;
                         if (phase === 'thinking') {
                             currentStateIndicator = '🤔 Thinking...';
                             lastActivityLogText = '🤔 Thinking / Planning...';
                         } else if (phase === 'generating') {
-                            currentStateIndicator = '✍️ Generating...';
+                            currentStateIndicator = `✍️ Generating (${len} chars)...`;
+                            // Show generating state explicitly in the activity log
+                            lastActivityLogText = `✍️ Generating (${len} chars)...`;
                         } else if (phase === 'error') {
                             currentStateIndicator = '❌ Error';
-                            lastActivityLogText = '❌ Error occurred';
+                            lastActivityLogText = text ? `❌ Error: ${text}` : '❌ Error occurred';
                         } else if (phase === 'quotaReached') {
                             currentStateIndicator = '⚠️ Quota Reached';
                             lastActivityLogText = '⚠️ Quota reached';

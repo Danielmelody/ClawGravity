@@ -175,7 +175,7 @@ export class RunCommandDetector {
 
             if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
                 const toolCalls = step?.plannerResponse?.toolCalls;
-                if (!Array.isArray(toolCalls) || toolCalls.length === 0) continue;
+                if (!Array.isArray(toolCalls) || toolCalls.length === 0) return null;
 
                 // Find terminal command tool calls
                 for (const tc of toolCalls) {
@@ -183,11 +183,20 @@ export class RunCommandDetector {
                     const isTerminal = TERMINAL_TOOL_PATTERNS.some(p => toolName.includes(p));
                     if (!isTerminal) continue;
 
-                    // Require an explicit pending/awaiting status.
-                    // Tool calls without a status field are NOT assumed pending
-                    // — they may be already executed or purely informational.
-                    const status = tc?.status || tc?.toolCallStatus;
-                    if (!status || (status !== 'pending' && status !== 'awaiting_confirmation')) continue;
+                    // Check if the tool call already has a result
+                    const hasResult = tc?.result !== undefined
+                        || tc?.output !== undefined
+                        || tc?.toolCallResult !== undefined;
+
+                    if (hasResult) continue;
+
+                    const status = tc?.status || tc?.toolCallStatus || '';
+                    const isCompleted = status === 'completed'
+                        || status === 'done'
+                        || status === 'success'
+                        || status === 'error';
+
+                    if (isCompleted) continue;
 
                     // Extract command text from tool call arguments
                     const args = tc?.arguments || tc?.function?.arguments || tc?.input || {};
@@ -207,6 +216,11 @@ export class RunCommandDetector {
                         rejectText: 'Reject',
                     };
                 }
+
+                // If we reach the end of the latest planner response and found
+                // no pending terminal commands, then there are none awaiting user action.
+                // Do not search older responses from this same turn.
+                return null;
             }
         }
 
