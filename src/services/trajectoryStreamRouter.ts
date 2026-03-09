@@ -28,6 +28,8 @@ const STREAM_DEBOUNCE_MS = 300;
 
 /** Delay before reconnecting the stream after a closed/error */
 const RECONNECT_DELAY_MS = 3000;
+/** Delay when the workspace simply has no active cascade yet */
+const IDLE_RETRY_DELAY_MS = 3000;
 
 /** Maximum consecutive reconnect failures before giving up */
 const MAX_RECONNECT_FAILURES = 10;
@@ -57,6 +59,7 @@ export class TrajectoryStreamRouter {
     private errorListener: ((err: any) => void) | null = null;
     private isRunning: boolean = false;
     private debounceTimer: NodeJS.Timeout | null = null;
+    private reconnectTimer: NodeJS.Timeout | null = null;
     private isFetching: boolean = false;
     private reconnectFailures: number = 0;
 
@@ -106,6 +109,10 @@ export class TrajectoryStreamRouter {
             clearTimeout(this.debounceTimer);
             this.debounceTimer = null;
         }
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
     }
 
     isActive(): boolean {
@@ -116,20 +123,26 @@ export class TrajectoryStreamRouter {
 
     private async connectStream(): Promise<void> {
         if (!this.isRunning) return;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
 
         try {
             const client = await this.cdpService.getGrpcClient();
             if (!client) {
-                logger.warn(`[StreamRouter:${this.projectName}] gRPC client not ready, retrying in ${RECONNECT_DELAY_MS}ms`);
-                this.scheduleReconnect();
+                this.reconnectFailures = 0;
+                logger.warn(`[StreamRouter:${this.projectName}] gRPC client not ready, retrying in ${IDLE_RETRY_DELAY_MS}ms`);
+                this.scheduleIdleRetry();
                 return;
             }
 
             // Discover the active cascade to stream
             const cascadeId = await this.cdpService.getActiveCascadeId();
             if (!cascadeId) {
-                logger.debug(`[StreamRouter:${this.projectName}] No active cascade, retrying in ${RECONNECT_DELAY_MS}ms`);
-                this.scheduleReconnect();
+                this.reconnectFailures = 0;
+                logger.debug(`[StreamRouter:${this.projectName}] No active cascade, retrying in ${IDLE_RETRY_DELAY_MS}ms`);
+                this.scheduleIdleRetry();
                 return;
             }
 
@@ -189,6 +202,7 @@ export class TrajectoryStreamRouter {
 
     private scheduleReconnect(): void {
         if (!this.isRunning) return;
+        if (this.reconnectTimer) return;
 
         this.reconnectFailures++;
         if (this.reconnectFailures > MAX_RECONNECT_FAILURES) {
@@ -199,10 +213,20 @@ export class TrajectoryStreamRouter {
 
         const delay = RECONNECT_DELAY_MS * Math.min(this.reconnectFailures, 3);
         logger.debug(`[StreamRouter:${this.projectName}] Reconnecting in ${delay}ms (attempt ${this.reconnectFailures})`);
-        setTimeout(() => {
-            this.teardownStream();
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
             void this.connectStream();
         }, delay);
+    }
+
+    private scheduleIdleRetry(): void {
+        if (!this.isRunning) return;
+        if (this.reconnectTimer) return;
+
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            void this.connectStream();
+        }, IDLE_RETRY_DELAY_MS);
     }
 
     // ─── Stream Event Handlers ──────────────────────────────────────

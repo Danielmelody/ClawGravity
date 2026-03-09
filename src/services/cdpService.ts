@@ -6,6 +6,7 @@ import { spawn } from 'child_process';
 import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
 import WebSocket from 'ws';
 import { GrpcCascadeClient, ModelId, discoverAllLSConnections } from './grpcCascadeClient';
+import { getPendingToolCallsFromPlannerStep, getToolCallName } from './trajectoryToolState';
 
 export interface CdpServiceOptions {
     portsToScan?: number[];
@@ -50,6 +51,11 @@ type PendingWorkspaceBlock =
     }
     | {
         kind: 'approval';
+        message: string;
+        cascadeId: string;
+    }
+    | {
+        kind: 'run_command';
         message: string;
         cascadeId: string;
     };
@@ -1234,26 +1240,6 @@ export class CdpService extends EventEmitter {
         return this.ensureGrpcClient();
     }
 
-    private getPendingToolCalls(step: any): any[] {
-        const toolCalls = step?.plannerResponse?.toolCalls;
-        if (!Array.isArray(toolCalls)) return [];
-
-        return toolCalls.filter((tc: any) => {
-            const hasResult = tc?.result !== undefined
-                || tc?.output !== undefined
-                || tc?.toolCallResult !== undefined;
-            if (hasResult) return false;
-
-            const status = tc?.status || tc?.toolCallStatus || '';
-            const isCompleted = status === 'completed'
-                || status === 'done'
-                || status === 'success'
-                || status === 'error';
-
-            return !isCompleted;
-        });
-    }
-
     private describePendingTools(toolCalls: any[]): string {
         const toolNames = toolCalls.map((tc: any) =>
             tc?.name || tc?.toolName || tc?.function?.name || 'tool',
@@ -1261,6 +1247,30 @@ export class CdpService extends EventEmitter {
         return toolNames.length === 1
             ? `Tool: ${toolNames[0]}`
             : `Tools: ${toolNames.join(', ')}`;
+    }
+
+    private getToolName(toolCall: any): string {
+        return getToolCallName(toolCall);
+    }
+
+    private isRunCommandTool(toolCall: any): boolean {
+        const toolName = this.getToolName(toolCall);
+        if (!toolName) return false;
+
+        return [
+            'terminal',
+            'command',
+            'shell',
+            'bash',
+            'exec',
+            'run_command',
+            'runcommand',
+            'execute_command',
+        ].some((pattern) => toolName.includes(pattern));
+    }
+
+    private isPlanningTool(toolCall: any): boolean {
+        return !this.isRunCommandTool(toolCall);
     }
 
     private classifyPendingWorkspaceBlock(
@@ -1279,7 +1289,7 @@ export class CdpService extends EventEmitter {
                 continue;
             }
 
-            const pendingToolCalls = this.getPendingToolCalls(step);
+            const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
             if (pendingToolCalls.length === 0) return null;
 
             const responseText = typeof step?.plannerResponse?.response === 'string'
@@ -1287,7 +1297,22 @@ export class CdpService extends EventEmitter {
                 : '';
             const description = this.describePendingTools(pendingToolCalls);
 
-            if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && responseText.length > 0) {
+            const hasRunCommandTool = pendingToolCalls.some((toolCall: any) => this.isRunCommandTool(toolCall));
+            const hasPlanningTool = pendingToolCalls.some((toolCall: any) => this.isPlanningTool(toolCall));
+
+            if (hasRunCommandTool) {
+                return {
+                    kind: 'run_command',
+                    message: `Waiting for command confirmation: ${description}. Use Run or Reject before sending another message.`,
+                    cascadeId,
+                };
+            }
+
+            if (
+                step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE'
+                && responseText.length > 0
+                && hasPlanningTool
+            ) {
                 return {
                     kind: 'planning',
                     message: `Waiting for plan review: ${description}. Use Open or Proceed before sending another message.`,
@@ -1819,7 +1844,15 @@ export class CdpService extends EventEmitter {
                 return toSessionInfo(latestId, workspaceSummaries[latestId]);
             }
 
-            // Fallback: first key
+            // If this CdpService is workspace-bound, do NOT fall back to a cascade
+            // from another workspace. That causes multiple workspace runtimes to
+            // subscribe to the same foreign cascade and creates reconnect storms.
+            if (this.currentWorkspacePath) {
+                logger.debug(`[CdpService] No cascades matched workspace "${this.currentWorkspacePath}"`);
+                return null;
+            }
+
+            // Global fallback only when we are not bound to a workspace.
             const ids = Object.keys(summaries);
             if (ids.length > 0) {
                 const firstId = ids[0];

@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
+import { getPendingToolCallsFromPlannerStep, getToolCallName } from './trajectoryToolState';
 
 /** Run command dialog information */
 export interface RunCommandInfo {
@@ -132,55 +133,34 @@ export class RunCommandDetector {
         if (!runStatus || runStatus !== 'CASCADE_RUN_STATUS_IDLE') return null;
         if (steps.length === 0) return null;
 
-        // Terminal command tool name patterns
-        const TERMINAL_TOOL_PATTERNS = [
-            'terminal', 'command', 'shell', 'bash', 'exec',
-            'run_command', 'runcommand', 'execute_command',
-        ];
-
         for (let i = steps.length - 1; i >= 0; i--) {
             const step = steps[i];
             if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') break;
 
             if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
-                const toolCalls = step?.plannerResponse?.toolCalls;
-                if (!Array.isArray(toolCalls) || toolCalls.length === 0) return null;
+                const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
+                if (pendingToolCalls.length === 0) return null;
 
                 // Find terminal command tool calls
-                for (const tc of toolCalls) {
-                    const toolName = (tc?.name || tc?.toolName || tc?.function?.name || '').toLowerCase();
-                    const isTerminal = TERMINAL_TOOL_PATTERNS.some(p => toolName.includes(p));
+                for (const tc of pendingToolCalls) {
+                    const toolName = getToolCallName(tc);
+                    const isTerminal = [
+                        'terminal', 'command', 'shell', 'bash', 'exec',
+                        'run_command', 'runcommand', 'execute_command',
+                    ].some((pattern) => toolName.includes(pattern));
                     if (!isTerminal) continue;
 
-                    // Check if the tool call already has a result
-                    const hasResult = tc?.result !== undefined
-                        || tc?.output !== undefined
-                        || tc?.toolCallResult !== undefined;
-
-                    if (hasResult) continue;
-
-                    const status = tc?.status || tc?.toolCallStatus || '';
-                    const isCompleted = status === 'completed'
-                        || status === 'done'
-                        || status === 'success'
-                        || status === 'error';
-
-                    if (isCompleted) continue;
-
-                    // Require an explicit pending-like status to avoid false positives
-                    const isPending = status === 'pending'
-                        || status === 'waiting'
-                        || status === 'needs_approval'
-                        || status === 'awaiting_confirmation';
-
-                    if (!isPending) continue;
-
                     // Extract command text from tool call arguments
-                    const args = tc?.arguments || tc?.function?.arguments || tc?.input || {};
+                    const args = this.parseToolCallArgs(tc);
                     const commandText = typeof args === 'string'
                         ? args
-                        : args?.command || args?.cmd || args?.script || '';
-                    const workingDirectory = args?.cwd || args?.workingDirectory || args?.directory || '';
+                        : args?.command || args?.cmd || args?.script || args?.CommandLine || '';
+                    const workingDirectory =
+                        args?.cwd
+                        || args?.workingDirectory
+                        || args?.directory
+                        || args?.Cwd
+                        || '';
 
                     // Skip if we couldn't extract a meaningful command
                     const trimmedCommand = String(commandText).trim();
@@ -201,6 +181,24 @@ export class RunCommandDetector {
         }
 
         return null;
+    }
+
+    private parseToolCallArgs(toolCall: any): any {
+        const direct = toolCall?.arguments || toolCall?.function?.arguments || toolCall?.input;
+        if (direct && typeof direct === 'object') {
+            return direct;
+        }
+
+        const json = toolCall?.argumentsJson;
+        if (typeof json !== 'string' || !json.trim()) {
+            return {};
+        }
+
+        try {
+            return JSON.parse(json);
+        } catch {
+            return {};
+        }
     }
 
     /**

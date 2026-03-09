@@ -148,6 +148,8 @@ function createMockRuntime(cdp = createMockCdp(), projectName = 'test-project') 
         getCurrentModel: jest.fn().mockImplementation(async () => cdp.getCurrentModel()),
         getActiveSessionInfo: jest.fn().mockImplementation(async () => cdp.getActiveSessionInfo()),
         getMonitoringTarget,
+        getConnectedCdp: jest.fn().mockReturnValue(cdp),
+        getCdpUnsafe: jest.fn().mockReturnValue(cdp),
     };
 }
 
@@ -605,12 +607,16 @@ describe('createTelegramMessageHandler', () => {
         expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
     });
 
-    it('edits status message with activity log from onProcessLog', async () => {
+    it('edits status message with rendered HTML timeline from Antigravity', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                // Simulate onProcessLog being called before onComplete
-                if (opts.onProcessLog) opts.onProcessLog('Reading file.ts');
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({
+                        content: '<blockquote>Reading file.ts</blockquote>',
+                        format: 'html',
+                    });
+                }
                 if (opts.onComplete) await opts.onComplete('Done response');
             }),
             stop: jest.fn().mockResolvedValue(undefined),
@@ -626,7 +632,7 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        // Status message should have been edited with activity log
+        // Status message should have been edited with rendered timeline HTML
         expect(channel._statusMsg.edit).toHaveBeenCalled();
         const editCalls = channel._statusMsg.edit.mock.calls;
         const logCall = editCalls.find(([payload]: any[]) => payload.text.includes('Reading file.ts'));
@@ -689,13 +695,12 @@ describe('createTelegramMessageHandler', () => {
         expect(channel.send).toHaveBeenCalledWith({ text: 'Done' });
     });
 
-    it('calls logger.divider on completion with process log', async () => {
+    it('calls logger.divider on completion for final output only', async () => {
         const { logger: mockLogger } = jest.requireMock('../../src/utils/logger');
 
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onProcessLog) opts.onProcessLog('Reading file.ts');
                 if (opts.onComplete) await opts.onComplete('Final output');
             }),
             stop: jest.fn().mockResolvedValue(undefined),
@@ -713,8 +718,8 @@ describe('createTelegramMessageHandler', () => {
 
         // logger.divider should have been called for process log + output + final
         const dividerCalls = mockLogger.divider.mock.calls.map((c: any[]) => c[0]);
-        expect(dividerCalls).toContain('Process Log');
         expect(dividerCalls.some((c: string) => c.includes('Output'))).toBe(true);
+        expect(dividerCalls).not.toContain('Process Log');
     });
 
     it('does not intercept /project when workspaceService is not provided', async () => {

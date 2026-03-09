@@ -124,7 +124,7 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         expect(onRunCommandRequired).not.toHaveBeenCalled();
     });
 
-    it('does NOT trigger for tool calls without explicit pending status', () => {
+    it('detects pending run_command even when the planner tool call omits an explicit status', () => {
         const onRunCommandRequired = jest.fn();
         detector = new RunCommandDetector({
             cdpService: mockCdpService,
@@ -134,7 +134,12 @@ describe('RunCommandDetector - run command dialog detection and remote execution
 
         detector.evaluate('cascade-456', makeStepsWithoutStatus(), IDLE);
 
-        expect(onRunCommandRequired).not.toHaveBeenCalled();
+        expect(onRunCommandRequired).toHaveBeenCalledTimes(1);
+        expect(onRunCommandRequired).toHaveBeenCalledWith(
+            expect.objectContaining({
+                commandText: 'echo hi',
+            }),
+        );
     });
 
     it('does NOT trigger for pending tool calls with empty command text', () => {
@@ -148,6 +153,39 @@ describe('RunCommandDetector - run command dialog detection and remote execution
         detector.evaluate('cascade-456', makeStepsWithEmptyCommand(), IDLE);
 
         expect(onRunCommandRequired).not.toHaveBeenCalled();
+    });
+
+    it('does not trigger for a historical run_command whose concrete step is already canceled', () => {
+        const onRunCommandRequired = jest.fn();
+        detector = new RunCommandDetector({
+            cdpService: mockCdpService,
+            onRunCommandRequired,
+        });
+        detector.start();
+
+        detector.evaluate('cascade-456', [
+            { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { text: 'start server' } },
+            {
+                type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                plannerResponse: {
+                    toolCalls: [{
+                        id: 'tool-run',
+                        name: 'run_command',
+                        argumentsJson: JSON.stringify({ CommandLine: 'echo hi', Cwd: '~/Code/login' }),
+                    }],
+                },
+            },
+            {
+                type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+                status: 'CORTEX_STEP_STATUS_CANCELED',
+                metadata: {
+                    toolCall: { id: 'tool-run', name: 'run_command' },
+                },
+            },
+        ], IDLE);
+
+        expect(onRunCommandRequired).not.toHaveBeenCalled();
+        expect(detector.getLastDetectedInfo()).toBeNull();
     });
 
     it('does not call the callback multiple times for the same command', () => {

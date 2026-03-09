@@ -90,4 +90,26 @@ describe('CdpService session info', () => {
         });
         await expect(service.getActiveCascadeId()).resolves.toBe('cascade-b');
     });
+
+    it('does not fall back to another workspace cascade when no summaries match the current workspace', async () => {
+        const service = new CdpService({ maxReconnectAttempts: 0 });
+        const mockClient = {
+            listCascades: jest.fn().mockResolvedValue({
+                'foreign-cascade': {
+                    title: 'Foreign Session',
+                    summary: 'Foreign Session',
+                    lastModifiedTimestamp: '2026-03-08T10:00:00.000Z',
+                    workspaces: [
+                        { workspaceFolderAbsoluteUri: 'file:///C:/Users/Daniel/Projects/SomeOtherRepo' },
+                    ],
+                },
+            }),
+        };
+
+        jest.spyOn(service as any, 'ensureGrpcClient').mockResolvedValue(mockClient);
+        (service as any).currentWorkspacePath = 'C:\\Users\\Daniel\\Projects\\antigravity-tunnel';
+
+        await expect(service.getActiveSessionInfo()).resolves.toBeNull();
+        await expect(service.getActiveCascadeId()).resolves.toBeNull();
+    });
 });

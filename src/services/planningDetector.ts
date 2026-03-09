@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
+import { getPendingToolCallsFromPlannerStep, getToolCallName } from './trajectoryToolState';
 
 /** Planning mode button information */
 export interface PlanningInfo {
@@ -59,6 +60,26 @@ export class PlanningDetector {
         this.cdpService = options.cdpService;
         this.onPlanningRequired = options.onPlanningRequired;
         this.onResolved = options.onResolved;
+    }
+
+    private getToolName(toolCall: any): string {
+        return getToolCallName(toolCall);
+    }
+
+    private isRunCommandTool(toolCall: any): boolean {
+        const toolName = this.getToolName(toolCall);
+        if (!toolName) return false;
+
+        return [
+            'terminal',
+            'command',
+            'shell',
+            'bash',
+            'exec',
+            'run_command',
+            'runcommand',
+            'execute_command',
+        ].some((pattern) => toolName.includes(pattern));
     }
 
     /** Start monitoring (marks active — must be called before evaluate()). */
@@ -223,31 +244,13 @@ export class PlanningDetector {
                 const plannerResponse = step?.plannerResponse;
                 if (!plannerResponse) return null;
 
-                const toolCalls = plannerResponse?.toolCalls;
-
-                // Filter to only include tool calls that are actually pending.
-                const pendingToolCalls = Array.isArray(toolCalls)
-                    ? toolCalls.filter((tc: any) => {
-                        const hasResult = tc?.result !== undefined
-                            || tc?.output !== undefined
-                            || tc?.toolCallResult !== undefined;
-
-                        if (hasResult) return false;
-
-                        const s = tc?.status || tc?.toolCallStatus || '';
-                        const isCompleted = s === 'completed'
-                            || s === 'done'
-                            || s === 'success'
-                            || s === 'error';
-
-                        return !isCompleted;
-                    })
-                    : [];
+                const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
 
                 // Planning mode requires actual planned tool calls
                 const hasToolPlan = pendingToolCalls.length > 0;
 
                 if (!hasToolPlan) return null;
+                if (pendingToolCalls.some((tc: any) => this.isRunCommandTool(tc))) return null;
 
                 const responseText = plannerResponse?.response || '';
 

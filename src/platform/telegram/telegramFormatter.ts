@@ -7,13 +7,22 @@ export function escapeHtml(text: string): string {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#x27;');
+        .replace(/"/g, '&quot;');
 }
 
 marked.use({
     renderer: {
-        html({ text }) { return escapeHtml(text); },
+        html({ text }) {
+            // Preserve Telegram safe tags, escape the rest
+            const tagPlaceholders: string[] = [];
+            let result = text.replace(/<\/?(?:b|strong|i|em|u|ins|s|strike|del|a|code|pre|blockquote|span|tg-spoiler|tg-emoji)\b[^>]*>/gi, (tag) => {
+                const idx = tagPlaceholders.length;
+                tagPlaceholders.push(tag);
+                return `\x00TAG${idx}\x00`;
+            });
+            result = result.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return result.replace(/\x00TAG(\d+)\x00/g, (_m, idx) => tagPlaceholders[Number(idx)]);
+        },
         text({ text }) { return escapeHtml(text); },
         paragraph(token) {
             return this.parser.parseInline(token.tokens || []) + '\n\n';
@@ -23,8 +32,7 @@ marked.use({
         del({ text }) { return `<s>${text}</s>`; },
         codespan({ text }) { return `<code>${escapeHtml(text)}</code>`; },
         code({ text, lang }) {
-            const className = lang ? ` class="language-${lang}"` : '';
-            return `<pre><code${className}>${escapeHtml(text)}</code></pre>\n`;
+            return `<pre><code>${escapeHtml(text)}</code></pre>\n`;
         },
         link({ href, title, text }) { return `<a href="${href}">${text}</a>`; },
         heading({ text, depth }) { return `<b>${text}</b>\n\n`; },
@@ -47,10 +55,10 @@ marked.use({
  */
 export function markdownToTelegramHtml(text: string): string {
     if (!text) return '';
-    
+
     // Parse using marked
     let html = marked.parse(text) as string;
-    
+
     // Marked returns a string, but it might have double newlines from paragraph
     // Let's clean it up slightly and sanitize unauthorized tags
     html = html.trim();

@@ -88,6 +88,30 @@ describe('ApprovalDetector - approval button detection and remote execution', ()
         expect(detector.getLastDetectedInfo()).toBeNull();
     });
 
+    it('does not emit approval when the concrete tool step already finished', () => {
+        const { detector, onApprovalRequired } = createDetector();
+        detector.start();
+
+        detector.evaluate('cascade-1', [
+            {
+                type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                plannerResponse: {
+                    toolCalls: [{ id: 'tool-write', name: 'write_file' }],
+                },
+            },
+            {
+                type: 'CORTEX_STEP_TYPE_WRITE_TO_FILE',
+                status: 'CORTEX_STEP_STATUS_DONE',
+                metadata: {
+                    toolCall: { id: 'tool-write', name: 'write_file' },
+                },
+            },
+        ], IDLE);
+
+        expect(onApprovalRequired).not.toHaveBeenCalled();
+        expect(detector.getLastDetectedInfo()).toBeNull();
+    });
+
     it('alwaysAllowButton() can directly click Allow This Conversation', async () => {
         const { detector } = createDetector();
         const result = await detector.alwaysAllowButton();

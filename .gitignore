@@ -52,6 +52,9 @@ npm-debug.log*
 # Coverage
 coverage/
 
+# jscpd reports
+report/
+
 # npm pack artifacts
 *.tgz
 nul

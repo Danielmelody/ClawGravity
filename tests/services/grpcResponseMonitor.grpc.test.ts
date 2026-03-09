@@ -39,11 +39,11 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await monitor.stop();
     });
 
-    it('emits planner thinking details from streamed payloads and completes on idle status', async () => {
+    it('enters thinking phase from streamed planner payloads and completes on idle status', async () => {
         const client = new FakeGrpcClient();
-        const logs: string[] = [];
         const progress: string[] = [];
         let completedText = '';
+        const onPhaseChange = jest.fn();
 
         client.rawRPC.mockResolvedValue({
             trajectory: {
@@ -57,8 +57,8 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         const monitor = new GrpcResponseMonitor({
             grpcClient: client as any,
             cascadeId: 'cascade-123',
-            onProcessLog: (text) => logs.push(text),
             onProgress: (text) => progress.push(text),
+            onPhaseChange,
             onComplete: (text) => {
                 completedText = text;
             },
@@ -86,131 +86,7 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await Promise.resolve();
         await Promise.resolve(); // Extra tick for promise chaining
 
-        expect(logs.join('\n')).toContain('Inspecting the current workspace');
-        expect(completedText).toBe('DONE');
-        expect(client.rawRPC).toHaveBeenCalled();
-
-
-        await monitor.stop();
-    });
-
-    it('renders known tools with prettier summaries from streamed planner payloads', async () => {
-        const client = new FakeGrpcClient();
-        const logs: string[] = [];
-        let completedText = '';
-
-        client.rawRPC.mockResolvedValue({
-            trajectory: {
-                cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
-                steps: [
-                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'DONE' } },
-                ],
-            },
-        });
-
-        const monitor = new GrpcResponseMonitor({
-            grpcClient: client as any,
-            cascadeId: 'cascade-123',
-            onProcessLog: (text) => logs.push(text),
-            onComplete: (text) => {
-                completedText = text;
-            },
-        });
-
-        await monitor.start();
-        client.emit('data', {
-            type: 'status',
-            text: 'CASCADE_RUN_STATUS_RUNNING',
-            raw: {
-                result: {
-                    plannerResponse: {
-                        toolCalls: [
-                            {
-                                id: 'tool-1',
-                                name: 'find_by_name',
-                                argumentsJson: JSON.stringify({
-                                    Pattern: '*grpcResponseMonitor*',
-                                    SearchDirectory: 'c:\\repo',
-                                    SearchType: 'file',
-                                }),
-                            },
-                        ],
-                    },
-                },
-            },
-        });
-        client.emit('data', {
-            type: 'status',
-            text: 'CASCADE_RUN_STATUS_IDLE',
-            raw: { result: {} },
-        });
-
-        await Promise.resolve();
-        await Promise.resolve();
-        await Promise.resolve();
-
-        expect(logs).toContain('📂 Finding files matching "*grpcResponseMonitor*" in repo');
-        expect(completedText).toBe('DONE');
-        expect(client.rawRPC).toHaveBeenCalled();
-
-        await monitor.stop();
-    });
-
-    it('falls back to raw tool summaries for unknown tools from streamed payloads', async () => {
-        const client = new FakeGrpcClient();
-        const logs: string[] = [];
-        let completedText = '';
-
-        client.rawRPC.mockResolvedValue({
-            trajectory: {
-                cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
-                steps: [
-                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'DONE' } },
-                ],
-            },
-        });
-
-        const monitor = new GrpcResponseMonitor({
-            grpcClient: client as any,
-            cascadeId: 'cascade-unknown',
-            onProcessLog: (text) => logs.push(text),
-            onComplete: (text) => {
-                completedText = text;
-            },
-        });
-
-        await monitor.start();
-        client.emit('data', {
-            type: 'status',
-            text: 'CASCADE_RUN_STATUS_RUNNING',
-            raw: {
-                result: {
-                    plannerResponse: {
-                        toolCalls: [
-                            {
-                                id: 'mystery-1',
-                                name: 'mystery_tool',
-                                argumentsJson: JSON.stringify({
-                                    foo: 'bar',
-                                    target: 'alpha',
-                                }),
-                            },
-                        ],
-                    },
-                },
-            },
-        });
-        client.emit('data', {
-            type: 'status',
-            text: 'CASCADE_RUN_STATUS_IDLE',
-            raw: { result: {} },
-        });
-
-        await Promise.resolve();
-        await Promise.resolve();
-        await Promise.resolve();
-
-        expect(logs).toContain('🛠️ Tool mystery_tool: foo=bar | target=alpha');
+        expect(onPhaseChange).toHaveBeenCalledWith('thinking', null);
         expect(completedText).toBe('DONE');
         expect(client.rawRPC).toHaveBeenCalled();
 
@@ -696,6 +572,69 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         expect(client.rawRPC).toHaveBeenCalledTimes(6);
         expect(onComplete).toHaveBeenCalledWith('Late reply');
         expect(onTimeout).not.toHaveBeenCalled();
+
+        await monitor.stop();
+    });
+
+    it('renders timeline snapshots once per unique trajectory state', async () => {
+        const client = new FakeGrpcClient();
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Partial reply' } },
+                ],
+            },
+        });
+
+        const trajectoryRenderer = {
+            renderTrajectory: jest.fn().mockResolvedValue({
+                ok: true,
+                content: '<blockquote>Rendered timeline</blockquote>',
+                format: 'html',
+            }),
+        };
+        const onRenderedTimeline = jest.fn();
+
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-rendered-timeline',
+            expectedUserMessage: 'commit',
+            trajectoryRenderer: trajectoryRenderer as any,
+            onRenderedTimeline,
+        });
+
+        await monitor.start();
+        client.emit('error', new Error('HTTP 415: unsupported media type'));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        await jest.advanceTimersByTimeAsync(1600);
+
+        expect(trajectoryRenderer.renderTrajectory).toHaveBeenCalledTimes(1);
+        expect(trajectoryRenderer.renderTrajectory).toHaveBeenCalledWith({
+            steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Partial reply' } },
+            ],
+            runStatus: 'CASCADE_RUN_STATUS_RUNNING',
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Partial reply' } },
+                ],
+            },
+            format: 'html',
+        });
+        expect(onRenderedTimeline).toHaveBeenCalledTimes(1);
+        expect(onRenderedTimeline).toHaveBeenCalledWith({
+            content: '<blockquote>Rendered timeline</blockquote>',
+            format: 'html',
+            strategy: undefined,
+            contextId: undefined,
+        });
 
         await monitor.stop();
     });

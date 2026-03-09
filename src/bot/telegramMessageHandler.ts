@@ -16,11 +16,10 @@ import { CdpBridge, ensureWorkspaceRuntime, registerApprovalWorkspaceChannel } f
 import type { UserMessageInfo } from '../services/userMessageDetector';
 import { CdpService } from '../services/cdpService';
 import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
-import { ProcessLogBuffer } from '../utils/processLogBuffer';
 import { splitOutputAndLogs } from '../utils/discordFormatter';
 import { parseTelegramProjectCommand, handleTelegramProjectCommand } from './telegramProjectCommand';
 import { parseTelegramCommand, handleTelegramCommand } from './telegramCommands';
-import { escapeHtml } from '../platform/telegram/telegramFormatter';
+
 import { ModeService, MODE_UI_NAMES } from '../services/modeService';
 import type { ModelService } from '../services/modelService';
 import { applyDefaultModel } from '../services/defaultModelApplicator';
@@ -37,6 +36,9 @@ import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor'
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
 import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
+import { markdownToTelegramHtmlViaUnified, rawHtmlToTelegramHtml } from '../platform/telegram/trajectoryRenderer';
+import { AntigravityTrajectoryRenderer } from '../services/antigravityTrajectoryRenderer';
+import { escapeHtml } from '../platform/telegram/telegramFormatter';
 
 export interface TelegramMessageHandlerDeps {
     readonly bridge: CdpBridge;
@@ -303,9 +305,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             // Monitor the response
             const channel = trackedChannel;
             const startTime = Date.now();
-            const processLogBuffer = new ProcessLogBuffer({ maxChars: 3500, maxEntries: 120, maxEntryLength: 220 });
-            let lastActivityLogText = '';
-            let latestPreviewText = '';
+            let renderedTimelineHtml = '';
             let statusMsg: PlatformSentMessage | null = null;
             let lastStatusRender = '';
 
@@ -322,6 +322,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             let isStatusTerminal = false;
             let currentStateIndicator = '⏳ Waiting for response...';
             let lastPhaseName = '';
+            const getStatusActivityText = () => renderedTimelineHtml;
 
             const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
                 if (isStatusTerminal && mode === 'streaming') return;
@@ -329,8 +330,8 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 const now = Date.now();
                 const elapsed = Math.round((now - startTime) / 1000);
                 const nextText = buildTelegramStatusText({
-                    activityLogText: lastActivityLogText,
-                    previewText: mode === 'streaming' ? latestPreviewText : '',
+                    activityLogText: getStatusActivityText(),
+                    previewText: '',
                     elapsedSeconds: elapsed,
                     mode,
                     headerLines,
@@ -409,17 +410,10 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     return;
                 }
                 const { grpcClient, cascadeId } = monitoringTarget;
+                const trajectoryRenderer = new AntigravityTrajectoryRenderer(cdp);
 
                 const monitorConfig = {
-                    onProcessLog: (logText: string) => {
-                        if (logText && logText.trim().length > 0) {
-                            lastActivityLogText = processLogBuffer.append(logText);
-                        }
-                        refreshStatusMessage('streaming');
-                    },
-
                     onProgress: (progressText: string) => {
-                        latestPreviewText = progressText || '';
                         refreshStatusMessage('streaming');
                     },
 
@@ -434,12 +428,19 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             currentStateIndicator = `✍️ Generating (${len} chars)...`;
                         } else if (phase === 'error') {
                             currentStateIndicator = '❌ Error';
-                            const errorEntry = text ? `❌ Error: ${text}` : '❌ Error occurred';
-                            lastActivityLogText = processLogBuffer.append(errorEntry);
+                            renderedTimelineHtml = '';
                         } else if (phase === 'quotaReached') {
                             currentStateIndicator = '⚠️ Quota Reached';
-                            lastActivityLogText = processLogBuffer.append('⚠️ Quota reached');
+                            renderedTimelineHtml = '';
                         }
+                        refreshStatusMessage('streaming');
+                    },
+
+                    onRenderedTimeline: (timeline: { content: string; format: 'text' | 'html' }) => {
+                        if (timeline.format !== 'html') return;
+                        if (!timeline.content || timeline.content.trim().length === 0) return;
+                        renderedTimelineHtml = rawHtmlToTelegramHtml(timeline.content).trim();
+                        if (!renderedTimelineHtml) return;
                         refreshStatusMessage('streaming');
                     },
 
@@ -455,13 +456,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             // Flash "Done" state on the card before replacing with final text
                             currentStateIndicator = `✅ Finished`;
                             refreshStatusMessage('complete');
-
-                            // Console log output (mirroring Discord handler pattern)
-                            const finalLogText = lastActivityLogText || processLogBuffer.snapshot();
-                            if (finalLogText && finalLogText.trim().length > 0) {
-                                logger.divider('Process Log');
-                                console.info(finalLogText);
-                            }
 
                             const separated = splitOutputAndLogs(finalText || '');
                             const finalOutputText = separated.output || finalText || '';
@@ -570,7 +564,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                             // Update status message with correct mode
                             if (statusMsg) {
-                                latestPreviewText = '';
                                 refreshStatusMessage(isError || isQuota ? 'error' : 'timeout');
                             }
 
@@ -603,6 +596,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     cascadeId,
                     maxDurationMs: TIMEOUT_MS,
                     expectedUserMessage: effectivePrompt,
+                    trajectoryRenderer,
                     ...monitorConfig
                 });
 
@@ -633,16 +627,17 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
     };
 }
 
-/** Split long text into Telegram-safe chunks (max 4096 chars). */
+/**
+ * Split long text into Telegram-safe chunks (max 4096 chars).
+ * Converts Markdown to Telegram HTML before splitting for consistency.
+ */
 async function sendTextChunked(
     channel: PlatformChannel,
     text: string,
 ): Promise<void> {
-    const MAX_LENGTH = 4096;
-    let remaining = text;
-    while (remaining.length > 0) {
-        const chunk = remaining.slice(0, MAX_LENGTH);
-        remaining = remaining.slice(MAX_LENGTH);
+    const telegramHtml = markdownToTelegramHtmlViaUnified(text) || text;
+    const chunks = splitTelegramText(telegramHtml);
+    for (const chunk of chunks) {
         await channel.send({ text: chunk }).catch(logger.error);
     }
 }
@@ -652,7 +647,9 @@ async function deliverFinalTelegramText(
     channel: PlatformChannel,
     text: string,
 ): Promise<void> {
-    const chunks = splitTelegramText(text);
+    // Convert raw Markdown to Telegram-safe HTML via the unified pipeline
+    const telegramHtml = markdownToTelegramHtmlViaUnified(text) || text;
+    const chunks = splitTelegramText(telegramHtml);
     if (chunks.length === 0) {
         return;
     }
@@ -682,20 +679,38 @@ async function deliverFinalTelegramText(
     }
 }
 
+/**
+ * Split text into chunks that fit Telegram's 4096-char limit.
+ * Prefers splitting at newline boundaries to avoid breaking HTML tags.
+ */
 function splitTelegramText(text: string): string[] {
     const MAX_LENGTH = 4096;
+    if (text.length <= MAX_LENGTH) return text.length > 0 ? [text] : [];
+
     const chunks: string[] = [];
     let remaining = text;
     while (remaining.length > 0) {
-        chunks.push(remaining.slice(0, MAX_LENGTH));
-        remaining = remaining.slice(MAX_LENGTH);
+        if (remaining.length <= MAX_LENGTH) {
+            chunks.push(remaining);
+            break;
+        }
+
+        // Try to split at the last newline before the limit
+        const candidate = remaining.slice(0, MAX_LENGTH);
+        const lastNewline = candidate.lastIndexOf('\n');
+
+        // Use newline boundary if it's reasonably close (at least 50% of MAX_LENGTH)
+        const splitAt = lastNewline > MAX_LENGTH / 2 ? lastNewline + 1 : MAX_LENGTH;
+
+        chunks.push(remaining.slice(0, splitAt));
+        remaining = remaining.slice(splitAt);
     }
     return chunks;
 }
 
 function buildTelegramStatusText(options: {
     activityLogText: string;
-    previewText: string;
+    previewText?: string;
     elapsedSeconds: number;
     mode: 'streaming' | 'complete' | 'timeout' | 'error';
     headerLines?: string[];
@@ -704,7 +719,6 @@ function buildTelegramStatusText(options: {
 }): string {
     const MAX_LENGTH = 4096;
 
-    // State indicator bar at the top (bold)
     const stateBarStr = options.stateIndicator || '';
     const stateBar = stateBarStr ? `<b>${escapeHtml(stateBarStr)}</b>` : '';
 
@@ -715,72 +729,30 @@ function buildTelegramStatusText(options: {
             : options.mode === 'error'
                 ? `❌ Error after ${options.elapsedSeconds}s`
                 : `⏱️ ${options.elapsedSeconds}s`;
-
-    // Italic footer
     const footer = `<i>${escapeHtml(footerRaw)}</i>`;
 
     const header = options.headerLines && options.headerLines.length > 0
-        ? escapeHtml(options.headerLines.join('\n'))
+        ? options.headerLines.map((line) => escapeHtml(line)).join('\n')
         : '';
 
     const sessionText = options.sessionLines && options.sessionLines.length > 0
-        ? escapeHtml(options.sessionLines.join('\n'))
+        ? options.sessionLines.map((line) => escapeHtml(line)).join('\n')
         : '';
 
-    // Show only the tail of preview text to keep the display concise.
-    const PREVIEW_MAX_CHARS = 1000;
-    let preview = (options.previewText && options.mode === 'streaming')
-        ? options.previewText.trim()
-        : '';
-    if (preview.length > PREVIEW_MAX_CHARS) {
-        // Find a clean break point (paragraph or sentence) near the tail
-        const tail = preview.slice(-PREVIEW_MAX_CHARS);
-        const breakIdx = tail.indexOf('\n');
-        preview = '...' + (breakIdx > 0 ? tail.slice(breakIdx) : tail);
-    }
-
-    // Merge activity log + preview into a single linear output
     const activityLogStr = options.activityLogText.trim();
-
-    // We truncate purely on strings BEFORE wrapping in HTML to avoid unclosed tags
-    const reservedChars = header.length + sessionText.length + footerRaw.length + stateBarStr.length + 100;
-    const remainingForBody = Math.max(0, MAX_LENGTH - reservedChars);
-
-    // If activity log + preview is too long, we aggressively truncate preview. 
-    // Usually activity log is bounded by ProcessLogBuffer, but we handle the sum.
-    let combinedStrLength = activityLogStr.length + preview.length;
-    if (combinedStrLength > remainingForBody) {
-        if (remainingForBody < 60) {
-            preview = '';
-        } else {
-            const prefix = '...\n';
-            const tailLength = Math.max(0, remainingForBody - activityLogStr.length - prefix.length);
-            if (tailLength > 0) {
-                preview = prefix + preview.slice(-tailLength);
-            } else {
-                preview = '';
-            }
-        }
-    }
-
-    const activityLog = activityLogStr
-        ? `<blockquote>${escapeHtml(activityLogStr)}</blockquote>`
-        : '';
-    const previewSnippet = preview ? `✍️ ${escapeHtml(preview)}` : '';
-
-    const combinedParts: string[] = [];
-    if (activityLog) combinedParts.push(activityLog);
-    if (previewSnippet) combinedParts.push(previewSnippet);
-    let combined = combinedParts.join('\n\n');
-
     const sections: string[] = [];
     if (stateBar) sections.push(stateBar);
     if (header) sections.push(header);
     if (sessionText) sections.push(sessionText);
-    if (combined) sections.push(combined);
+    if (activityLogStr) sections.push(activityLogStr);
     sections.push(footer);
 
-    return sections.join('\n\n');
+    let text = sections.join('\n\n');
+    if (text.length > MAX_LENGTH && activityLogStr) {
+        const withoutTimeline = sections.filter((section) => section !== activityLogStr);
+        text = withoutTimeline.join('\n\n');
+    }
+    return text;
 }
 
 // ---------------------------------------------------------------------------
@@ -833,9 +805,7 @@ async function startPassiveResponseMonitor(
     }
 
     const startTime = Date.now();
-    const processLogBuffer = new ProcessLogBuffer({ maxChars: 3500, maxEntries: 120, maxEntryLength: 220 });
-    let lastActivityLogText = '';
-    let latestPreviewText = '';
+    let renderedTimelineHtml = '';
     let statusMsg: PlatformSentMessage | null = null;
     let lastStatusRender = '';
     let statusMsgSent = false;
@@ -846,6 +816,7 @@ async function startPassiveResponseMonitor(
     let lastStatusEditTime = 0;
     const STATUS_EDIT_MIN_INTERVAL_MS = 2500;
     let pendingStatusUpdateTimer: NodeJS.Timeout | null = null;
+    const getStatusActivityText = () => renderedTimelineHtml;
 
     const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
         if (isStatusTerminal && mode === 'streaming') return;
@@ -854,8 +825,8 @@ async function startPassiveResponseMonitor(
         const elapsed = Math.round((now - startTime) / 1000);
 
         const nextText = buildTelegramStatusText({
-            activityLogText: lastActivityLogText,
-            previewText: mode === 'streaming' ? latestPreviewText : '',
+            activityLogText: getStatusActivityText(),
+            previewText: '',
             elapsedSeconds: elapsed,
             mode,
             sessionLines,
@@ -913,17 +884,20 @@ async function startPassiveResponseMonitor(
     };
 
     const initialMonitoringTarget = await runtime.getMonitoringTarget(info.cascadeId || null);
+    const trajectoryRenderer = new AntigravityTrajectoryRenderer(
+        runtime.getConnectedCdp() ?? runtime.getCdpUnsafe(),
+    );
 
     const monitorConfig = {
-        onProcessLog: (logText: string) => {
-            if (logText && logText.trim().length > 0) {
-                lastActivityLogText = processLogBuffer.append(logText);
-            }
+        onProgress: (progressText: string) => {
             ensureStatusMsg().then(() => refreshStatusMessage('streaming')).catch(() => { });
         },
 
-        onProgress: (progressText: string) => {
-            latestPreviewText = progressText || '';
+        onRenderedTimeline: (timeline: { content: string; format: 'text' | 'html' }) => {
+            if (timeline.format !== 'html') return;
+            if (!timeline.content || timeline.content.trim().length === 0) return;
+            renderedTimelineHtml = rawHtmlToTelegramHtml(timeline.content).trim();
+            if (!renderedTimelineHtml) return;
             ensureStatusMsg().then(() => refreshStatusMessage('streaming')).catch(() => { });
         },
 
@@ -1029,15 +1003,14 @@ async function startPassiveResponseMonitor(
         onPhaseChange: (phase: string, _text: string | null) => {
             if (phase === 'thinking') {
                 currentStateIndicator = '🤔 Thinking...';
-                lastActivityLogText = '🤔 Thinking / Planning...';
             } else if (phase === 'generating') {
                 currentStateIndicator = '✍️ Generating...';
             } else if (phase === 'error') {
                 currentStateIndicator = '❌ Error';
-                lastActivityLogText = '❌ Error occurred';
+                renderedTimelineHtml = '';
             } else if (phase === 'quotaReached') {
                 currentStateIndicator = '⚠️ Quota Reached';
-                lastActivityLogText = '⚠️ Quota reached';
+                renderedTimelineHtml = '';
             }
             ensureStatusMsg().then(() => refreshStatusMessage('streaming')).catch(() => { });
         },
@@ -1077,6 +1050,7 @@ async function startPassiveResponseMonitor(
         cascadeId: initialMonitoringTarget.cascadeId,
         maxDurationMs: 600_000,
         expectedUserMessage: info.text,
+        trajectoryRenderer,
         ...monitorConfig
     });
 

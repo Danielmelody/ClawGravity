@@ -114,76 +114,77 @@ export class UserMessageDetector {
         if (!this.isRunning) return;
 
         try {
-            let newestId: string | null = null;
-            let currentPollMaxMs = 0;
+            const updates: Array<{ id: string; ms: number; stepIndex: number }> = [];
+            let maxPrimingMs = this.lastMaxUserInputTimeMs;
 
             for (const [id, t] of Object.entries(summaries)) {
                 const timeStr = (t as any).lastUserInputTime;
                 if (!timeStr) continue;
 
                 const ms = new Date(timeStr).getTime();
-                if (ms > currentPollMaxMs) {
-                    currentPollMaxMs = ms;
-                    newestId = id;
+                if (this.isPriming) {
+                    if (ms > maxPrimingMs) maxPrimingMs = ms;
+                } else if (ms > this.lastMaxUserInputTimeMs) {
+                    updates.push({ id, ms, stepIndex: (t as any).lastUserInputStepIndex });
                 }
-            }
-
-            // If no data
-            if (!newestId) {
-                this.isPriming = false;
-                return;
             }
 
             // First run, just seed
             if (this.isPriming) {
                 this.isPriming = false;
-                this.lastMaxUserInputTimeMs = currentPollMaxMs;
-                logger.debug(`[UserMessageDetector] Primed with maxTime: ${currentPollMaxMs}`);
+                this.lastMaxUserInputTimeMs = maxPrimingMs;
+                logger.debug(`[UserMessageDetector] Primed with maxTime: ${maxPrimingMs}`);
                 return;
             }
 
             // No new user input globally
-            if (currentPollMaxMs <= this.lastMaxUserInputTimeMs) {
+            if (updates.length === 0) {
                 return;
             }
 
-            // New User Input detected!
-            this.lastMaxUserInputTimeMs = currentPollMaxMs;
+            // Sort updates chronologically
+            updates.sort((a, b) => a.ms - b.ms);
 
             const client = await this.cdpService.getGrpcClient();
             if (!client) return;
 
-            const traj = await client.rawRPC('GetCascadeTrajectory', { cascadeId: newestId });
-            const stepIndex = (summaries as any)[newestId].lastUserInputStepIndex;
+            for (const update of updates) {
+                try {
+                    const traj = await client.rawRPC('GetCascadeTrajectory', { cascadeId: update.id });
+                    const steps = traj?.trajectory?.steps || [];
 
-            const steps = traj?.trajectory?.steps || [];
-            if (!steps[stepIndex]) return;
+                    if (!steps[update.stepIndex]) {
+                        this.lastMaxUserInputTimeMs = Math.max(this.lastMaxUserInputTimeMs, update.ms);
+                        continue;
+                    }
 
-            const items = steps[stepIndex].userInput?.items || [];
-            const textParts = items.map((i: any) => i.text).filter(Boolean);
-            const rawText = textParts.join('\n');
+                    const items = steps[update.stepIndex].userInput?.items || [];
+                    const textParts = items.map((i: any) => i.text).filter(Boolean);
+                    const rawText = textParts.join('\n');
 
-            if (!rawText.trim()) return;
+                    if (rawText.trim()) {
+                        const text = rawText.trim();
+                        const hash = computeEchoHash(text);
+                        const preview = text.slice(0, 40).replace(/\n/g, ' ');
 
-            const text = rawText.trim();
-            const hash = computeEchoHash(text);
-            const preview = text.slice(0, 40).replace(/\n/g, ' ');
+                        // Dupe checks
+                        if (this.seenHashes.has(hash)) {
+                            logger.debug(`[UserMessageDetector] seenHash hit, skipping: "${preview}..."`);
+                        } else if (this.echoHashes.has(hash)) {
+                            logger.debug(`[UserMessageDetector] Echo hash match, skipping: "${preview}..."`);
+                            this.addToSeenHashes(hash);
+                        } else {
+                            this.addToSeenHashes(hash);
+                            logger.debug(`[UserMessageDetector] New message detected via gRPC: "${preview}..."`);
+                            this.onUserMessage({ text, cascadeId: update.id });
+                        }
+                    }
 
-            // Dupe checks
-            if (this.seenHashes.has(hash)) {
-                logger.debug(`[UserMessageDetector] seenHash hit, skipping: "${preview}..."`);
-                return;
+                    this.lastMaxUserInputTimeMs = Math.max(this.lastMaxUserInputTimeMs, update.ms);
+                } catch (innerError) {
+                    logger.error(`[UserMessageDetector] Error evaluating cascade ${update.id}:`, innerError);
+                }
             }
-
-            if (this.echoHashes.has(hash)) {
-                logger.debug(`[UserMessageDetector] Echo hash match, skipping: "${preview}..."`);
-                this.addToSeenHashes(hash);
-                return;
-            }
-
-            this.addToSeenHashes(hash);
-            logger.debug(`[UserMessageDetector] New message detected via gRPC: "${preview}..."`);
-            this.onUserMessage({ text, cascadeId: newestId });
 
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

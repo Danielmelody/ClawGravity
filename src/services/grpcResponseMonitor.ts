@@ -10,112 +10,9 @@
  * Completely headless — no DOM, no CDP.
  */
 
-import path from 'path';
 import { logger } from '../utils/logger';
 import { GrpcCascadeClient, CascadeStreamEvent } from './grpcCascadeClient';
-
-function tryParseJsonObject(json: string | undefined): Record<string, unknown> | null {
-    if (!json) return null;
-    try {
-        const parsed = JSON.parse(json);
-        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-            ? parsed as Record<string, unknown>
-            : null;
-    } catch {
-        return null;
-    }
-}
-
-function trimDisplayValue(value: string, maxLength: number = 120): string {
-    const normalized = value.replace(/\s+/g, ' ').trim();
-    if (normalized.length <= maxLength) return normalized;
-    return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
-}
-
-function formatScalar(value: unknown): string | null {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-        return String(value);
-    }
-    if (typeof value !== 'string') return null;
-
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-
-    if (/^file:\/\//i.test(trimmed)) {
-        return trimDisplayValue(path.basename(trimmed.replace(/^file:\/\/\/?/i, '')));
-    }
-
-    if (/^[a-z]:[\\/]/i.test(trimmed) || trimmed.includes('/') || trimmed.includes('\\')) {
-        return trimDisplayValue(path.basename(trimmed));
-    }
-
-    return trimDisplayValue(trimmed);
-}
-
-function formatKeyValue(key: string, value: unknown): string | null {
-    const formatted = formatScalar(value);
-    if (!formatted) return null;
-
-    switch (key) {
-        case 'query':
-            return `query=${formatted}`;
-        case 'pattern':
-            return `pattern=${formatted}`;
-        case 'searchType':
-            return `type=${formatted}`;
-        case 'searchDirectory':
-            return `dir=${formatted}`;
-        case 'searchPathUri':
-        case 'absolutePathUri':
-        case 'absolutePath':
-        case 'relativePath':
-            return `path=${formatted}`;
-        case 'userErrorMessage':
-            return formatted;
-        default:
-            return `${key}=${formatted}`;
-    }
-}
-
-function getObjectValue(source: Record<string, unknown> | null | undefined, ...keys: string[]): unknown {
-    if (!source) return null;
-
-    for (const key of keys) {
-        if (key in source) return source[key];
-        const found = Object.keys(source).find((candidate) => candidate.toLowerCase() === key.toLowerCase());
-        if (found) return source[found];
-    }
-
-    return null;
-}
-
-function getResultCount(payload: Record<string, unknown> | null): number | null {
-    if (!payload) return null;
-    const direct = getObjectValue(payload, 'totalResults', 'truncatedTotalResults');
-    if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
-    const results = getObjectValue(payload, 'results');
-    return Array.isArray(results) ? results.length : null;
-}
-
-function getLineRangeLabel(source: Record<string, unknown> | null): string | null {
-    if (!source) return null;
-
-    const start = getObjectValue(source, 'startLine', 'StartLine');
-    const end = getObjectValue(source, 'endLine', 'EndLine');
-    if (typeof start === 'number' && typeof end === 'number') {
-        return start === end ? `line ${start}` : `lines ${start}-${end}`;
-    }
-    return null;
-}
-
-function quoteValue(value: unknown): string | null {
-    const formatted = formatScalar(value);
-    return formatted ? `"${formatted}"` : null;
-}
-
-function joinSummaryParts(parts: Array<string | null | undefined>): string {
-    return parts.filter((part): part is string => Boolean(part && part.trim())).join(' ');
-}
+import type { AntigravityTrajectoryRenderer } from './antigravityTrajectoryRenderer';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -145,7 +42,13 @@ export interface GrpcResponseMonitorOptions {
     onComplete?: (finalText: string) => void;
     onTimeout?: (lastText: string) => void;
     onPhaseChange?: (phase: GrpcResponsePhase, text: string | null) => void;
-    onProcessLog?: (text: string) => void;
+    onRenderedTimeline?: (timeline: {
+        content: string;
+        format: 'text' | 'html';
+        strategy?: string;
+        contextId?: number;
+    }) => void;
+    trajectoryRenderer?: AntigravityTrajectoryRenderer;
 }
 
 /** Debounce delay for trajectory fetches triggered by reactive diffs */
@@ -158,6 +61,9 @@ const RECOVERY_MAX_DELAY_MS = 4000;
 const RECOVERY_MAX_RETRIES = 8;
 
 interface TrajectoryRecoverySnapshot {
+    steps: any[];
+    renderSteps: any[];
+    renderTrajectory: any | null;
     runStatus: string | null;
     hasExplicitRunStatus: boolean;
     anchorMatched: boolean;
@@ -166,8 +72,6 @@ interface TrajectoryRecoverySnapshot {
     /** True if the latest assistant step contains PENDING tool calls (no result yet — model is mid-turn) */
     latestAssistantHasToolCalls: boolean;
     latestAssistantSignature: string | null;
-    accumulatedThinkingText: string;
-    allToolCalls: any[];
 }
 
 function normalizeComparableText(text: string | null | undefined): string {
@@ -217,14 +121,18 @@ export class GrpcResponseMonitor {
     private readonly onComplete?: (finalText: string) => void;
     private readonly onTimeout?: (lastText: string) => void;
     private readonly onPhaseChange?: (phase: GrpcResponsePhase, text: string | null) => void;
-    private readonly onProcessLog?: (text: string) => void;
+    private readonly onRenderedTimeline?: (timeline: {
+        content: string;
+        format: 'text' | 'html';
+        strategy?: string;
+        contextId?: number;
+    }) => void;
+    private readonly trajectoryRenderer?: AntigravityTrajectoryRenderer;
 
     private isRunning = false;
     private currentPhase: GrpcResponsePhase = 'waiting';
     private lastResponseText: string | null = null;
     private lastThinkingText: string | null = null;
-    private hasSeenToolCall = false;
-    private readonly emittedPlannedToolIds = new Set<string>();
     private hasSeenActivity = false;
     private startTime = 0;
     private pendingTerminalAssistantSignature: string | null = null;
@@ -240,6 +148,10 @@ export class GrpcResponseMonitor {
     private reactiveSnapshotTimer: NodeJS.Timeout | null = null;
     private activeTrajectoryRPC: Promise<TrajectoryRecoverySnapshot | null> | null = null;
     private recoveryPromise: Promise<void> | null = null;
+    private timelineRenderPromise: Promise<void> | null = null;
+    private queuedTimelineSnapshot: TrajectoryRecoverySnapshot | null = null;
+    private lastRenderedTimelineKey: string | null = null;
+    private lastRenderedTimelineContent: string | null = null;
 
     constructor(options: GrpcResponseMonitorOptions) {
         this.client = options.grpcClient;
@@ -251,7 +163,8 @@ export class GrpcResponseMonitor {
         this.onComplete = options.onComplete;
         this.onTimeout = options.onTimeout;
         this.onPhaseChange = options.onPhaseChange;
-        this.onProcessLog = options.onProcessLog;
+        this.onRenderedTimeline = options.onRenderedTimeline;
+        this.trajectoryRenderer = options.trajectoryRenderer;
     }
 
     /** Start monitoring the cascade for AI response */
@@ -261,11 +174,13 @@ export class GrpcResponseMonitor {
         this.startTime = Date.now();
         this.lastResponseText = null;
         this.lastThinkingText = null;
-        this.emittedPlannedToolIds.clear();
         this.hasSeenActivity = false;
-        this.hasSeenToolCall = false;
         this.pendingTerminalAssistantSignature = null;
         this.recoveryPromise = null;
+        this.timelineRenderPromise = null;
+        this.queuedTimelineSnapshot = null;
+        this.lastRenderedTimelineKey = null;
+        this.lastRenderedTimelineContent = null;
 
         this.setPhase('waiting', null);
 
@@ -367,9 +282,7 @@ export class GrpcResponseMonitor {
     private handleStreamData(evt: CascadeStreamEvent): void {
         if (!this.isRunning) return;
 
-        // Legacy payload extraction (for non-reactive stream formats)
         this.emitThinkingDetailsFromPayload(evt.raw?.result ?? evt.raw);
-        this.emitPlannedToolCalls(evt.raw?.result?.plannerResponse?.toolCalls);
 
         if (evt.type === 'error') {
             const msg = evt.text || 'Unknown stream payload error';
@@ -539,8 +452,6 @@ export class GrpcResponseMonitor {
             let latestResponseText: string | null = null;
             let latestAssistantHasToolCalls = false;
             let latestAssistantSignature: string | null = null;
-            let accumulatedThinkingText = '';
-            const allToolCalls: any[] = [];
 
             let anchorIndex = -1;
             if (this.expectedUserMessage) {
@@ -558,6 +469,12 @@ export class GrpcResponseMonitor {
                 if (anchorIndex === -1) {
                     logger.warn(`[GrpcMonitor] Anchor not matched and no user input steps found. Expected: "${this.expectedUserMessage.slice(0, 50)}..."`);
                     return {
+                        steps,
+                        renderSteps: steps.slice(0),
+                        renderTrajectory: {
+                            ...(trajectory || {}),
+                            steps: steps.slice(0),
+                        },
                         runStatus,
                         hasExplicitRunStatus,
                         anchorMatched: false,
@@ -565,11 +482,11 @@ export class GrpcResponseMonitor {
                         latestResponseText: null,
                         latestAssistantHasToolCalls: false,
                         latestAssistantSignature: null,
-                        accumulatedThinkingText,
-                        allToolCalls,
                     };
                 }
             }
+
+            const renderStartIndex = anchorIndex >= 0 ? anchorIndex : 0;
 
             for (let i = Math.max(anchorIndex, 0); i < steps.length; i++) {
                 const step = steps[i];
@@ -594,23 +511,16 @@ export class GrpcResponseMonitor {
 
                     const thinking = step?.plannerResponse?.thinking;
                     if (typeof thinking === 'string' && thinking.trim().length > 0) {
-                        accumulatedThinkingText = accumulatedThinkingText
-                            ? accumulatedThinkingText + '\n' + thinking
-                            : thinking;
-                    }
-
-                    if (Array.isArray(step?.plannerResponse?.toolCalls)) {
-                        allToolCalls.push(...step.plannerResponse.toolCalls);
+                        this.emitThinkingDetails(thinking);
                     }
 
                     const stepText = extractAssistantStepText(step);
-                    // Accumulate all assistant step texts (not just the last one)
-                    // so the streaming preview shows the full multi-step output.
                     if (stepText) {
                         latestResponseText = latestResponseText
                             ? latestResponseText + '\n\n' + stepText
                             : stepText;
                     }
+
                     // Only count PENDING tool calls (no result yet) as "still working".
                     // Resolved tool calls (with results/output) should not block completion.
                     if (Array.isArray(step?.plannerResponse?.toolCalls) && step.plannerResponse.toolCalls.length > 0) {
@@ -635,6 +545,12 @@ export class GrpcResponseMonitor {
             }
 
             return {
+                steps,
+                renderSteps: steps.slice(renderStartIndex),
+                renderTrajectory: {
+                    ...(trajectory || {}),
+                    steps: steps.slice(renderStartIndex),
+                },
                 runStatus,
                 hasExplicitRunStatus,
                 anchorMatched: !this.expectedUserMessage || anchorIndex !== -1,
@@ -642,8 +558,6 @@ export class GrpcResponseMonitor {
                 latestResponseText,
                 latestAssistantHasToolCalls,
                 latestAssistantSignature,
-                accumulatedThinkingText,
-                allToolCalls,
             };
         } catch (err: any) {
             logger.debug(`[GrpcMonitor] Trajectory recovery failed: ${err?.message || err}`);
@@ -665,20 +579,13 @@ export class GrpcResponseMonitor {
             return false;
         }
 
+        this.scheduleTimelineRender(snapshot);
+
         const latestText = snapshot.latestRole === 'assistant'
             ? (snapshot.latestResponseText ?? '')
             : null;
 
-        // Emit thinking details first (always comes before tool calls)
-        if (snapshot.accumulatedThinkingText) {
-            this.emitThinkingDetails(snapshot.accumulatedThinkingText);
-        }
-
-        // Transition to 'generating' phase BEFORE emitting tool calls when
-        // response text is present. This matches the real execution timeline:
-        // the AI starts generating, then tool calls fire during generation.
-        // Without this order, the Telegram log would show all tool calls
-        // batched before "✍️ Generating..." instead of interleaved correctly.
+        // Transition to 'generating' phase when response text is present.
         let textUpdated = false;
         if (latestText !== null && latestText !== this.lastResponseText) {
             this.lastResponseText = latestText;
@@ -696,13 +603,6 @@ export class GrpcResponseMonitor {
             }
         }
 
-        // Emit tool calls AFTER phase transition so they appear in the correct
-        // chronological position in the activity log.
-        if (snapshot.allToolCalls.length > 0) {
-            this.emitPlannedToolCalls(snapshot.allToolCalls);
-        }
-
-        // Emit progress after tool calls to keep the streaming preview up-to-date
         if (textUpdated && latestText) {
             this.onProgress?.(latestText);
         }
@@ -832,157 +732,6 @@ export class GrpcResponseMonitor {
         if (this.currentPhase === 'waiting') {
             this.setPhase('thinking', null);
         }
-        this.onProcessLog?.(delta);
-    }
-
-    private emitPlannedToolCalls(toolCalls: unknown): void {
-        if (!Array.isArray(toolCalls)) return;
-
-        for (const toolCall of toolCalls) {
-            const id = typeof toolCall?.id === 'string'
-                ? toolCall.id
-                : JSON.stringify(toolCall);
-            if (this.emittedPlannedToolIds.has(id)) continue;
-
-            this.emittedPlannedToolIds.add(id);
-            const summary = this.buildPlannedToolSummary(toolCall);
-            if (!summary) continue;
-
-            this.hasSeenActivity = true;
-            if (this.currentPhase === 'waiting') {
-                this.setPhase('thinking', null);
-            }
-            this.onProcessLog?.(summary);
-        }
-    }
-
-    private buildPlannedToolSummary(toolCall: any): string | null {
-        const toolName = typeof toolCall?.name === 'string' ? toolCall.name : 'tool';
-        const args = tryParseJsonObject(toolCall?.argumentsJson);
-        const known = this.buildKnownToolSummary(toolName, args, null, 'planned');
-        if (known) return known;
-
-        const parts = this.collectArgumentParts(args);
-        return parts.length > 0
-            ? `🛠️ Tool ${toolName}: ${parts.join(' | ')}`
-            : `🛠️ Tool ${toolName}`;
-    }
-
-    private buildKnownToolSummary(
-        toolName: string,
-        args: Record<string, unknown> | null,
-        payload: Record<string, unknown> | null,
-        phase: 'planned' | 'done' | 'error',
-        errorMessage?: string,
-    ): string | null {
-        const normalized = toolName.toLowerCase();
-        const pathLabel = formatScalar(
-            getObjectValue(payload, 'absolutePathUri', 'searchPathUri', 'absolutePath', 'relativePath')
-            ?? getObjectValue(args, 'AbsolutePath', 'SearchPath', 'SearchDirectory'),
-        );
-        const queryLabel = quoteValue(getObjectValue(payload, 'query') ?? getObjectValue(args, 'Query'));
-        const patternLabel = quoteValue(getObjectValue(payload, 'pattern') ?? getObjectValue(args, 'Pattern'));
-        const lineLabel = getLineRangeLabel(payload) || getLineRangeLabel(args);
-        const resultCount = getResultCount(payload);
-
-        switch (normalized) {
-            case 'grep_search':
-                if (phase === 'error') {
-                    return joinSummaryParts([
-                        '❌ Search failed',
-                        queryLabel ? `for ${queryLabel}` : '',
-                        pathLabel ? `in ${pathLabel}` : '',
-                        errorMessage ? `- ${errorMessage}` : '',
-                    ]);
-                }
-                if (phase === 'planned') {
-                    return joinSummaryParts([
-                        '🔎 Searching',
-                        queryLabel ? `for ${queryLabel}` : '',
-                        pathLabel ? `in ${pathLabel}` : '',
-                    ]);
-                }
-                return joinSummaryParts([
-                    resultCount !== null ? `🔎 Found ${resultCount} matches` : '🔎 Search complete',
-                    queryLabel ? `for ${queryLabel}` : '',
-                    pathLabel ? `in ${pathLabel}` : '',
-                ]);
-
-            case 'find_by_name':
-                if (phase === 'error') {
-                    return joinSummaryParts([
-                        '❌ File search failed',
-                        patternLabel ? `for ${patternLabel}` : '',
-                        pathLabel ? `in ${pathLabel}` : '',
-                        errorMessage ? `- ${errorMessage}` : '',
-                    ]);
-                }
-                if (phase === 'planned') {
-                    return joinSummaryParts([
-                        '📂 Finding files',
-                        patternLabel ? `matching ${patternLabel}` : '',
-                        pathLabel ? `in ${pathLabel}` : '',
-                    ]);
-                }
-                return joinSummaryParts([
-                    resultCount !== null ? `📂 Found ${resultCount} files` : '📂 File search complete',
-                    patternLabel ? `matching ${patternLabel}` : '',
-                    pathLabel ? `in ${pathLabel}` : '',
-                ]);
-
-            case 'view_file':
-            case 'read_file':
-                if (phase === 'error') {
-                    return joinSummaryParts([
-                        '❌ File read failed',
-                        pathLabel || '',
-                        lineLabel || '',
-                        errorMessage ? `- ${errorMessage}` : '',
-                    ]);
-                }
-                if (phase === 'planned') {
-                    return joinSummaryParts([
-                        '📄 Opening',
-                        pathLabel || 'file',
-                        lineLabel || '',
-                    ]);
-                }
-                return joinSummaryParts([
-                    '📄 Read',
-                    pathLabel || 'file',
-                    lineLabel || '',
-                ]);
-
-            case 'search_web':
-                if (phase === 'error') {
-                    return joinSummaryParts([
-                        '❌ Web search failed',
-                        queryLabel ? `for ${queryLabel}` : '',
-                        errorMessage ? `- ${errorMessage}` : '',
-                    ]);
-                }
-                if (phase === 'planned') {
-                    return joinSummaryParts([
-                        '🌐 Searching the web',
-                        queryLabel ? `for ${queryLabel}` : '',
-                    ]);
-                }
-                return joinSummaryParts([
-                    resultCount !== null ? `🌐 Web search returned ${resultCount} results` : '🌐 Web search complete',
-                    queryLabel ? `for ${queryLabel}` : '',
-                ]);
-
-            default:
-                return null;
-        }
-    }
-
-    private collectArgumentParts(args: Record<string, unknown> | null): string[] {
-        if (!args) return [];
-
-        return Object.entries(args)
-            .map(([key, value]) => formatKeyValue(key, value))
-            .filter((value): value is string => Boolean(value));
     }
 
     private setPhase(phase: GrpcResponsePhase, text: string | null): void {
@@ -999,5 +748,83 @@ export class GrpcResponseMonitor {
             }
             this.onPhaseChange?.(phase, text);
         }
+    }
+
+    private scheduleTimelineRender(snapshot: TrajectoryRecoverySnapshot): void {
+        if (!this.trajectoryRenderer || !this.onRenderedTimeline) return;
+        if (!Array.isArray(snapshot.renderSteps) || snapshot.renderSteps.length === 0) return;
+
+        const renderKey = this.buildRenderedTimelineKey(snapshot);
+        if (renderKey === this.lastRenderedTimelineKey) {
+            return;
+        }
+
+        if (this.timelineRenderPromise) {
+            this.queuedTimelineSnapshot = snapshot;
+            return;
+        }
+
+        this.timelineRenderPromise = this.runTimelineRender(snapshot, renderKey)
+            .catch((error) => {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.debug(`[GrpcMonitor] Timeline render failed: ${message}`);
+            })
+            .finally(async () => {
+                this.timelineRenderPromise = null;
+                if (!this.queuedTimelineSnapshot || !this.isRunning) {
+                    this.queuedTimelineSnapshot = null;
+                    return;
+                }
+
+                const queued = this.queuedTimelineSnapshot;
+                this.queuedTimelineSnapshot = null;
+                this.scheduleTimelineRender(queued);
+            });
+    }
+
+    private buildRenderedTimelineKey(snapshot: TrajectoryRecoverySnapshot): string {
+        const lastStep = snapshot.renderSteps[snapshot.renderSteps.length - 1] as any;
+        const lastType = typeof lastStep?.type === 'string' ? lastStep.type : 'unknown';
+        const response = snapshot.latestResponseText ?? '';
+        return [
+            snapshot.runStatus ?? '',
+            snapshot.renderSteps.length,
+            snapshot.latestAssistantSignature ?? '',
+            lastType,
+            response,
+        ].join('|');
+    }
+
+    private async runTimelineRender(
+        snapshot: TrajectoryRecoverySnapshot,
+        renderKey: string,
+    ): Promise<void> {
+        if (!this.trajectoryRenderer || !this.onRenderedTimeline || !this.isRunning) return;
+
+        const result = await this.trajectoryRenderer.renderTrajectory({
+            steps: snapshot.renderSteps,
+            runStatus: snapshot.runStatus,
+            trajectory: snapshot.renderTrajectory,
+            format: 'html',
+        });
+
+        if (!this.isRunning || !result.ok || !result.content || result.format !== 'html') {
+            return;
+        }
+
+        const content = result.content.trim();
+        if (!content || content === this.lastRenderedTimelineContent) {
+            this.lastRenderedTimelineKey = renderKey;
+            return;
+        }
+
+        this.lastRenderedTimelineKey = renderKey;
+        this.lastRenderedTimelineContent = content;
+        this.onRenderedTimeline({
+            content,
+            format: result.format ?? 'text',
+            strategy: result.strategy,
+            contextId: result.contextId,
+        });
     }
 }

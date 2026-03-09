@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
+import { getPendingToolCallsFromPlannerStep } from './trajectoryToolState';
 
 /** Approval button information */
 export interface ApprovalInfo {
@@ -143,26 +144,7 @@ export class ApprovalDetector {
 
             // Check planner response for tool calls
             if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
-                const toolCalls = step?.plannerResponse?.toolCalls;
-                if (!Array.isArray(toolCalls) || toolCalls.length === 0) return null;
-
-                // Check if any tool call is awaiting acceptance
-                const pendingToolCalls = toolCalls.filter((tc: any) => {
-                    // Check if the tool call already has a result
-                    const hasResult = tc?.result !== undefined
-                        || tc?.output !== undefined
-                        || tc?.toolCallResult !== undefined;
-
-                    if (hasResult) return false;
-
-                    const status = tc?.status || tc?.toolCallStatus || '';
-                    const isCompleted = status === 'completed'
-                        || status === 'done'
-                        || status === 'success'
-                        || status === 'error';
-
-                    return !isCompleted;
-                });
+                const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
 
                 if (pendingToolCalls.length === 0) return null;
 

@@ -23,10 +23,13 @@
     "test:integration": "jest tests/e2e.bot.test.ts",
     "test:watch": "jest --watch",
     "build": "tsc",
-    "start": "ts-node src/bin/cli.ts",
+    "start": "npm run check && npm run build && node dist/bin/cli.js",
     "start:built": "node dist/bin/cli.js",
     "dev": "ts-node-dev --respawn src/bin/cli.ts",
     "docs:diagram": "mmdc -i docs/diagrams/architecture.mmd -o docs/images/architecture.svg -b transparent",
+    "cpd": "jscpd src/",
+    "dead-code": "knip",
+    "check": "npm run dead-code && npm run cpd && tsc --noEmit && eslint src/",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -60,21 +63,26 @@
     "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@mermaid-js/mermaid-cli": "^11.12.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.3.0",
     "@types/node-cron": "^3.0.11",
     "@types/ws": "^8.18.1",
+    "eslint": "^10.0.3",
     "jest": "^30.2.0",
     "jest-environment-jsdom": "^30.2.0",
+    "jscpd": "^4.0.8",
     "jsdom": "^28.1.0",
+    "knip": "^5.86.0",
     "minimatch": "^10.2.1",
     "semantic-release": "^25.0.3",
     "ts-jest": "^29.4.6",
     "ts-morph": "^27.0.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.57.0",
     "undici": "^7.22.0"
   }
 }

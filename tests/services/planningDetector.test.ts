@@ -107,6 +107,65 @@ describe('PlanningDetector - planning button detection and remote execution', ()
         expect(onPlanningRequired).not.toHaveBeenCalled();
     });
 
+    it('does not treat pending run_command tool calls as planning mode', () => {
+        const onPlanningRequired = jest.fn();
+        detector = new PlanningDetector({
+            cdpService: mockCdpService,
+            onPlanningRequired,
+        });
+        detector.start();
+
+        detector.evaluate(
+            'cascade-123',
+            makePlanSteps({
+                toolCalls: [{ name: 'task_boundary' }, { name: 'run_command' }],
+            }),
+            IDLE,
+        );
+
+        expect(onPlanningRequired).not.toHaveBeenCalled();
+    });
+
+    it('does not treat a historical run_command card as active planning after the concrete tool step was canceled', () => {
+        const onPlanningRequired = jest.fn();
+        detector = new PlanningDetector({
+            cdpService: mockCdpService,
+            onPlanningRequired,
+        });
+        detector.start();
+
+        detector.evaluate(
+            'cascade-123',
+            [
+                ...makePlanSteps({
+                    planResponse: 'Now let me re-trigger distribution:',
+                    toolCalls: [
+                        { id: 'tool-task', name: 'task_boundary' },
+                        { id: 'tool-run', name: 'run_command' },
+                    ],
+                }),
+                {
+                    type: 'CORTEX_STEP_TYPE_TASK_BOUNDARY',
+                    status: 'CORTEX_STEP_STATUS_DONE',
+                    metadata: {
+                        toolCall: { id: 'tool-task', name: 'task_boundary' },
+                    },
+                },
+                {
+                    type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+                    status: 'CORTEX_STEP_STATUS_CANCELED',
+                    metadata: {
+                        toolCall: { id: 'tool-run', name: 'run_command' },
+                    },
+                },
+            ],
+            IDLE,
+        );
+
+        expect(onPlanningRequired).not.toHaveBeenCalled();
+        expect(detector.getLastDetectedInfo()).toBeNull();
+    });
+
     // Test 2b: Long response without tool calls does NOT trigger planning
     it('does NOT trigger planning for a long response with no tool calls', () => {
         const onPlanningRequired = jest.fn();
