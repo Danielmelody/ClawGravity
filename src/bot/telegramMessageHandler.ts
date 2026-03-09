@@ -430,15 +430,8 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                         if (phase === 'thinking') {
                             currentStateIndicator = '🤔 Thinking...';
-                            if (phaseChanged) {
-                                lastActivityLogText = processLogBuffer.append('🤔 Thinking / Planning...');
-                            }
                         } else if (phase === 'generating') {
                             currentStateIndicator = `✍️ Generating (${len} chars)...`;
-                            // Only log the first transition to generating — don't spam with char-count updates
-                            if (phaseChanged) {
-                                lastActivityLogText = processLogBuffer.append('✍️ Generating...');
-                            }
                         } else if (phase === 'error') {
                             currentStateIndicator = '❌ Error';
                             const errorEntry = text ? `❌ Error: ${text}` : '❌ Error occurred';
@@ -711,12 +704,11 @@ function buildTelegramStatusText(options: {
 }): string {
     const MAX_LENGTH = 4096;
 
-    // State indicator bar at the top
-    const stateBar = options.stateIndicator
-        ? `${options.stateIndicator}\n${'─'.repeat(Math.min(options.stateIndicator.length + 4, 30))}`
-        : '';
+    // State indicator bar at the top (bold)
+    const stateBarStr = options.stateIndicator || '';
+    const stateBar = stateBarStr ? `<b>${escapeHtml(stateBarStr)}</b>` : '';
 
-    const footer = options.mode === 'complete'
+    const footerRaw = options.mode === 'complete'
         ? `✅ Done in ${options.elapsedSeconds}s`
         : options.mode === 'timeout'
             ? `⏱️ Timed out after ${options.elapsedSeconds}s`
@@ -724,13 +716,19 @@ function buildTelegramStatusText(options: {
                 ? `❌ Error after ${options.elapsedSeconds}s`
                 : `⏱️ ${options.elapsedSeconds}s`;
 
+    // Italic footer
+    const footer = `<i>${escapeHtml(footerRaw)}</i>`;
+
     const header = options.headerLines && options.headerLines.length > 0
-        ? options.headerLines.join('\n')
+        ? escapeHtml(options.headerLines.join('\n'))
+        : '';
+
+    const sessionText = options.sessionLines && options.sessionLines.length > 0
+        ? escapeHtml(options.sessionLines.join('\n'))
         : '';
 
     // Show only the tail of preview text to keep the display concise.
-    // The full response will be delivered as a separate message on completion.
-    const PREVIEW_MAX_CHARS = 600;
+    const PREVIEW_MAX_CHARS = 1000;
     let preview = (options.previewText && options.mode === 'streaming')
         ? options.previewText.trim()
         : '';
@@ -742,39 +740,47 @@ function buildTelegramStatusText(options: {
     }
 
     // Merge activity log + preview into a single linear output
-    const activityLog = options.activityLogText.trim();
-    const previewSnippet = preview ? `✍️ ${preview}` : '';
+    const activityLogStr = options.activityLogText.trim();
 
-    // Combine: activity entries followed by streaming preview (all linear)
+    // We truncate purely on strings BEFORE wrapping in HTML to avoid unclosed tags
+    const reservedChars = header.length + sessionText.length + footerRaw.length + stateBarStr.length + 100;
+    const remainingForBody = Math.max(0, MAX_LENGTH - reservedChars);
+
+    // If activity log + preview is too long, we aggressively truncate preview. 
+    // Usually activity log is bounded by ProcessLogBuffer, but we handle the sum.
+    let combinedStrLength = activityLogStr.length + preview.length;
+    if (combinedStrLength > remainingForBody) {
+        if (remainingForBody < 60) {
+            preview = '';
+        } else {
+            const prefix = '...\n';
+            const tailLength = Math.max(0, remainingForBody - activityLogStr.length - prefix.length);
+            if (tailLength > 0) {
+                preview = prefix + preview.slice(-tailLength);
+            } else {
+                preview = '';
+            }
+        }
+    }
+
+    const activityLog = activityLogStr
+        ? `<blockquote>${escapeHtml(activityLogStr)}</blockquote>`
+        : '';
+    const previewSnippet = preview ? `✍️ ${escapeHtml(preview)}` : '';
+
     const combinedParts: string[] = [];
     if (activityLog) combinedParts.push(activityLog);
     if (previewSnippet) combinedParts.push(previewSnippet);
-    let combined = combinedParts.join('\n');
-
-    // Truncate combined if too long
-    const reservedChars = header.length + footer.length + 100;
-    const remainingForBody = Math.max(0, MAX_LENGTH - reservedChars);
-    if (combined.length > remainingForBody) {
-        if (remainingForBody < 60) {
-            combined = '';
-        } else {
-            const prefix = '...\n';
-            const tailLength = Math.max(0, remainingForBody - prefix.length);
-            combined = prefix + combined.slice(-tailLength);
-        }
-    }
+    let combined = combinedParts.join('\n\n');
 
     const sections: string[] = [];
     if (stateBar) sections.push(stateBar);
     if (header) sections.push(header);
-    if (options.sessionLines && options.sessionLines.length > 0) {
-        sections.push(options.sessionLines.join('\n'));
-    }
+    if (sessionText) sections.push(sessionText);
     if (combined) sections.push(combined);
     sections.push(footer);
 
-    const body = sections.join('\n\n');
-    return `\`\`\`\n${body}\n\`\`\``;
+    return sections.join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
