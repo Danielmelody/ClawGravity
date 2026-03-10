@@ -14,7 +14,7 @@ import { ChannelManager } from '../services/channelManager';
 import { buildProjectListUI } from '../ui/projectListUi';
 
 // Re-export for backward compatibility
-export { PROJECT_SELECT_ID, WORKSPACE_SELECT_ID } from '../ui/projectListUi';
+export { WORKSPACE_SELECT_ID } from '../ui/projectListUi';
 
 /**
  * Handler for the /project slash command.

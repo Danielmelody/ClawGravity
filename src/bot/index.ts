@@ -125,7 +125,6 @@ const PHASE_ICONS = {
     error: '❌',
 } as const;
 
-const MAX_OUTBOUND_GENERATED_IMAGES = 4;
 const RESPONSE_DELIVERY_MODE = resolveResponseDeliveryMode();
 const DISCORD_STREAM_RENDER_COALESCE_MS = 75;
 
@@ -385,7 +384,7 @@ async function sendPromptToAntigravity(
         if (!channel) return;
         if (!shouldTryGeneratedImages(prompt, responseText)) return;
 
-        const extracted = await cdp.extractLatestResponseImages(MAX_OUTBOUND_GENERATED_IMAGES);
+        const extracted = await cdp.extractLatestResponseImages();
         if (extracted.length === 0) return;
 
         const files: AttachmentBuilder[] = [];
@@ -2217,7 +2216,7 @@ async function autoRenameChannel(
     if (!guild) return;
 
     try {
-        const title = await titleGenerator.generateTitle(message.content, cdp);
+        const title = await titleGenerator.generateTitle(message.content);
         const newName = `${session.sessionNumber}-${title}`;
         await channelManager.renameChannel(guild, message.channelId, newName);
         chatSessionRepo.updateDisplayName(message.channelId, title);

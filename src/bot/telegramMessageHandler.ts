@@ -42,6 +42,19 @@ import { escapeHtml } from '../platform/telegram/telegramFormatter';
 
 const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
 
+interface Deferred<T> {
+    readonly promise: Promise<T>;
+    resolve(value: T): void;
+    reject(reason?: unknown): void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+}
+
 export interface TelegramMessageHandlerDeps {
     readonly bridge: CdpBridge;
     readonly telegramBindingRepo: TelegramBindingRepository;
@@ -278,7 +291,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             // Inject prompt (with or without images) into Antigravity
             logger.prompt(effectivePrompt);
             let injectResult;
-            let initialMonitoringTarget = null;
+            let initialMonitoringTarget;
             try {
                 const sendResult = await runtime.sendPromptWithMonitoringTarget({
                     text: effectivePrompt,
@@ -326,6 +339,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             let sessionLines: string[] = [];
             let isStatusTerminal = false;
             let currentStateIndicator = '⏳ Waiting for response...';
+            let latestPreviewText = '';
             const getStatusActivityText = () => renderedTimelineHtml;
 
             const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
@@ -333,7 +347,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 const elapsed = Math.round((Date.now() - startTime) / 1000);
                 const nextText = buildTelegramStatusText({
                     activityLogText: getStatusActivityText(),
-                    previewText: '',
+                    previewText: latestPreviewText,
                     elapsedSeconds: elapsed,
                     mode,
                     headerLines,
@@ -370,251 +384,190 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             }
             refreshStatusMessage('streaming');
 
-            // eslint-disable-next-line no-async-promise-executor
-            await new Promise<void>(async (resolve) => {
-                const TIMEOUT_MS = 600_000;
+            const TIMEOUT_MS = 600_000;
+            const monitorDeferred = createDeferred<void>();
 
-                let settled = false;
-                const settle = () => {
-                    if (settled) return;
-                    settled = true;
-                    clearTimeout(safetyTimer);
-                    deps.activeMonitors?.delete(projectName);
-                    resolve();
-                };
+            let settled = false;
+            const settle = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(safetyTimer);
+                deps.activeMonitors?.delete(projectName);
+                monitorDeferred.resolve();
+            };
 
-                const monitoringTarget = initialMonitoringTarget
-                    ?? await runtime.getMonitoringTarget(injectResult.cascadeId || currentCascadeId || null);
-                if (!monitoringTarget) {
-                    await channel.send({ text: '❌ gRPC client unavailable — cannot monitor response.' }).catch(logger.error);
-                    settle();
-                    return;
-                }
-                const { grpcClient, cascadeId } = monitoringTarget;
-                const trajectoryRenderer = new AntigravityTrajectoryRenderer(cdp);
+            const monitoringTarget = initialMonitoringTarget
+                ?? await runtime.getMonitoringTarget(injectResult.cascadeId || currentCascadeId || null);
+            if (!monitoringTarget) {
+                await channel.send({ text: '❌ gRPC client unavailable — cannot monitor response.' }).catch(logger.error);
+                settle();
+                return;
+            }
+            const { grpcClient, cascadeId } = monitoringTarget;
+            const trajectoryRenderer = new AntigravityTrajectoryRenderer(cdp);
 
-                const monitorConfig = {
-                    onProgress: () => {
+            const monitorConfig = {
+                    onProgress: (text: string) => {
+                        latestPreviewText = text || '';
                         refreshStatusMessage('streaming');
                     },
 
-                    onPhaseChange: (phase: string, text: string | null) => {
-                        const len = text ? text.length : 0;
-                        lastPhaseName = phase;
+                onPhaseChange: (phase: string, text: string | null) => {
+                    currentStateIndicator = phase;
+                    if (text && text.trim().length > 0) {
+                        latestPreviewText = text.trim();
+                    }
+                    if (phase === 'error') {
+                        renderedTimelineHtml = '';
+                    } else if (phase === 'quotaReached') {
+                        renderedTimelineHtml = '';
+                    }
+                    refreshStatusMessage('streaming');
+                },
 
-                        if (phase === 'thinking') {
-                            currentStateIndicator = '🤔 Thinking...';
-                        } else if (phase === 'generating') {
-                            currentStateIndicator = `✍️ Generating (${len} chars)...`;
-                        } else if (phase === 'complete') {
-                            currentStateIndicator = '✅ Finished';
-                        } else if (phase === 'error') {
-                            currentStateIndicator = '❌ Error';
-                            renderedTimelineHtml = '';
-                        } else if (phase === 'quotaReached') {
-                            currentStateIndicator = '⚠️ Quota Reached';
-                            renderedTimelineHtml = '';
-                        }
-                        refreshStatusMessage('streaming');
-                    },
-
-                    onRenderedTimeline: (timeline: { content: string; format: 'text' | 'html' }) => {
-                        if (timeline.format !== 'html') return;
-                        if (!timeline.content || timeline.content.trim().length === 0) {
-                            logger.debug('[TelegramHandler] onRenderedTimeline: empty content');
-                            return;
-                        }
-                        renderedTimelineHtml = rawHtmlToTelegramHtml(timeline.content).trim();
-                        if (!renderedTimelineHtml) {
-                            logger.debug('[TelegramHandler] onRenderedTimeline: rawHtmlToTelegramHtml produced empty output');
-                            return;
-                        }
-                        refreshStatusMessage('streaming');
-                    },
-
-                    onComplete: async (finalText: string) => {
-                        isStatusTerminal = true;
-                        try {
-
-                            // Flash "Done" state on the card before replacing with final text
-                            currentStateIndicator = `✅ Finished`;
-                            refreshStatusMessage('complete');
-                            await statusRenderer.flush();
-
-                            const separated = splitOutputAndLogs(finalText || '');
-                            const finalOutputText = separated.output || finalText || '';
-                            if (finalOutputText && finalOutputText.trim().length > 0) {
-                                logger.divider(`Output (${finalOutputText.length} chars)`);
-                                console.info(finalOutputText);
-                            }
-                            logger.divider();
-
-                            // Deliver the initial response to Telegram first
-                            if (finalOutputText && finalOutputText.trim().length > 0) {
-                                await deliverFinalTelegramText(null, channel, finalOutputText);
-                            } else if (finalText && finalText.trim().length > 0) {
-                                await deliverFinalTelegramText(null, channel, finalText);
-                            } else {
-                                await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
-                            }
-
-                            // Clean up the streaming status card after delivering final text
-                            if (statusMessages.length > 0) {
-                                await deleteStreamingStatusMessages(statusMessages);
-                                statusMessages = [];
-                            }
-
-                            // Intercept @claw commands and handle follow-up chain
-                            if (deps.clawInterceptor && finalOutputText) {
-                                const MAX_CLAW_DEPTH = 3;
-                                let currentText = finalOutputText;
-                                let clawDepth = 0;
-                                let activeCascadeId = injectResult.cascadeId
-                                    || deps.sessionStateStore?.getCurrentCascadeId(chatId)
-                                    || cascadeId;
-
-                                while (clawDepth < MAX_CLAW_DEPTH) {
-                                    const clawResults = await deps.clawInterceptor.execute(currentText);
-                                    if (clawResults.length === 0) break;
-
-                                    for (const r of clawResults) {
-                                        const icon = r.success ? '✅' : '❌';
-                                        await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
-                                    }
-
-                                    // Inject results back into Antigravity for AI continuation
-                                    const resultLines = clawResults.map(r =>
-                                        `@claw:${r.command.action} — ${r.success ? 'OK' : 'FAIL'}\n${r.message}`
-                                    );
-                                    const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
-
-                                    await new Promise(r => setTimeout(r, 2000));
-                                    const followUpResult = await runtime.sendPromptWithMonitoringTarget({
-                                        text: feedback,
-                                        overrideCascadeId: activeCascadeId || undefined,
-                                    });
-                                    const ir = followUpResult.injectResult;
-                                    if (!ir.ok) {
-                                        logger.error(`[TelegramHandler] Failed to inject @claw results: ${ir.error}`);
-                                        break;
-                                    }
-                                    if (ir.cascadeId) {
-                                        deps.sessionStateStore?.setCurrentCascadeId(chatId, ir.cascadeId);
-                                    }
-
-                                    logger.done(`[TelegramHandler] @claw results injected — awaiting follow-up (depth=${clawDepth + 1})...`);
-
-                                    const followUpTarget = followUpResult.monitoringTarget
-                                        ?? await runtime.getMonitoringTarget(ir.cascadeId || activeCascadeId || null);
-                                    if (!followUpTarget) {
-                                        logger.warn('[TelegramHandler] @claw follow-up: gRPC unavailable');
-                                        break;
-                                    }
-                                    activeCascadeId = followUpTarget.cascadeId;
-                                    currentText = await new Promise<string>((resolve) => {
-                                        const followUp = new GrpcResponseMonitor({
-                                            grpcClient: followUpTarget.grpcClient,
-                                            cascadeId: followUpTarget.cascadeId,
-                                            maxDurationMs: 300_000,
-                                            expectedUserMessage: feedback,
-                                            onComplete: async (text: string) => resolve(text?.trim() || ''),
-                                            onTimeout: async () => {
-                                                logger.warn(`[TelegramHandler] @claw follow-up timed out (depth=${clawDepth + 1})`);
-                                                resolve('');
-                                            },
-                                        });
-                                        followUp.start();
-                                    });
-
-                                    clawDepth++;
-                                    if (!currentText) break;
-
-                                    // Deliver follow-up response to Telegram
-                                    await sendTextChunked(channel, currentText);
-                                }
-                            }
-                        } finally {
-                            statusRenderer.dispose();
-                            settle();
-                        }
-                    },
-                    onTimeout: async (lastText: string) => {
-                        isStatusTerminal = true;
-                        try {
-                            // Determine cause from monitor phase
-                            const monitorPhase = monitor?.getPhase?.() || 'timeout';
-                            const isError = monitorPhase === 'error';
-                            const isQuota = monitorPhase === 'quotaReached';
-
-                            // Update status message with correct mode
-                            if (statusMessages.length > 0) {
-                                refreshStatusMessage(isError || isQuota ? 'error' : 'timeout');
-                                await statusRenderer.flush();
-                            }
-
-                            if (isQuota) {
-                                await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(logger.error);
-                            } else if (isError) {
-                                if (lastText && lastText.trim().length > 0) {
-                                    await sendTextChunked(channel, `❌ Error occurred. Partial response:\n${lastText}`);
-                                } else {
-                                    await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(logger.error);
-                                }
-                            } else if (lastText && lastText.trim().length > 0) {
-                                await sendTextChunked(channel, `(Timeout) ${lastText}`);
-                            } else {
-                                await channel.send({ text: 'Response timed out.' }).catch(logger.error);
-                            }
-
-                            // Clean up the streaming status card
-                            if (statusMessages.length > 0) {
-                                await deleteStreamingStatusMessages(statusMessages);
-                                statusMessages = [];
-                            }
-                        } finally {
-                            statusRenderer.dispose();
-                            settle();
-                        }
-                    },
-                };
-
-                if (!cascadeId) {
-                    await channel.send({ text: '❌ No cascade ID — cannot monitor response.' }).catch(logger.error);
-                    settle();
-                    return;
-                }
-                const monitor = new GrpcResponseMonitor({
-                    grpcClient,
-                    cascadeId,
-                    maxDurationMs: TIMEOUT_MS,
-                    expectedUserMessage: effectivePrompt,
-                    trajectoryRenderer,
-                    ...monitorConfig
-                });
-
-                const safetyTimer = setTimeout(() => {
-                    logger.warn(`[TelegramHandler:${projectName}] Safety timeout — releasing queue after idle period`);
-                    monitor.stop().catch(() => { });
-                    settle();
-                }, TIMEOUT_MS);
-
-                // Register the monitor so /stop can access and stop it
-                deps.activeMonitors?.set(projectName, monitor);
-
-                monitor.start().catch((err: any) => {
-                    logger.error(`[TelegramHandler:${projectName}] monitor.start() failed:`, err?.message || err);
-                    settle();
-                });
-
-                // Periodically refresh status to update elapsed time (P0)
-                const elapsedTimer = setInterval(() => {
-                    if (settled) {
-                        clearInterval(elapsedTimer);
+                onRenderedTimeline: (timeline: { content: string; format: 'text' | 'html' }) => {
+                    if (timeline.format !== 'html') return;
+                    if (!timeline.content || timeline.content.trim().length === 0) {
+                        logger.debug('[TelegramHandler] onRenderedTimeline: empty content');
+                        return;
+                    }
+                    renderedTimelineHtml = rawHtmlToTelegramHtml(timeline.content).trim();
+                    if (!renderedTimelineHtml) {
+                        logger.debug('[TelegramHandler] onRenderedTimeline: rawHtmlToTelegramHtml produced empty output');
                         return;
                     }
                     refreshStatusMessage('streaming');
-                }, 1000);
+                },
+
+                onComplete: async (finalText: string) => {
+                    isStatusTerminal = true;
+                    try {
+
+                        // Flash "Done" state on the card before replacing with final text
+                        currentStateIndicator = 'complete';
+                        refreshStatusMessage('complete');
+                        await statusRenderer.flush();
+
+                        const separated = splitOutputAndLogs(finalText || '');
+                        const finalOutputText = separated.output || finalText || '';
+                        if (finalOutputText && finalOutputText.trim().length > 0) {
+                            logger.divider(`Output (${finalOutputText.length} chars)`);
+                            console.info(finalOutputText);
+                        }
+                        logger.divider();
+
+                        // Deliver the initial response to Telegram first
+                        if (finalOutputText && finalOutputText.trim().length > 0) {
+                            statusMessages = await deliverFinalTelegramText(channel, statusMessages, finalOutputText);
+                        } else if (finalText && finalText.trim().length > 0) {
+                            statusMessages = await deliverFinalTelegramText(channel, statusMessages, finalText);
+                        } else {
+                            await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
+                            await deleteStreamingStatusMessages(statusMessages);
+                            statusMessages = [];
+                        }
+
+                        // Intercept @claw commands and handle follow-up chain
+                        if (deps.clawInterceptor && finalOutputText) {
+                            await executeClawChain({
+                                channel,
+                                runtime,
+                                clawInterceptor: deps.clawInterceptor,
+                                initialText: finalOutputText,
+                                initialCascadeId: injectResult.cascadeId
+                                    || deps.sessionStateStore?.getCurrentCascadeId(chatId)
+                                    || cascadeId,
+                                logPrefix: '[TelegramHandler]',
+                                delayBeforeInjectMs: 2000,
+                                onCascadeIdUpdate: (id) => deps.sessionStateStore?.setCurrentCascadeId(chatId, id),
+                            });
+                        }
+                    } finally {
+                        statusRenderer.dispose();
+                        settle();
+                    }
+                },
+                onTimeout: async (lastText: string) => {
+                    isStatusTerminal = true;
+                    try {
+                        // Determine cause from monitor phase
+                        // Use activeMonitors lookup instead of direct `monitor` reference
+                        // to avoid relying on declaration order within the closure.
+                        const activeMonitor = deps.activeMonitors?.get(projectName);
+                        const monitorPhase = activeMonitor?.getPhase?.() || 'timeout';
+                        const isError = monitorPhase === 'error';
+                        const isQuota = monitorPhase === 'quotaReached';
+
+                        // Update status message with correct mode
+                        if (statusMessages.length > 0) {
+                            refreshStatusMessage(isError || isQuota ? 'error' : 'timeout');
+                            await statusRenderer.flush();
+                        }
+
+                        if (isQuota) {
+                            await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(logger.error);
+                        } else if (isError) {
+                            if (lastText && lastText.trim().length > 0) {
+                                await sendTextChunked(channel, `❌ Error occurred. Partial response:\n${lastText}`);
+                            } else {
+                                await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(logger.error);
+                            }
+                        } else if (lastText && lastText.trim().length > 0) {
+                            await sendTextChunked(channel, `(Timeout) ${lastText}`);
+                        } else {
+                            await channel.send({ text: 'Response timed out.' }).catch(logger.error);
+                        }
+
+                        // Clean up the streaming status card
+                        if (statusMessages.length > 0) {
+                            await deleteStreamingStatusMessages(statusMessages);
+                            statusMessages = [];
+                        }
+                    } finally {
+                        statusRenderer.dispose();
+                        settle();
+                    }
+                },
+            };
+
+            if (!cascadeId) {
+                await channel.send({ text: '❌ No cascade ID — cannot monitor response.' }).catch(logger.error);
+                settle();
+                return;
+            }
+            const monitor = new GrpcResponseMonitor({
+                grpcClient,
+                cascadeId,
+                maxDurationMs: TIMEOUT_MS,
+                expectedUserMessage: effectivePrompt,
+                trajectoryRenderer,
+                ...monitorConfig
             });
+
+            const safetyTimer = setTimeout(() => {
+                logger.warn(`[TelegramHandler:${projectName}] Safety timeout — releasing queue after idle period`);
+                monitor.stop().catch(() => { });
+                settle();
+            }, TIMEOUT_MS);
+
+            // Register the monitor so /stop can access and stop it
+            deps.activeMonitors?.set(projectName, monitor);
+
+            monitor.start().catch((err: any) => {
+                logger.error(`[TelegramHandler:${projectName}] monitor.start() failed:`, err?.message || err);
+                settle();
+            });
+
+            // Periodically refresh status to update elapsed time (P0)
+            const elapsedTimer = setInterval(() => {
+                if (settled) {
+                    clearInterval(elapsedTimer);
+                    return;
+                }
+                refreshStatusMessage('streaming');
+            }, 1000);
+
+            await monitorDeferred.promise;
         });
     };
 }
@@ -634,41 +587,161 @@ async function sendTextChunked(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Shared @claw command chain executor (Issue #5)
+// ---------------------------------------------------------------------------
+
+interface ClawChainOptions {
+    readonly channel: PlatformChannel;
+    readonly runtime: WorkspaceRuntime;
+    readonly clawInterceptor: ClawCommandInterceptor;
+    readonly initialText: string;
+    readonly initialCascadeId: string | null;
+    readonly logPrefix: string;
+    readonly maxDepth?: number;
+    readonly delayBeforeInjectMs?: number;
+    readonly onCascadeIdUpdate?: (cascadeId: string) => void;
+    readonly onFollowUpMonitor?: (monitor: GrpcResponseMonitor) => void;
+    readonly onFollowUpComplete?: () => void;
+}
+
+async function executeClawChain(opts: ClawChainOptions): Promise<void> {
+    const {
+        channel, runtime, clawInterceptor, logPrefix,
+        maxDepth = 3, delayBeforeInjectMs = 0,
+    } = opts;
+
+    let currentText = opts.initialText;
+    let activeCascadeId = opts.initialCascadeId;
+    let clawDepth = 0;
+
+    while (clawDepth < maxDepth) {
+        const clawResults = await clawInterceptor.execute(currentText);
+        if (clawResults.length === 0) break;
+
+        clawDepth++;
+        logger.info(`${logPrefix} Found @claw command(s) — executing (depth=${clawDepth})...`);
+
+        for (const r of clawResults) {
+            const icon = r.success ? '✅' : '❌';
+            await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
+        }
+
+        const resultLines = clawResults.map(r =>
+            `@claw:${r.command.action} — ${r.success ? 'OK' : 'FAIL'}\n${r.message}`
+        );
+        const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
+        if (delayBeforeInjectMs > 0) {
+            await new Promise(r => setTimeout(r, delayBeforeInjectMs));
+        }
+
+        const followUpResult = await runtime.sendPromptWithMonitoringTarget({
+            text: feedback,
+            overrideCascadeId: activeCascadeId || undefined,
+        });
+        const ir = followUpResult.injectResult;
+        if (!ir.ok) {
+            logger.warn(`${logPrefix} Failed to inject @claw results: ${ir.error}`);
+            break;
+        }
+        if (ir.cascadeId) {
+            opts.onCascadeIdUpdate?.(ir.cascadeId);
+        }
+
+        logger.debug(`${logPrefix} @claw results injected — awaiting follow-up (depth=${clawDepth})...`);
+
+        const followUpTarget = followUpResult.monitoringTarget
+            ?? await runtime.getMonitoringTarget(ir.cascadeId || activeCascadeId || null);
+        if (!followUpTarget) {
+            logger.warn(`${logPrefix} @claw follow-up: gRPC unavailable`);
+            break;
+        }
+        activeCascadeId = followUpTarget.cascadeId;
+
+        const deferred = createDeferred<string>();
+        const followUpMonitor = new GrpcResponseMonitor({
+            grpcClient: followUpTarget.grpcClient,
+            cascadeId: followUpTarget.cascadeId,
+            maxDurationMs: 300_000,
+            expectedUserMessage: feedback,
+            onComplete: (text: string) => deferred.resolve(text?.trim() || ''),
+            onTimeout: (lastText: string) => {
+                logger.warn(`${logPrefix} @claw follow-up timed out (depth=${clawDepth})`);
+                deferred.resolve(lastText || '');
+            },
+        });
+
+        opts.onFollowUpMonitor?.(followUpMonitor);
+        followUpMonitor.start().catch((err: any) => {
+            logger.error(`${logPrefix} follow-up monitor.start() failed:`, err?.message || err);
+            deferred.resolve('');
+        });
+
+        const nextText = await deferred.promise;
+        opts.onFollowUpComplete?.();
+
+        if (!nextText || nextText.trim().length === 0) break;
+
+        await sendTextChunked(channel, nextText);
+        currentText = nextText;
+
+        if (clawDepth >= maxDepth) {
+            logger.warn(`${logPrefix} Reached max @claw depth (${maxDepth}). Stopping.`);
+            await sendTextChunked(channel, `⚠️ Reached max @claw execution depth (${maxDepth}). Stopping auto-execution.`);
+            break;
+        }
+    }
+}
+
+
 async function deliverFinalTelegramText(
-    statusMsg: PlatformSentMessage | null,
     channel: PlatformChannel,
+    existingMessages: PlatformSentMessage[],
     text: string,
-): Promise<void> {
+): Promise<PlatformSentMessage[]> {
     // Convert raw Markdown to Telegram-safe HTML via the unified pipeline
     const telegramHtml = markdownToTelegramHtmlViaUnified(text) || text;
     const chunks = splitTelegramText(telegramHtml);
     if (chunks.length === 0) {
-        return;
+        return existingMessages;
     }
 
-    if (statusMsg) {
-        let editOk = false;
-        try {
-            await statusMsg.edit({ text: chunks[0] });
-            editOk = true;
-        } catch (editErr: any) {
-            logger.warn(`[TelegramDeliver] statusMsg.edit failed: ${editErr?.message || editErr}`);
-            // Edit failed (e.g. HTML parse error) — delete the stale streaming card
-            // and fall through to send all chunks as new messages.
-            await statusMsg.delete().catch(() => { });
-        }
-
-        if (editOk) {
-            for (const chunk of chunks.slice(1)) {
-                await channel.send({ text: chunk }).catch(logger.error);
+    const nextMessages = existingMessages.slice();
+    for (let i = 0; i < chunks.length; i++) {
+        const existing = nextMessages[i];
+        if (existing) {
+            try {
+                nextMessages[i] = await existing.edit({ text: chunks[i] });
+                continue;
+            } catch (err: any) {
+                logger.warn(`[TelegramDeliver] final edit failed for msg #${i}: ${err?.message || err}`);
+                const replacement = await channel.send({ text: chunks[i] }).catch((sendErr: any) => {
+                    logger.error(`[TelegramDeliver] final send failed for chunk #${i}: ${sendErr?.message || sendErr}`);
+                    return null;
+                });
+                if (replacement) {
+                    await existing.delete().catch(() => { });
+                    nextMessages[i] = replacement;
+                    continue;
+                }
             }
-            return;
+            continue;
+        }
+
+        const sent = await channel.send({ text: chunks[i] }).catch((err: any) => {
+            logger.error(`[TelegramDeliver] final send failed for chunk #${i}: ${err?.message || err}`);
+            return null;
+        });
+        if (sent) {
+            nextMessages[i] = sent;
         }
     }
 
-    for (const chunk of chunks) {
-        await channel.send({ text: chunk }).catch(logger.error);
+    for (let i = chunks.length; i < nextMessages.length; i++) {
+        await nextMessages[i].delete().catch(() => { });
     }
+
+    return nextMessages.slice(0, chunks.length);
 }
 
 /**
@@ -792,14 +865,43 @@ function buildTelegramStatusText(options: {
         : '';
 
     const activityLogStr = options.activityLogText.trim();
+    const previewStr = shouldIncludePreview(activityLogStr, options.previewText || '')
+        ? formatTelegramPreview(options.previewText || '')
+        : '';
     const sections: string[] = [];
     if (stateBar) sections.push(stateBar);
     if (header) sections.push(header);
     if (sessionText) sections.push(sessionText);
     if (activityLogStr) sections.push(activityLogStr);
+    if (previewStr) sections.push(previewStr);
     sections.push(footer);
 
     return sections.join('\n\n');
+}
+
+function normalizeTelegramStatusText(text: string): string {
+    return (text || '')
+        .replace(/\r/g, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+function shouldIncludePreview(activityLogText: string, previewText: string): boolean {
+    const normalizedPreview = normalizeTelegramStatusText(previewText);
+    if (!normalizedPreview) return false;
+
+    const normalizedActivity = normalizeTelegramStatusText(activityLogText);
+    if (!normalizedActivity) return true;
+
+    return !normalizedActivity.includes(normalizedPreview);
+}
+
+function formatTelegramPreview(text: string): string {
+    const normalized = (text || '').replace(/\r/g, '').trim();
+    if (!normalized) return '';
+    return `<blockquote>${escapeHtml(normalized)}</blockquote>`;
 }
 
 function createCoalescedStatusRenderer(
@@ -894,11 +996,19 @@ async function syncStreamingStatusMessages(
     const nextMessages = existingMessages.slice();
     for (let i = 0; i < chunks.length; i++) {
         if (nextMessages[i]) {
-            await nextMessages[i].edit({ text: chunks[i] });
+            await nextMessages[i].edit({ text: chunks[i] }).catch((err: any) => {
+                logger.debug(`[TelegramStatus] edit failed for msg #${i}: ${err?.message || err}`);
+            });
             continue;
         }
 
-        nextMessages[i] = await channel.send({ text: chunks[i] });
+        const sent = await channel.send({ text: chunks[i] }).catch((err: any) => {
+            logger.debug(`[TelegramStatus] send failed for chunk #${i}: ${err?.message || err}`);
+            return null;
+        });
+        if (sent) {
+            nextMessages[i] = sent;
+        }
     }
 
     for (let i = chunks.length; i < nextMessages.length; i++) {
@@ -918,6 +1028,33 @@ async function deleteStreamingStatusMessages(messages: PlatformSentMessage[]): P
 
 /** Per-workspace passive response monitors to avoid duplicates. */
 const passiveResponseMonitors = new Map<string, GrpcResponseMonitor>();
+
+/** TTL cleanup: remove stale passive monitors that weren't properly cleaned up. */
+const PASSIVE_MONITOR_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const passiveMonitorCreatedAt = new Map<string, number>();
+let passiveMonitorCleanupTimer: NodeJS.Timeout | null = null;
+
+function ensurePassiveMonitorCleanup(): void {
+    if (passiveMonitorCleanupTimer) return;
+    passiveMonitorCleanupTimer = setInterval(() => {
+        const now = Date.now();
+        for (const [key, createdAt] of passiveMonitorCreatedAt) {
+            if (now - createdAt > PASSIVE_MONITOR_TTL_MS) {
+                const monitor = passiveResponseMonitors.get(key);
+                if (monitor) {
+                    logger.debug(`[TelegramPassive] Cleaning up stale monitor for ${key} (age=${Math.round((now - createdAt) / 1000)}s)`);
+                    monitor.stop().catch(() => { });
+                    passiveResponseMonitors.delete(key);
+                }
+                passiveMonitorCreatedAt.delete(key);
+            }
+        }
+        if (passiveResponseMonitors.size === 0 && passiveMonitorCleanupTimer) {
+            clearInterval(passiveMonitorCleanupTimer);
+            passiveMonitorCleanupTimer = null;
+        }
+    }, 60_000);
+}
 
 /**
  * Handle a user message detected from the Antigravity PC UI.
@@ -975,6 +1112,7 @@ async function startPassiveResponseMonitor(
     let sessionLines: string[] = [];
     let isStatusTerminal = false;
     let currentStateIndicator = '⏳ Waiting for response...';
+    let latestPreviewText = '';
     const getStatusActivityText = () => renderedTimelineHtml;
 
     const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
@@ -983,7 +1121,7 @@ async function startPassiveResponseMonitor(
 
         const nextText = buildTelegramStatusText({
             activityLogText: getStatusActivityText(),
-            previewText: '',
+            previewText: latestPreviewText,
             elapsedSeconds: elapsed,
             mode,
             sessionLines,
@@ -1025,7 +1163,8 @@ async function startPassiveResponseMonitor(
     );
 
     const monitorConfig = {
-        onProgress: () => {
+        onProgress: (text: string) => {
+            latestPreviewText = text || '';
             ensureStatusMsg().then(() => refreshStatusMessage('streaming')).catch(() => { });
         },
 
@@ -1057,112 +1196,45 @@ async function startPassiveResponseMonitor(
                 refreshStatusMessage('complete');
                 await statusRenderer.flush();
 
-                // Deliver final text
                 if (statusMessages.length > 0) {
-                    await deliverFinalTelegramText(null, channel, finalText);
+                    statusMessages = await deliverFinalTelegramText(channel, statusMessages, finalText);
                 } else {
                     await sendTextChunked(channel, finalText);
                 }
 
-                // Clean up the streaming status card after delivering final text
-                if (statusMessages.length > 0) {
-                    await deleteStreamingStatusMessages(statusMessages);
-                    statusMessages = [];
-                }
-
                 // Handle @claw commands if interceptor is available
-                if (!clawInterceptor) return;
-
-                let currentText = finalText;
-                let clawDepth = 0;
-                const MAX_CLAW_DEPTH = 3;
-                let activeCascadeId = initialMonitoringTarget?.cascadeId || info.cascadeId || null;
-
-                while (clawDepth < MAX_CLAW_DEPTH) {
-                    const clawResults = await clawInterceptor.execute(currentText);
-                    if (clawResults.length === 0) break;
-
-                    clawDepth++;
-                    logger.info(`[TelegramPassive] Found @claw command(s) in AI response. Executing (Depth ${clawDepth})...`);
-
-                    const resultLines = clawResults.map(r =>
-                        `@claw:${r.command.action} — ${r.success ? 'OK' : 'FAIL'}\n${r.message}`
-                    );
-                    const feedback = `[ClawGravity Command Results]\n\n${resultLines.join('\n\n')}`;
-
-                    for (const r of clawResults) {
-                        const icon = r.success ? '✅' : '❌';
-                        await channel.send({ text: `${icon} @claw:${r.command.action} — ${r.message}` }).catch(() => { });
-                    }
-
-                    const followUpResult = await runtime.sendPromptWithMonitoringTarget({
-                        text: feedback,
-                        overrideCascadeId: activeCascadeId || undefined,
+                if (clawInterceptor) {
+                    await executeClawChain({
+                        channel,
+                        runtime,
+                        clawInterceptor,
+                        initialText: finalText,
+                        initialCascadeId: initialMonitoringTarget?.cascadeId || info.cascadeId || null,
+                        logPrefix: '[TelegramPassive]',
+                        onFollowUpMonitor: (monitor) => {
+                            passiveResponseMonitors.set(projectName, monitor);
+                            passiveMonitorCreatedAt.set(projectName, Date.now());
+                            activeMonitors?.set(`passive:${projectName}`, monitor);
+                        },
+                        onFollowUpComplete: () => {
+                            passiveResponseMonitors.delete(projectName);
+                            passiveMonitorCreatedAt.delete(projectName);
+                            activeMonitors?.delete(`passive:${projectName}`);
+                        },
                     });
-                    const ir = followUpResult.injectResult;
-                    if (!ir.ok) {
-                        logger.warn(`[TelegramPassive] Failed to inject @claw results: ${ir.error}`);
-                        break;
-                    }
-                    logger.debug(`[TelegramPassive] Injected @claw results back to Antigravity (length: ${feedback.length})`);
-
-                    const followUpTarget = followUpResult.monitoringTarget
-                        ?? await runtime.getMonitoringTarget(ir.cascadeId || activeCascadeId || null);
-                    if (!followUpTarget) {
-                        logger.warn('[TelegramPassive] @claw follow-up: gRPC unavailable');
-                        break;
-                    }
-                    activeCascadeId = followUpTarget.cascadeId;
-
-                    const followUpPromise = new Promise<string>((resolve) => {
-                        const followUpMonitor = new GrpcResponseMonitor({
-                            grpcClient: followUpTarget.grpcClient,
-                            cascadeId: followUpTarget.cascadeId,
-                            expectedUserMessage: feedback,
-                            onComplete: (followUpText: string) => resolve(followUpText),
-                            onTimeout: (lastText: string) => resolve(lastText || ''),
-                        });
-
-                        passiveResponseMonitors.set(projectName, followUpMonitor);
-                        activeMonitors?.set(`passive:${projectName}`, followUpMonitor);
-
-                        followUpMonitor.start().catch((err: any) => {
-                            logger.error('[TelegramPassive] Failed to start follow-up monitor:', err?.message || err);
-                            resolve('');
-                        });
-                    });
-
-                    const nextText = await followUpPromise;
-                    passiveResponseMonitors.delete(projectName);
-                    activeMonitors?.delete(`passive:${projectName}`);
-
-                    if (!nextText || nextText.trim().length === 0) break;
-
-                    await sendTextChunked(channel, nextText);
-                    currentText = nextText;
-
-                    if (clawDepth >= MAX_CLAW_DEPTH) {
-                        logger.warn(`[TelegramPassive] Reached MAX_CLAW_DEPTH (${MAX_CLAW_DEPTH}). Stopping @claw command execution.`);
-                        await sendTextChunked(channel, `⚠️ Reached max @claw execution depth (${MAX_CLAW_DEPTH}). Stopping auto-execution.`);
-                        break;
-                    }
                 }
             } finally {
                 statusRenderer.dispose();
             }
         },
-        onPhaseChange: (phase: string,) => {
-            if (phase === 'thinking') {
-                currentStateIndicator = '🤔 Thinking...';
-            } else if (phase === 'generating') {
-                currentStateIndicator = '✍️ Generating...';
-            } else if (phase === 'complete') {
-                currentStateIndicator = '✅ Finished';
-            } else if (phase === 'error') {
-                currentStateIndicator = '❌ Error';
+        onPhaseChange: (phase: string, text: string | null) => {
+            currentStateIndicator = phase;
+            if (text && text.trim().length > 0) {
+                latestPreviewText = text.trim();
+            }
+            if (phase === 'error') {
                 renderedTimelineHtml = '';
             } else if (phase === 'quotaReached') {
-                currentStateIndicator = '⚠️ Quota Reached';
                 renderedTimelineHtml = '';
             }
             ensureStatusMsg().then(() => refreshStatusMessage('streaming')).catch(() => { });
@@ -1174,7 +1246,8 @@ async function startPassiveResponseMonitor(
             activeMonitors?.delete(`passive:${projectName}`);
 
             // Determine cause from monitor phase
-            const monitorPhase = monitor?.getPhase?.() || 'timeout';
+            const activeMonitor = passiveResponseMonitors.get(projectName);
+            const monitorPhase = activeMonitor?.getPhase?.() || 'timeout';
             const isError = monitorPhase === 'error';
             const isQuota = monitorPhase === 'quotaReached';
 
@@ -1217,10 +1290,13 @@ async function startPassiveResponseMonitor(
     });
 
     passiveResponseMonitors.set(projectName, monitor);
+    passiveMonitorCreatedAt.set(projectName, Date.now());
+    ensurePassiveMonitorCleanup();
     activeMonitors?.set(`passive:${projectName}`, monitor);
     monitor.startPassive().catch((err: any) => {
         logger.error('[TelegramPassive] Failed to start response monitor:', err?.message || err);
         passiveResponseMonitors.delete(projectName);
+        passiveMonitorCreatedAt.delete(projectName);
         activeMonitors?.delete(`passive:${projectName}`);
         statusRenderer.dispose();
     });

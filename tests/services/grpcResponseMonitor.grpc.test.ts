@@ -93,6 +93,50 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await monitor.stop();
     });
 
+    it('passes through thinking deltas on repeated streamed planner payloads', async () => {
+        const client = new FakeGrpcClient();
+        const onPhaseChange = jest.fn();
+
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-thinking-delta',
+            onPhaseChange,
+        });
+
+        await monitor.start();
+        client.emit('data', {
+            type: 'status',
+            text: 'CASCADE_RUN_STATUS_RUNNING',
+            raw: {
+                result: {
+                    plannerResponse: {
+                        thinking: 'Analyzed project',
+                    },
+                },
+            },
+        });
+        client.emit('data', {
+            type: 'status',
+            text: 'CASCADE_RUN_STATUS_RUNNING',
+            raw: {
+                result: {
+                    plannerResponse: {
+                        thinking: 'Analyzed project\nRan command',
+                    },
+                },
+            },
+        });
+
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(onPhaseChange).toHaveBeenCalledWith('thinking', null);
+        expect(onPhaseChange).toHaveBeenCalledWith('thinking', 'Analyzed project');
+        expect(onPhaseChange).toHaveBeenCalledWith('thinking', 'Ran command');
+
+        await monitor.stop();
+    });
+
     it('recovers a completed response from trajectory when the stream closes before activity', async () => {
         const client = new FakeGrpcClient();
         client.rawRPC.mockResolvedValue({

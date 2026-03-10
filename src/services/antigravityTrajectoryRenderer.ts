@@ -61,12 +61,14 @@ const HELPER_AVAILABILITY_EXPRESSION = `(() => {
 
 export class AntigravityTrajectoryRenderer {
     private readonly helperBootstrapPromises = new Map<number, Promise<boolean>>();
+    private lastSuccessfulContextId: number | null = null;
 
     constructor(private readonly cdpService: CdpService) { }
 
     async renderTrajectory(
         request: AntigravityTrajectoryRenderRequest,
     ): Promise<AntigravityTrajectoryRenderResult> {
+        const t0 = Date.now();
         const steps = Array.isArray(request.steps) ? [...request.steps] : [];
         const orderedContexts = this.getOrderedContexts();
 
@@ -75,6 +77,25 @@ export class AntigravityTrajectoryRenderer {
                 ok: false,
                 error: 'No CDP execution contexts are available',
             };
+        }
+
+        // Fast path: try the last successful context first
+        if (this.lastSuccessfulContextId !== null) {
+            const cached = orderedContexts.find(c => c.context.id === this.lastSuccessfulContextId);
+            if (cached) {
+                const result = await this.renderInContext(cached.context.id, {
+                    steps,
+                    runStatus: request.runStatus ?? null,
+                    trajectory: request.trajectory ?? null,
+                    format: request.format ?? 'text',
+                });
+                if (result.ok) {
+                    logger.debug(`[TrajectoryRenderer] Fast-path render in ${Date.now() - t0}ms (ctx=${cached.context.id})`);
+                    return result;
+                }
+                // Cached context failed — clear it and fall through to full scan
+                this.lastSuccessfulContextId = null;
+            }
         }
 
         let lastFailure: AntigravityTrajectoryRenderResult | null = null;
@@ -88,12 +109,15 @@ export class AntigravityTrajectoryRenderer {
             });
 
             if (result.ok) {
+                this.lastSuccessfulContextId = context.id;
+                logger.debug(`[TrajectoryRenderer] Full-scan render in ${Date.now() - t0}ms (ctx=${context.id})`);
                 return result;
             }
 
             lastFailure = result;
         }
 
+        logger.debug(`[TrajectoryRenderer] All contexts failed in ${Date.now() - t0}ms (tried=${orderedContexts.length})`);
         return lastFailure ?? {
             ok: false,
             error: 'Antigravity trajectory renderer was not found in any execution context',
@@ -135,13 +159,17 @@ export class AntigravityTrajectoryRenderer {
         request: Required<AntigravityTrajectoryRenderRequest>,
     ): Promise<AntigravityTrajectoryRenderResult> {
         try {
+            const t0 = Date.now();
             let result = await this.evaluateRenderProbe(contextId, request);
             if (result.ok) {
                 return result;
             }
 
             if (this.shouldBootstrapHelpers(result)) {
+                logger.debug(`[TrajectoryRenderer] Bootstrapping helpers for ctx=${contextId} (probe took ${Date.now() - t0}ms)`);
+                const tBoot = Date.now();
                 const bootstrapped = await this.ensureRendererHelpersInContext(contextId);
+                logger.debug(`[TrajectoryRenderer] Bootstrap ${bootstrapped ? 'OK' : 'FAILED'} for ctx=${contextId} in ${Date.now() - tBoot}ms`);
                 if (bootstrapped) {
                     result = await this.evaluateRenderProbe(contextId, request);
                     if (result.ok) {
@@ -153,7 +181,7 @@ export class AntigravityTrajectoryRenderer {
             return result;
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            logger.debug(`[AntigravityTrajectoryRenderer] Context ${contextId} probe failed: ${message}`);
+            logger.debug(`[TrajectoryRenderer] Context ${contextId} probe failed: ${message}`);
             return {
                 ok: false,
                 error: message,

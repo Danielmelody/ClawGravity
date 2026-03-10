@@ -438,10 +438,33 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        // 1 "Processing..." + 1 final delivery via send (statusMsg passed as null)
+        expect(channel.send).toHaveBeenCalledTimes(1);
+        expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
+        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'Response text' });
+        expect(channel._statusMsg.delete).not.toHaveBeenCalled();
+    });
+
+    it('falls back to sending a new final message when the status edit fails', async () => {
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+        channel._statusMsg.edit.mockImplementation(async (payload: any) => {
+            if (payload?.text === 'Response text') {
+                throw new Error('edit failed');
+            }
+            return createMockSentMessage('status-1', channel.id);
+        });
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
         expect(channel.send).toHaveBeenCalledTimes(2);
         expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
         expect(channel.send).toHaveBeenNthCalledWith(2, { text: 'Response text' });
+        expect(channel._statusMsg.delete).toHaveBeenCalled();
     });
 
     it('sends "(Empty response from Antigravity)" when response is empty', async () => {
@@ -492,11 +515,10 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        // 1 status message + 2 chunks via send (4096 + 904, statusMsg passed as null)
-        expect(channel.send).toHaveBeenCalledTimes(3);
+        expect(channel.send).toHaveBeenCalledTimes(2);
         expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
-        expect(channel.send).toHaveBeenNthCalledWith(2, { text: 'A'.repeat(4096) });
-        expect(channel.send).toHaveBeenNthCalledWith(3, { text: 'A'.repeat(904) });
+        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'A'.repeat(4096) });
+        expect(channel.send).toHaveBeenNthCalledWith(2, { text: 'A'.repeat(904) });
     });
 
     it('queues messages for same workspace (serial execution)', async () => {
@@ -722,15 +744,49 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        // Status message should have been edited at least once (initial refresh)
         expect(channel._statusMsg.edit).toHaveBeenCalled();
-        // Final answer is delivered via channel.send (statusMsg is passed as null)
-        expect(channel.send).toHaveBeenCalledWith({ text: 'Final answer' });
+        const renderedFrames = channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
+        expect(renderedFrames.some((text: string) => text.includes('Partial streamed answer'))).toBe(true);
+        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'Final answer' });
     });
 
-    it('truncates oversized streaming previews to fit Telegram message limits', async () => {
+    it('shows thinking text without duplicating the same content from preview', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
-        const longPreview = 'P'.repeat(5000);
+        const repeatedText = 'Let me first run ESLint to see all the warnings.';
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onPhaseChange) opts.onPhaseChange('thinking', repeatedText);
+                if (opts.onProgress) opts.onProgress(repeatedText);
+                if (opts.onComplete) await opts.onComplete('Final answer');
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        const streamedFrames = channel._statusMsg.edit.mock.calls
+            .map(([payload]: any[]) => payload.text)
+            .filter((text: string) => text.includes(repeatedText));
+
+        expect(streamedFrames.length).toBeGreaterThan(0);
+        for (const frame of streamedFrames) {
+            expect(frame.split(repeatedText).length - 1).toBe(1);
+        }
+    });
+
+    it('splits oversized streaming previews across status messages without truncation', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        const startMarker = 'START-MARKER';
+        const endMarker = 'END-MARKER';
+        const longPreview = `${startMarker}\n${'P'.repeat(5000)}\n${endMarker}`;
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 if (opts.onProgress) opts.onProgress(longPreview);
@@ -754,8 +810,47 @@ describe('createTelegramMessageHandler', () => {
         for (const [payload] of allEdits) {
             expect(payload.text.length).toBeLessThanOrEqual(4096);
         }
-        // Final 'Done' is delivered via send
-        expect(channel.send).toHaveBeenCalledWith({ text: 'Done' });
+        const allPayloads = [
+            ...channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text),
+            ...channel.send.mock.calls.map(([payload]: any[]) => payload.text),
+        ];
+        const streamedText = allPayloads.join('\n');
+        expect(streamedText).toContain(startMarker);
+        expect(streamedText).toContain(endMarker);
+        expect(channel.send.mock.calls.length).toBeGreaterThan(1);
+        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'Done' });
+    });
+
+    it('keeps both prefix and tail of oversized streaming previews', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        const prefixMarker = 'The __claw__ workspace is your agent workspace';
+        const tailMarker = 'Ran command: npx eslint .';
+        const longPreview = `${prefixMarker}\n${'A'.repeat(3000)}\n${tailMarker}`;
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onProgress) opts.onProgress(longPreview);
+                if (opts.onComplete) await opts.onComplete('Done');
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        const previewFrames = [
+            ...channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text),
+            ...channel.send.mock.calls.map(([payload]: any[]) => payload.text),
+        ].filter((text: string) => text.includes('<blockquote>'));
+
+        expect(previewFrames.some((text: string) => text.includes(prefixMarker))).toBe(true);
+        expect(previewFrames.some((text: string) => text.includes(tailMarker))).toBe(true);
     });
 
     it('coalesces bursty streaming updates down to the latest status frame', async () => {

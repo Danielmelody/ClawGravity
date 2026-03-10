@@ -738,6 +738,9 @@ export class GrpcResponseMonitor {
         if (this.currentPhase === 'waiting') {
             this.setPhase('thinking', null);
         }
+        if (this.currentPhase === 'thinking') {
+            this.onPhaseChange?.('thinking', delta);
+        }
     }
 
     private setPhase(phase: GrpcResponsePhase, text: string | null): void {
@@ -801,14 +804,22 @@ export class GrpcResponseMonitor {
     ): Promise<void> {
         if (!this.trajectoryRenderer || !this.onRenderedTimeline || !this.isRunning) return;
 
+        const t0 = Date.now();
         const result = await this.trajectoryRenderer.renderTrajectory({
             steps: snapshot.renderSteps,
             runStatus: snapshot.runStatus,
             trajectory: snapshot.renderTrajectory,
             format: 'html',
         });
+        const renderMs = Date.now() - t0;
 
-        if (!this.isRunning || !result.ok || !result.content || result.format !== 'html') {
+        if (!this.isRunning) return;
+        if (!result.ok || !result.content || result.format !== 'html') {
+            logger.debug(
+                `[GrpcMonitor] Timeline render skipped (${renderMs}ms): ok=${result.ok}, ` +
+                `format=${result.format}, contentLen=${result.content?.length ?? 0}, ` +
+                `error=${result.error || 'none'}, steps=${snapshot.renderSteps.length}`,
+            );
             return;
         }
 
@@ -816,6 +827,12 @@ export class GrpcResponseMonitor {
         if (!content || content === this.lastRenderedTimelineContent) {
             this.lastRenderedTimelineKey = renderKey;
             return;
+        }
+
+        if (renderMs > 2000) {
+            logger.warn(`[GrpcMonitor] Timeline render took ${renderMs}ms (strategy=${result.strategy}, ctx=${result.contextId})`);
+        } else {
+            logger.debug(`[GrpcMonitor] Timeline render OK in ${renderMs}ms (strategy=${result.strategy})`);
         }
 
         this.lastRenderedTimelineKey = renderKey;

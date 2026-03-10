@@ -4,12 +4,8 @@
         "src/**/*.ts",
         "tests/**/*.ts"
     ],
-    "ignoreBinaries": [
-        "ts-node-dev"
-    ],
     "ignoreDependencies": [
-        "@types/marked",
-        "ts-node-dev"
+        "@types/marked"
     ],
     "rules": {
         "types": "warn"

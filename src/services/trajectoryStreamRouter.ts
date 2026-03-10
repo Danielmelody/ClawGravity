@@ -230,7 +230,7 @@ export class TrajectoryStreamRouter {
 
     // ─── Stream Event Handlers ──────────────────────────────────────
 
-    private handleStreamData(): void {
+    private handleStreamData(_evt: CascadeStreamEvent): void {
         // The stream fires on every diff. Debounce to avoid hammering
         // the trajectory API when changes arrive in bursts.
         if (this.debounceTimer) {

@@ -39,7 +39,7 @@ export function checkCdpPort(port: number): Promise<boolean> {
 /**
  * Check whether a TCP port is available (not in use) by attempting to listen on it.
  */
-export function isPortFree(port: number): Promise<boolean> {
+function isPortFree(port: number): Promise<boolean> {
     return new Promise((resolve) => {
         const server = net.createServer();
         server.once('error', () => resolve(false));
