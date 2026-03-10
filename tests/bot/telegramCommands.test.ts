@@ -142,6 +142,7 @@ describe('parseTelegramCommand', () => {
         ['/logs', 'logs', ''],
         ['/new', 'new', ''],
         ['/history', 'history', ''],
+        ['/inspect', 'inspect', ''],
     ])('parses %s as command=%s args=%s', (input, command, args) => {
         expect(parseTelegramCommand(input)).toEqual({ command, args });
     });

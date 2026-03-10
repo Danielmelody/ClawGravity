@@ -141,6 +141,7 @@ export class TrajectoryStreamRouter {
             const cascadeId = await this.cdpService.getActiveCascadeId();
             if (!cascadeId) {
                 this.reconnectFailures = 0;
+                logger.debug(`[StreamRouter:${this.projectName}] No active cascade, retrying in ${IDLE_RETRY_DELAY_MS}ms`);
                 this.scheduleIdleRetry();
                 return;
             }

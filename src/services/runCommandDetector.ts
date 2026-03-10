@@ -6,8 +6,8 @@ import {
     createNotificationTracker,
     resetTrackerDetection,
     processDetection,
-} from './notificationTracker';
-import { findLastPlannerStep } from './detectorStateManager';
+    findLastPlannerStep,
+} from './detectorStateManager';
 
 /** Run command dialog information */
 export interface RunCommandInfo {

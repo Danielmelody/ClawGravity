@@ -82,3 +82,39 @@ describe('GrpcCascadeClient createCascade', () => {
         expect(client.getLastOperationError()).toBe('LS StartCascade: 400 - bad request');
     });
 });
+
+describe('decodeWorkspaceId', () => {
+    let decodeWorkspaceId: typeof import('../../src/services/grpcCascadeClient').decodeWorkspaceId;
+
+    beforeAll(async () => {
+        const mod = await import('../../src/services/grpcCascadeClient');
+        decodeWorkspaceId = mod.decodeWorkspaceId;
+    });
+
+    it('decodes a Windows workspace ID with drive letter', () => {
+        // file_c_3A_Users_Daniel_Projects_MyApp → c:/Users/Daniel/Projects/MyApp
+        expect(decodeWorkspaceId('file_c_3A_Users_Daniel_Projects_MyApp'))
+            .toBe('c:/Users/Daniel/Projects/MyApp');
+    });
+
+    it('decodes a Mac/Linux workspace ID', () => {
+        expect(decodeWorkspaceId('file_home_user_projects_app'))
+            .toBe('home/user/projects/app');
+    });
+
+    it('handles workspace ID without file_ prefix', () => {
+        expect(decodeWorkspaceId('c_3A_Source_MyProject'))
+            .toBe('c:/Source/MyProject');
+    });
+
+    it('handles case-insensitive _3a_ encoding', () => {
+        expect(decodeWorkspaceId('file_d_3a_Dev_Project'))
+            .toBe('d:/Dev/Project');
+    });
+
+    it('decodes real observed workspace ID from Antigravity', () => {
+        // Real observed: --workspace_id file_c_3A_Users_Daniel_Projects_DeepMarket
+        expect(decodeWorkspaceId('file_c_3A_Users_Daniel_Projects_DeepMarket'))
+            .toBe('c:/Users/Daniel/Projects/DeepMarket');
+    });
+});

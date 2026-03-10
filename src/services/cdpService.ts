@@ -5,8 +5,8 @@ import * as http from 'http';
 import { spawn } from 'child_process';
 import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
 import WebSocket from 'ws';
-import { GrpcCascadeClient, ModelId, discoverAllLSConnections } from './grpcCascadeClient';
-import { getPendingToolCallsFromPlannerStep, getToolCallName } from './trajectoryToolState';
+import { GrpcCascadeClient, ModelId, discoverAllLSConnections, decodeWorkspaceId } from './grpcCascadeClient';
+
 
 export interface CdpServiceOptions {
     portsToScan?: number[];
@@ -1122,40 +1122,46 @@ export class CdpService extends EventEmitter {
                 let conn = allConnections[0];
 
                 if (allConnections.length > 1) {
-                    // Multiple LS processes — detect which one this workspace uses
-                    let detectedPort = await this.detectLSPortViaCDP();
-
-                    // If first probe fails, wait briefly and try again.
-                    // The workbench page may not have made any LS requests yet
-                    // (e.g., freshly launched window).
-                    if (!detectedPort) {
-                        await new Promise(r => setTimeout(r, 2000));
-                        detectedPort = await this.detectLSPortViaCDP();
-                    }
-
-                    const matched = detectedPort
-                        ? allConnections.find(c => c.port === detectedPort)
-                        : null;
-
-                    if (matched) {
-                        conn = matched;
+                    // Strategy 1: Match via --workspace_id from LS process args (reliable, no CDP needed)
+                    const matchedByWorkspaceId = this.matchConnectionByWorkspaceId(allConnections);
+                    if (matchedByWorkspaceId) {
+                        conn = matchedByWorkspaceId;
                         logger.info(
-                            `[CdpService] gRPC: matched LS port=${detectedPort} via CDP ` +
-                            `for workspace "${this.currentWorkspaceName}" (${allConnections.length} candidates)`
+                            `[CdpService] gRPC: matched LS via workspace_id for ` +
+                            `"${this.currentWorkspaceName}" (${allConnections.length} candidates)`
                         );
                     } else {
-                        // CRITICAL: Do NOT fall back to first process — this causes cross-talk!
-                        // Instead, allow retry on next call and log a clear warning.
-                        logger.error(
-                            `[CdpService] gRPC: CDP port detection returned ${detectedPort} — ` +
-                            `CANNOT determine which of ${allConnections.length} LS processes belongs to ` +
-                            `workspace "${this.currentWorkspaceName}". Will retry on next attempt.`
-                        );
-                        this.lastGrpcUnavailableReason =
-                            `gRPC unavailable: could not match workspace "${this.currentWorkspaceName || 'unknown'}" ` +
-                            'to a Language Server process.';
-                        this.grpcAuthAttempted = false;
-                        return null;
+                        // Strategy 2: Fallback to CDP port detection (for older LS versions without --workspace_id)
+                        let detectedPort = await this.detectLSPortViaCDP();
+
+                        if (!detectedPort) {
+                            await new Promise(r => setTimeout(r, 2000));
+                            detectedPort = await this.detectLSPortViaCDP();
+                        }
+
+                        const matched = detectedPort
+                            ? allConnections.find(c => c.port === detectedPort)
+                            : null;
+
+                        if (matched) {
+                            conn = matched;
+                            logger.info(
+                                `[CdpService] gRPC: matched LS port=${detectedPort} via CDP ` +
+                                `for workspace "${this.currentWorkspaceName}" (${allConnections.length} candidates)`
+                            );
+                        } else {
+                            // Both strategies failed
+                            logger.error(
+                                `[CdpService] gRPC: CDP port detection returned ${detectedPort} — ` +
+                                `CANNOT determine which of ${allConnections.length} LS processes belongs to ` +
+                                `workspace "${this.currentWorkspaceName}". Will retry on next attempt.`
+                            );
+                            this.lastGrpcUnavailableReason =
+                                `gRPC unavailable: could not match workspace "${this.currentWorkspaceName || 'unknown'}" ` +
+                                'to a Language Server process.';
+                            this.grpcAuthAttempted = false;
+                            return null;
+                        }
                     }
                 }
 
@@ -1176,6 +1182,44 @@ export class CdpService extends EventEmitter {
         })();
 
         return this.grpcInitPromise;
+    }
+
+    /**
+     * Match an LS connection to this workspace using the --workspace_id CLI arg.
+     *
+     * Each LS process is launched with `--workspace_id <encoded_path>`. We decode
+     * the encoded path and compare it against `currentWorkspacePath` using
+     * normalized, case-insensitive comparison (Windows paths are case-insensitive).
+     *
+     * @returns Matching LSConnection, or null if no match found
+     */
+    private matchConnectionByWorkspaceId(
+        connections: import('./grpcCascadeClient').LSConnection[],
+    ): import('./grpcCascadeClient').LSConnection | null {
+        if (!this.currentWorkspacePath) return null;
+
+        const normalize = (p: string) =>
+            p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+
+        const targetPath = normalize(this.currentWorkspacePath);
+
+        for (const conn of connections) {
+            if (!conn.workspaceId) continue;
+            const decodedPath = normalize(decodeWorkspaceId(conn.workspaceId));
+            if (decodedPath === targetPath) {
+                return conn;
+            }
+        }
+
+        // Log available workspace IDs for diagnostics
+        const ids = connections
+            .map(c => c.workspaceId || '(none)')
+            .join(', ');
+        logger.debug(
+            `[CdpService] matchConnectionByWorkspaceId: no match for ` +
+            `"${this.currentWorkspacePath}" in [${ids}]`,
+        );
+        return null;
     }
 
     /**
@@ -1271,121 +1315,6 @@ export class CdpService extends EventEmitter {
         return this.ensureGrpcClient();
     }
 
-    private describePendingTools(toolCalls: any[]): string {
-        const toolNames = toolCalls.map((tc: any) =>
-            tc?.name || tc?.toolName || tc?.function?.name || 'tool',
-        );
-        return toolNames.length === 1
-            ? `Tool: ${toolNames[0]}`
-            : `Tools: ${toolNames.join(', ')}`;
-    }
-
-    private getToolName(toolCall: any): string {
-        return getToolCallName(toolCall);
-    }
-
-    private isRunCommandTool(toolCall: any): boolean {
-        const toolName = this.getToolName(toolCall);
-        if (!toolName) return false;
-
-        return [
-            'terminal',
-            'command',
-            'shell',
-            'bash',
-            'exec',
-            'run_command',
-            'runcommand',
-            'execute_command',
-        ].some((pattern) => toolName.includes(pattern));
-    }
-
-    private isPlanningTool(toolCall: any): boolean {
-        return !this.isRunCommandTool(toolCall);
-    }
-
-    private classifyPendingWorkspaceBlock(
-        cascadeId: string,
-        steps: any[],
-        runStatus: string | null,
-    ): PendingWorkspaceBlock | null {
-        if (!runStatus || runStatus !== 'CASCADE_RUN_STATUS_IDLE') return null;
-        if (!Array.isArray(steps) || steps.length === 0) return null;
-
-        for (let i = steps.length - 1; i >= 0; i--) {
-            const step = steps[i];
-
-            if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') break;
-            if (step?.type !== 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && step?.type !== 'CORTEX_STEP_TYPE_RESPONSE') {
-                continue;
-            }
-
-            const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
-            if (pendingToolCalls.length === 0) return null;
-
-            const responseText = typeof step?.plannerResponse?.response === 'string'
-                ? step.plannerResponse.response.trim()
-                : '';
-            const description = this.describePendingTools(pendingToolCalls);
-
-            const hasRunCommandTool = pendingToolCalls.some((toolCall: any) => this.isRunCommandTool(toolCall));
-            const hasPlanningTool = pendingToolCalls.some((toolCall: any) => this.isPlanningTool(toolCall));
-
-            if (hasRunCommandTool) {
-                return {
-                    kind: 'run_command',
-                    message: `Waiting for command confirmation: ${description}. Use Run or Reject before sending another message.`,
-                    cascadeId,
-                };
-            }
-
-            if (
-                step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE'
-                && responseText.length > 0
-                && hasPlanningTool
-            ) {
-                return {
-                    kind: 'planning',
-                    message: `Waiting for plan review: ${description}. Use Open or Proceed before sending another message.`,
-                    cascadeId,
-                };
-            }
-
-            return {
-                kind: 'approval',
-                message: `Waiting for tool approval: ${description}. Use Allow or Deny before sending another message.`,
-                cascadeId,
-            };
-        }
-
-        return null;
-    }
-
-    private async getPendingWorkspaceBlock(overrideCascadeId?: string): Promise<PendingWorkspaceBlock | null> {
-        const client = await this.ensureGrpcClient();
-        if (!client) return null;
-
-        const cascadeId = overrideCascadeId || this.cachedCascadeId || await this.getActiveCascadeId();
-        if (!cascadeId) return null;
-
-        try {
-            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
-            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
-            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
-            const runStatus =
-                trajectory?.cascadeRunStatus
-                || trajectoryResp?.cascadeRunStatus
-                || trajectory?.status
-                || trajectoryResp?.status
-                || null;
-
-            return this.classifyPendingWorkspaceBlock(cascadeId, steps, runStatus);
-        } catch (error: any) {
-            logger.debug(`[CdpService] Pending workspace block check failed: ${error?.message || error}`);
-            return null;
-        }
-    }
-
     /**
      * Try to inject a message via the gRPC direct API.
      * Bypasses the entire DOM — sends directly to the LanguageServer.
@@ -1397,12 +1326,6 @@ export class CdpService extends EventEmitter {
         const client = await this.ensureGrpcClient();
         if (!client) {
             return { ok: false, error: this.lastGrpcUnavailableReason || 'gRPC injection failed' };
-        }
-
-        const pendingBlock = await this.getPendingWorkspaceBlock(overrideCascadeId);
-        if (pendingBlock) {
-            logger.warn(`[CdpService] injectViaGrpc blocked by pending ${pendingBlock.kind} on cascade=${pendingBlock.cascadeId.slice(0, 16)}...`);
-            return { ok: false, error: pendingBlock.message, cascadeId: pendingBlock.cascadeId };
         }
 
         // If we have an explicit cascade ID (e.g. from a previous createCascade), try to reuse it

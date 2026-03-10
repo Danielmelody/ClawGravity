@@ -33,6 +33,7 @@ export class TelegramSessionStateStore {
 
     private readonly selectedSessionByChat = new Map<string, { title: string, id: string }>();
     private readonly recentMessagesByChat = new Map<string, string[]>();
+    private readonly inspectByChat = new Map<string, boolean>();
 
     setSelectedSession(chatId: string, sessionTitle: string, cascadeId: string = ''): void {
         this.selectedSessionByChat.set(chatId, { title: sessionTitle, id: cascadeId });
@@ -58,6 +59,15 @@ export class TelegramSessionStateStore {
 
     clearSelectedSession(chatId: string): void {
         this.selectedSessionByChat.delete(chatId);
+        this.inspectByChat.delete(chatId);
+    }
+
+    setInspect(chatId: string, enabled: boolean): void {
+        this.inspectByChat.set(chatId, enabled);
+    }
+
+    getInspect(chatId: string): boolean {
+        return this.inspectByChat.get(chatId) ?? false;
     }
 
     pushRecentMessage(chatId: string, text: string): void {

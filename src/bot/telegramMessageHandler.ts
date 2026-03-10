@@ -16,7 +16,19 @@ import { CdpBridge, ensureWorkspaceRuntime, registerApprovalWorkspaceChannel } f
 import type { UserMessageInfo } from '../services/userMessageDetector';
 import { CdpService } from '../services/cdpService';
 import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
-import { splitOutputAndLogs } from '../utils/discordFormatter';
+import { createPipelineSession } from '../utils/pipelineDebugLog';
+import {
+    initialDeliveryState,
+    deliveryReducer,
+    createDeliverySnapshot,
+    type MessageDeliveryState,
+    type DeliveryAction,
+} from '../platform/telegram/messageDeliveryState';
+import {
+    planDelivery,
+    executeDelivery,
+    splitTelegramText,
+} from '../platform/telegram/telegramDeliveryPipeline';
 import { parseTelegramProjectCommand, handleTelegramProjectCommand } from './telegramProjectCommand';
 import { parseTelegramCommand, handleTelegramCommand } from './telegramCommands';
 
@@ -38,6 +50,15 @@ import { AntigravityTrajectoryRenderer } from '../services/antigravityTrajectory
 import { markdownToTelegramHtmlViaUnified, rawHtmlToTelegramHtml } from '../platform/telegram/trajectoryRenderer';
 
 const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
+
+/**
+ * Sentinel text the AI must include when its inspect analysis is complete.
+ * ClawGravity parses the response for this marker to exit inspect mode for the cycle.
+ */
+const INSPECT_DONE_SENTINEL = '[[INSPECT_COMPLETE]]';
+
+/** Prefix used to identify inspect-mode prompts (prevents recursive triggering). */
+const INSPECT_PROMPT_PREFIX = '[Inspect Mode';
 
 interface Deferred<T> {
     readonly promise: Promise<T>;
@@ -141,7 +162,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             );
             if (cmdResult?.forwardAsMessage) {
                 // Command wants to inject a prompt through the regular pipeline
-                // (e.g. /debug builds a prompt and hands it off for full monitoring)
+                // (e.g. /inspect toggles inspect mode for the session)
                 forwardedPrompt = cmdResult.forwardAsMessage;
             } else {
                 return;
@@ -287,7 +308,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 }
             }
 
-            // Determine the prompt text — use forwarded prompt (from /debug) if available,
+            // Determine the prompt text — use forwarded prompt (from command) if available,
             // otherwise fall back to regular prompt or default for image-only messages
             const effectivePrompt = forwardedPrompt || promptText || 'Please review the attached images and respond accordingly.';
 
@@ -324,7 +345,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             const channel = trackedChannel;
             const startTime = Date.now();
             const mirror = await createTelegramMirrorSession(channel, 'Processing...');
-            const mirrorForwarder = createTelegramMirrorForwarder(mirror);
             const trajectoryRenderer = new AntigravityTrajectoryRenderer(cdp);
 
             const TIMEOUT_MS = 600_000;
@@ -348,27 +368,46 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             }
             const { grpcClient, cascadeId } = monitoringTarget;
             let monitor: GrpcResponseMonitor | null = null;
-            const monitorConfig = createTelegramMirrorMonitorCallbacks({
+            const pipeline = createPipelineSession('tg-active');
+            const monitorConfig = buildMonitorCallbacks({
+                pipeline,
                 mirror,
-                mirrorForwarder,
+                channel,
                 getPhase: () => monitor?.getPhase?.() || 'timeout',
-                resolveFinalText: async (finalText: string) => {
-                    const separated = splitOutputAndLogs(finalText || '');
-                    const finalOutputText = separated.output || finalText || '';
-                    if (finalOutputText && finalOutputText.trim().length > 0) {
-                        logger.divider(`Output (${finalOutputText.length} chars)`);
-                        console.info(finalOutputText);
-                    }
-                    logger.divider();
-                    return finalOutputText && finalOutputText.trim().length > 0
-                        ? finalOutputText
-                        : finalText;
-                },
+                renderOnlyOnComplete: true,
+                resolveFinalText: (finalText: string) => finalText,
                 handleEmptyComplete: async () => {
                     await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
                     await mirror.clear();
                 },
                 afterComplete: async (_finalText: string, deliveredText: string | null) => {
+                    // Detect inspect-complete sentinel: LLM confirmed no issues → auto-disable inspect mode.
+                    if (deliveredText?.includes(INSPECT_DONE_SENTINEL)) {
+                        deps.sessionStateStore?.setInspect(chatId, false);
+                        await channel.send({ text: '🔍 Inspect 分析完成，未发现问题，已自动关闭 Inspect 模式。' }).catch(logger.error);
+                        logger.info(`[TelegramHandler:inspect] Inspect cycle complete, auto-disabled (chat=${chatId})`);
+                    }
+
+                    // Inspect mode: send TG conversation + response back for self-analysis.
+                    // Skip if the current prompt is itself an inspect prompt (prevents recursion).
+                    if (deps.sessionStateStore?.getInspect(chatId) && deliveredText?.trim()
+                        && !effectivePrompt.startsWith(INSPECT_PROMPT_PREFIX)) {
+                        const inspectPrompt = buildInspectPrompt(effectivePrompt, deliveredText);
+                        const inspectCascadeId = injectResult.cascadeId
+                            || deps.sessionStateStore?.getCurrentCascadeId(chatId)
+                            || cascadeId;
+                        // Fire-and-forget: inject the inspect prompt.
+                        // The recursion guard above ensures this only fires once per user message.
+                        runtime.sendPromptWithMonitoringTarget({
+                            text: inspectPrompt,
+                            overrideCascadeId: inspectCascadeId,
+                        }).then(() => {
+                            logger.info(`[TelegramHandler:inspect] Inspect prompt injected (chat=${chatId})`);
+                        }).catch((err: any) => {
+                            logger.warn(`[TelegramHandler:inspect] Failed to inject inspect prompt: ${err?.message || err}`);
+                        });
+                    }
+
                     if (!deps.clawInterceptor || !deliveredText || !deliveredText.trim()) {
                         return;
                     }
@@ -400,8 +439,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     }
                 },
                 cleanup: settle,
-                clearMirrorAfterTimeout: false,
-                renderOnlyOnComplete: true,
             });
 
             if (!cascadeId) {
@@ -436,6 +473,53 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             await monitorDeferred.promise;
         });
     };
+}
+
+// ---------------------------------------------------------------------------
+// Inspect-mode self-analysis prompt builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a self-analysis prompt for inspect mode.
+ *
+ * Includes the TG user prompt and Antigravity's response, asking Antigravity
+ * to compare, identify discrepancies, and self-fix.
+ */
+function buildInspectPrompt(userPrompt: string, antigravityResponse: string): string {
+    const parts: string[] = [];
+    parts.push(
+        '[Inspect Mode — Self-Analysis]',
+        '',
+        'The following is the Telegram conversation that was just exchanged.',
+        'Compare the TG-forwarded content with your own token stream.',
+        'Identify any discrepancies, missing information, formatting issues, or bugs.',
+        '',
+        '## User Prompt (from Telegram)',
+        '```',
+        userPrompt,
+        '```',
+        '',
+        '## Your Response (delivered to Telegram)',
+        '```',
+        antigravityResponse.slice(0, 8000), // cap to avoid enormous prompts
+        '```',
+        '',
+        'Please:',
+        '1. Analyze the difference between what was requested and what was delivered',
+        '2. Check if there are any code errors, truncation, or formatting problems',
+        '3. If you find issues in YOUR OWN codebase that caused the discrepancy, fix them',
+        '4. After fixing, compile and restart the process to apply changes',
+        '5. Briefly summarize your findings',
+        '',
+        `IMPORTANT: Include the exact text ${INSPECT_DONE_SENTINEL} at the very end of your response`,
+        'ONLY when you are confident that:',
+        '  - There are NO remaining issues, OR',
+        '  - All issues have been identified and fixed.',
+        `When ClawGravity detects ${INSPECT_DONE_SENTINEL}, it will automatically disable Inspect mode for this chat.`,
+        `If you are NOT confident everything is resolved, do NOT include ${INSPECT_DONE_SENTINEL} — Inspect mode will remain active for the next message.`,
+        `If you fixed something and triggered a restart, still include ${INSPECT_DONE_SENTINEL} AFTER your summary (only if the fix is complete).`,
+    );
+    return parts.join('\n');
 }
 
 /**
@@ -560,154 +644,6 @@ async function executeClawChain(opts: ClawChainOptions): Promise<void> {
 }
 
 
-async function deliverFinalTelegramText(
-    channel: PlatformChannel,
-    existingMessages: PlatformSentMessage[],
-    text: string,
-): Promise<PlatformSentMessage[]> {
-    // Convert raw Markdown to Telegram-safe HTML via the unified pipeline
-    const telegramHtml = markdownToTelegramHtmlViaUnified(text) || text;
-    const chunks = splitTelegramText(telegramHtml);
-    if (chunks.length === 0) {
-        return existingMessages;
-    }
-
-    const nextMessages = existingMessages.slice();
-    for (let i = 0; i < chunks.length; i++) {
-        const existing = nextMessages[i];
-        if (existing) {
-            try {
-                nextMessages[i] = await existing.edit({ text: chunks[i] });
-                continue;
-            } catch (err: any) {
-                logger.warn(`[TelegramDeliver] final edit failed for msg #${i}: ${err?.message || err}`);
-                const shouldPreserveExisting = isTelegramLengthError(err);
-                const replacement = await channel.send({ text: chunks[i] }).catch((sendErr: any) => {
-                    logger.error(`[TelegramDeliver] final send failed for chunk #${i}: ${sendErr?.message || sendErr}`);
-                    return null;
-                });
-                if (replacement) {
-                    if (!shouldPreserveExisting) {
-                        await existing.delete().catch(() => { });
-                    }
-                    nextMessages[i] = replacement;
-                    continue;
-                }
-            }
-            continue;
-        }
-
-        const sent = await channel.send({ text: chunks[i] }).catch((err: any) => {
-            logger.error(`[TelegramDeliver] final send failed for chunk #${i}: ${err?.message || err}`);
-            return null;
-        });
-        if (sent) {
-            nextMessages[i] = sent;
-        }
-    }
-
-    for (let i = chunks.length; i < nextMessages.length; i++) {
-        await nextMessages[i].delete().catch(() => { });
-    }
-
-    return nextMessages.slice(0, chunks.length);
-}
-
-/**
- * Split text into chunks that fit Telegram's 4096-char limit.
- * Prefers splitting at newline boundaries to avoid breaking HTML tags.
- */
-function splitTelegramText(text: string): string[] {
-    const MAX_LENGTH = 4096;
-    if (text.length <= MAX_LENGTH) return text.length > 0 ? [text] : [];
-
-    type OpenTag = { name: string; openTag: string };
-    const tagPattern = /<\/?([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>/g;
-    const chunks: string[] = [];
-    const openTags: OpenTag[] = [];
-    let current = '';
-    let cursor = 0;
-
-    const buildClosingTags = () => openTags.slice().reverse().map((tag) => `</${tag.name}>`).join('');
-    const buildOpeningTags = () => openTags.map((tag) => tag.openTag).join('');
-    const flushChunk = () => {
-        if (!current) return;
-        chunks.push(current + buildClosingTags());
-        current = buildOpeningTags();
-    };
-    const splitTextSegment = (segment: string, maxLen: number): [string, string] => {
-        if (segment.length <= maxLen) {
-            return [segment, ''];
-        }
-
-        const candidate = segment.slice(0, maxLen);
-        const lastNewline = candidate.lastIndexOf('\n');
-        const splitAt = lastNewline > maxLen / 2 ? lastNewline + 1 : maxLen;
-        return [segment.slice(0, splitAt), segment.slice(splitAt)];
-    };
-    const appendText = (segment: string) => {
-        let remaining = segment;
-        while (remaining.length > 0) {
-            const closingTags = buildClosingTags();
-            const available = MAX_LENGTH - current.length - closingTags.length;
-            if (available <= 0) {
-                flushChunk();
-                continue;
-            }
-
-            const [piece, rest] = splitTextSegment(remaining, available);
-            current += piece;
-            remaining = rest;
-            if (remaining.length > 0) {
-                flushChunk();
-            }
-        }
-    };
-
-    let match: RegExpExecArray | null;
-    while ((match = tagPattern.exec(text)) !== null) {
-        if (match.index > cursor) {
-            appendText(text.slice(cursor, match.index));
-        }
-
-        const fullTag = match[0];
-        const rawName = match[1] || '';
-        const tagName = rawName.toLowerCase();
-        const isClosing = fullTag.startsWith('</');
-        const isSelfClosing = fullTag.endsWith('/>') || tagName === 'tg-emoji';
-
-        if ((current.length + fullTag.length + buildClosingTags().length) > MAX_LENGTH) {
-            flushChunk();
-        }
-        current += fullTag;
-
-        if (isClosing) {
-            const idx = openTags.map((tag) => tag.name).lastIndexOf(tagName);
-            if (idx >= 0) {
-                openTags.splice(idx, 1);
-            }
-        } else if (!isSelfClosing) {
-            openTags.push({ name: tagName, openTag: fullTag });
-        }
-
-        cursor = match.index + fullTag.length;
-    }
-
-    if (cursor < text.length) {
-        appendText(text.slice(cursor));
-    }
-
-    if (current) {
-        chunks.push(current + buildClosingTags());
-    }
-
-    return chunks.filter((chunk) => chunk.length > 0);
-}
-
-function isTelegramLengthError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error || '');
-    return /(message is too long|too long|text_too_long|message_too_long|caption is too long|entities too long)/i.test(message);
-}
 
 export function createCoalescedStatusRenderer(
     channel: PlatformChannel,
@@ -823,7 +759,9 @@ async function syncStreamingStatusMessages(
                 continue;
             } catch (err: any) {
                 logger.warn(`[TelegramStatus] edit failed for msg #${i}: ${err?.message || err}`);
-                const shouldPreserveExisting = isTelegramLengthError(err);
+                const shouldPreserveExisting = /(message is too long|too long|text_too_long|message_too_long|caption is too long|entities too long)/i.test(
+                    err instanceof Error ? err.message : String(err || ''),
+                );
                 const replacement = await channel.send({ text: chunks[i] }).catch((sendErr: any) => {
                     logger.error(`[TelegramStatus] replacement send failed for chunk #${i}: ${sendErr?.message || sendErr}`);
                     return null;
@@ -865,12 +803,29 @@ async function deleteStreamingStatusMessages(messages: PlatformSentMessage[]): P
     await Promise.all(messages.map((message) => message.delete().catch(() => { })));
 }
 
+// ---------------------------------------------------------------------------
+// TelegramMirrorSession — CRDT-backed streaming updater
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirror session using CRDT state (LWW-Registers).
+ *
+ * Writers:
+ *   - dispatch(TEXT_UPDATE) — from onProgress (raw streaming text)
+ *   - dispatch(HTML_UPDATE) — from onRenderedTimeline (rendered HTML)
+ *   - dispatch(COMPLETE)    — from onComplete (final text)
+ *
+ * The streaming coalesced renderer reads derived state from the CRDT
+ * and pushes updates to Telegram. It's the only stateful I/O concern.
+ *
+ * On completion, `snapshot()` freezes the CRDT state and the pure
+ * delivery pipeline takes over — no shared mutable state.
+ */
 interface TelegramMirrorSession {
-    updateText(text: string, immediate?: boolean): void;
-    updateHtml(html: string, immediate?: boolean): void;
-    hasRenderableContent(): boolean;
+    dispatch(action: DeliveryAction): void;
+    snapshot(): import('../platform/telegram/messageDeliveryState').DeliverySnapshot;
+    getMessages(): PlatformSentMessage[];
     flush(): Promise<void>;
-    finalize(text: string): Promise<void>;
     clear(): Promise<void>;
     dispose(): void;
 }
@@ -887,15 +842,18 @@ async function createTelegramMirrorSession(
             messages = nextMessages;
         },
     );
-    let latestText = '';
-    let latestHtml = '';
-    let preferredFormat: 'text' | 'html' = 'text';
+    let state: MessageDeliveryState = initialDeliveryState();
 
+    // Prefer Markdown → Telegram HTML (pure, no CDP dependency).
+    // Falls back to CDP-rendered HTML if text state hasn't arrived yet.
     const renderCurrent = (): string => {
-        if (preferredFormat === 'html' && latestHtml.trim()) {
-            return rawHtmlToTelegramHtml(latestHtml).trim();
+        if (state.text.clock > 0 && state.text.value.trim()) {
+            return markdownToTelegramHtmlViaUnified(state.text.value).trim();
         }
-        return markdownToTelegramHtmlViaUnified(latestText).trim();
+        if (state.html.clock > 0 && state.html.value.trim()) {
+            return rawHtmlToTelegramHtml(state.html.value).trim();
+        }
+        return '';
     };
 
     if (initialPlaceholderText) {
@@ -906,57 +864,28 @@ async function createTelegramMirrorSession(
     }
 
     return {
-        updateText(text: string, immediate = false): void {
-            const isFirstVisibleUpdate = !latestText.trim();
-            latestText = text || '';
-            preferredFormat = 'text';
-            const renderedText = renderCurrent();
-            if (!renderedText) return;
-            renderer.request(renderedText, immediate || isFirstVisibleUpdate);
+        dispatch(action: DeliveryAction): void {
+            state = deliveryReducer(state, action);
+            // Push streaming update (skip for COMPLETE — delivery pipeline handles that)
+            if (action.type !== 'COMPLETE') {
+                const isFirstVisible = state.text.clock <= 1 && state.html.clock <= 1;
+                const renderedText = renderCurrent();
+                if (renderedText) {
+                    renderer.request(renderedText, isFirstVisible);
+                }
+            }
         },
-        updateHtml(html: string, immediate = false): void {
-            const isFirstVisibleUpdate = !latestText.trim() && !latestHtml.trim();
-            latestHtml = html || '';
-            preferredFormat = 'html';
-            const renderedText = renderCurrent();
-            if (!renderedText) return;
-            renderer.request(renderedText, immediate || isFirstVisibleUpdate);
+        snapshot() {
+            return createDeliverySnapshot(state);
+        },
+        getMessages() {
+            return messages.slice();
         },
         async flush(): Promise<void> {
             await renderer.flush();
         },
-        hasRenderableContent(): boolean {
-            return renderCurrent().trim().length > 0;
-        },
-        async finalize(text: string): Promise<void> {
-            latestText = text || '';
-
-            if (preferredFormat === 'html' && latestHtml.trim()) {
-                // HTML-preferred: render the latest HTML into the status message
-                const renderedText = renderCurrent();
-                if (renderedText) {
-                    renderer.request(renderedText, true);
-                    await renderer.flush();
-                }
-                return;
-            }
-
-            if (latestText.trim()) {
-                // Text-preferred: deliverFinalTelegramText handles the final edit/send
-                // Dispose the coalesced renderer first to avoid racing edits
-                renderer.dispose();
-                messages = await deliverFinalTelegramText(channel, messages, latestText);
-                return;
-            }
-
-            if (messages.length > 0) {
-                await deleteStreamingStatusMessages(messages);
-                messages = [];
-            }
-        },
         async clear(): Promise<void> {
-            latestText = '';
-            latestHtml = '';
+            state = initialDeliveryState();
             if (messages.length > 0) {
                 await deleteStreamingStatusMessages(messages);
                 messages = [];
@@ -968,139 +897,135 @@ async function createTelegramMirrorSession(
     };
 }
 
-function applyTimelineUpdateToMirror(
-    mirror: TelegramMirrorSession,
-    timeline: {
-        content: string;
-        format: 'text' | 'html';
-    },
-): void {
-    if (!timeline.content?.trim()) return;
-    if (timeline.format === 'html') {
-        mirror.updateHtml(timeline.content);
-        return;
-    }
-    mirror.updateText(timeline.content);
-}
+// ---------------------------------------------------------------------------
+// Monitor callback builder — connects GrpcResponseMonitor to CRDT + pipeline
+// ---------------------------------------------------------------------------
 
-function createTelegramMirrorForwarder(
-    mirror: TelegramMirrorSession,
-    shouldForward: () => boolean = () => true,
-    options?: {
-        renderedOnly?: boolean;
-    },
-): {
-    onTextUpdate: (text: string) => void;
-    onRenderedTimeline: (timeline: { content: string; format: 'text' | 'html' }) => void;
-    flushLastText: (text: string) => Promise<void>;
-    finalizeText: (text: string) => Promise<void>;
-    finalizeRendered: () => Promise<void>;
-    hasRenderableContent: () => boolean;
-} {
-    const renderedOnly = options?.renderedOnly === true;
-
-    return {
-        onTextUpdate: (text: string) => {
-            if (renderedOnly) return;
-            if (!shouldForward()) return;
-            mirror.updateText(text);
-        },
-        onRenderedTimeline: (timeline: { content: string; format: 'text' | 'html' }) => {
-            if (!shouldForward()) return;
-            applyTimelineUpdateToMirror(mirror, timeline);
-        },
-        async flushLastText(text: string): Promise<void> {
-            if (renderedOnly) return;
-            if (!shouldForward()) return;
-            const visibleText = markdownToTelegramHtmlViaUnified(text || '').trim();
-            if (!visibleText) return;
-            mirror.updateText(text, true);
-            await mirror.flush();
-        },
-        async finalizeText(text: string): Promise<void> {
-            if (!shouldForward()) return;
-            if (text && text.trim().length > 0) {
-                await mirror.finalize(text);
-                return;
-            }
-            await mirror.clear();
-        },
-        async finalizeRendered(): Promise<void> {
-            if (!shouldForward()) return;
-            await mirror.finalize('');
-        },
-        hasRenderableContent: () => shouldForward() && mirror.hasRenderableContent(),
-    };
-}
-
-interface TelegramMirrorMonitorCallbacksOptions {
+interface MonitorCallbackOptions {
+    readonly pipeline: ReturnType<typeof createPipelineSession>;
     readonly mirror: TelegramMirrorSession;
-    readonly mirrorForwarder: ReturnType<typeof createTelegramMirrorForwarder>;
+    readonly channel: PlatformChannel;
     readonly getPhase: () => string;
-    readonly resolveFinalText: (finalText: string) => Promise<string | null> | string | null;
+    readonly renderOnlyOnComplete: boolean;
+    readonly resolveFinalText: (finalText: string) => string | null;
+    readonly shouldForward?: () => boolean;
     readonly handleEmptyComplete?: () => Promise<void>;
     readonly afterComplete?: (finalText: string, deliveredText: string | null) => Promise<void>;
     readonly handleTimeoutNotice: (lastText: string, phase: string) => Promise<void>;
     readonly cleanup: () => void;
-    readonly clearMirrorAfterTimeout?: boolean;
-    readonly renderOnlyOnComplete?: boolean;
 }
 
-function createTelegramMirrorMonitorCallbacks(options: TelegramMirrorMonitorCallbacksOptions) {
+/**
+ * Build GrpcResponseMonitor callbacks using the CRDT + pure pipeline pattern.
+ *
+ * Data flow:
+ *   onProgress(text) → dispatch(TEXT_UPDATE) → coalesced render
+ *   onRenderedTimeline(html) → dispatch(HTML_UPDATE) → coalesced render
+ *   onComplete(finalText) →
+ *     1. dispatch(COMPLETE)
+ *     2. snapshot() — freezes state
+ *     3. planDelivery(snapshot) — pure function
+ *     4. executeDelivery(plan) — Telegram API
+ *
+ * No shared mutable state during steps 2-4. Race-free by construction.
+ */
+function buildMonitorCallbacks(options: MonitorCallbackOptions) {
     const {
+        pipeline,
         mirror,
-        mirrorForwarder,
+        channel,
         getPhase,
+        renderOnlyOnComplete,
         resolveFinalText,
+        shouldForward = () => true,
         handleEmptyComplete,
         afterComplete,
         handleTimeoutNotice,
         cleanup,
-        clearMirrorAfterTimeout = false,
-        renderOnlyOnComplete = false,
     } = options;
 
     return {
-        onTextUpdate: mirrorForwarder.onTextUpdate,
-        onRenderedTimeline: mirrorForwarder.onRenderedTimeline,
+        onProgress: (text: string) => {
+            if (!shouldForward()) return;
+            // HTML register having clock > 0 means rendered content arrived;
+            // prefer that over raw text (same logic as old hasReceivedRenderedContent flag,
+            // but derived from CRDT state instead of separate mutable boolean).
+            mirror.dispatch({ type: 'TEXT_UPDATE', text });
+        },
+
+        onRenderedTimeline: (timeline: { content: string; format: 'text' | 'html' }) => {
+            if (!shouldForward()) return;
+            if (!timeline.content?.trim()) return;
+            if (timeline.format === 'html') {
+                mirror.dispatch({ type: 'HTML_UPDATE', html: timeline.content });
+            } else {
+                mirror.dispatch({ type: 'TEXT_UPDATE', text: timeline.content });
+            }
+        },
+
         onComplete: async (finalText: string) => {
             try {
-                const deliveredText = await resolveFinalText(finalText);
-                if (renderOnlyOnComplete) {
-                    if (mirrorForwarder.hasRenderableContent()) {
-                        await mirrorForwarder.finalizeRendered();
-                    } else if (deliveredText && deliveredText.trim().length > 0) {
-                        // Fallback: renderer produced no content, but we have raw text
-                        logger.debug('[TelegramMirror] Rendered timeline empty — falling back to text delivery');
-                        await mirrorForwarder.finalizeText(deliveredText);
-                    } else if (handleEmptyComplete) {
+                // 1. Dispatch completion (monotonic flag)
+                mirror.dispatch({ type: 'COMPLETE', finalText });
+
+                // 2. Resolve final text (caller-specific logic, e.g. session validation)
+                const resolvedText = resolveFinalText(finalText);
+                if (resolvedText === null) {
+                    // Caller decided not to deliver (e.g. stale session)
+                    return;
+                }
+
+                // 3. Freeze state — atomic snapshot, no more state changes matter
+                const snapshot = mirror.snapshot();
+                const existingMessages = mirror.getMessages();
+                mirror.dispose(); // stop streaming renderer
+
+                // 4. Pure pipeline: snapshot → plan (deterministic, no side effects)
+                const plan = planDelivery(pipeline, snapshot, { renderOnlyOnComplete });
+
+                pipeline.observe('deliveryPlan', {
+                    mode: plan.mode,
+                    reason: plan.reason,
+                    chunkCount: plan.chunks.length,
+                    telegramHtmlLength: plan.telegramHtml.length,
+                });
+
+                // 5. Execute delivery (Telegram API calls)
+                if (plan.mode === 'empty') {
+                    if (handleEmptyComplete) {
                         await handleEmptyComplete();
                     }
-                } else if (deliveredText && deliveredText.trim().length > 0) {
-                    await mirrorForwarder.finalizeText(deliveredText);
-                } else if (handleEmptyComplete) {
-                    await handleEmptyComplete();
+                } else {
+                    await executeDelivery(pipeline, plan, channel, existingMessages);
                 }
-                await afterComplete?.(finalText, deliveredText);
+
+                // 6. Post-delivery hooks
+                await afterComplete?.(finalText, plan.deliveredText);
             } finally {
-                mirror.dispose();
+                pipeline.flush();
+                mirror.dispose(); // idempotent
                 cleanup();
             }
         },
+
         onTimeout: async (lastText: string) => {
             try {
-                await mirrorForwarder.flushLastText(lastText);
+                pipeline.observe('timeout', {
+                    lastTextLength: lastText.length,
+                    phase: getPhase(),
+                });
+                // Flush current streaming state before the timeout notice
+                await mirror.flush();
                 await handleTimeoutNotice(lastText, getPhase());
-                if (clearMirrorAfterTimeout) {
-                    await mirror.clear();
-                }
             } finally {
+                pipeline.flush();
                 mirror.dispose();
                 cleanup();
             }
         },
     };
 }
+
 
 // ---------------------------------------------------------------------------
 // Passive PC → Telegram notification
@@ -1267,7 +1192,6 @@ async function startPassiveResponseMonitor(
 
     const startTime = Date.now();
     const mirror = await createTelegramMirrorSession(channel);
-    const mirrorForwarder = createTelegramMirrorForwarder(mirror, isCurrentChatSession, { renderedOnly: true });
     const trajectoryRenderer = new AntigravityTrajectoryRenderer(
         runtime.getConnectedCdp() || runtime.getCdpUnsafe(),
     );
@@ -1275,22 +1199,33 @@ async function startPassiveResponseMonitor(
     const initialMonitoringTarget = await runtime.getMonitoringTarget(info.cascadeId || null);
     let monitor: GrpcResponseMonitor | null = null;
     const cleanupPassiveState = () => clearPassiveMonitorState(projectName, activeMonitors);
-    const monitorConfig = createTelegramMirrorMonitorCallbacks({
+    const passivePipeline = createPipelineSession('tg-passive');
+    const monitorConfig = buildMonitorCallbacks({
+        pipeline: passivePipeline,
         mirror,
-        mirrorForwarder,
+        channel,
         getPhase: () => monitor?.getPhase?.() || 'timeout',
-        resolveFinalText: async (finalText: string) => {
+        renderOnlyOnComplete: true,
+        resolveFinalText: (finalText: string) => {
             if (!isCurrentChatSession()) {
                 return null;
             }
             return finalText;
         },
+        shouldForward: isCurrentChatSession,
         handleEmptyComplete: async () => {
             if (isCurrentChatSession()) {
                 await mirror.clear();
             }
         },
         afterComplete: async (_finalText: string, deliveredText: string | null) => {
+            // Detect inspect-complete sentinel in passive path: LLM confirmed no issues → auto-disable.
+            if (deliveredText?.includes(INSPECT_DONE_SENTINEL) && isCurrentChatSession()) {
+                sessionStateStore?.setInspect(channel.id, false);
+                await channel.send({ text: '🔍 Inspect 分析完成，未发现问题，已自动关闭 Inspect 模式。' }).catch(logger.error);
+                logger.info(`[TelegramPassive:inspect] Inspect cycle complete, auto-disabled (chat=${channel.id})`);
+            }
+
             if (!clawInterceptor || !deliveredText || !deliveredText.trim() || !isCurrentChatSession()) {
                 return;
             }
@@ -1325,7 +1260,6 @@ async function startPassiveResponseMonitor(
             }
         },
         cleanup: cleanupPassiveState,
-        renderOnlyOnComplete: true,
     });
 
     if (!initialMonitoringTarget) {

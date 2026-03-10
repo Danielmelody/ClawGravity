@@ -140,6 +140,7 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
     it('emits a unified text stream instead of forcing callers to merge thinking and response', async () => {
         const client = new FakeGrpcClient();
         const onTextUpdate = jest.fn();
+        const onPhaseChange = jest.fn();
 
         client.rawRPC.mockResolvedValue({
             trajectory: {
@@ -155,7 +156,8 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
             grpcClient: client as any,
             cascadeId: 'cascade-unified-stream',
             expectedUserMessage: 'hi',
-            onTextUpdate,
+            onProgress: onTextUpdate,
+            onPhaseChange,
         });
 
         await monitor.start();
@@ -174,9 +176,14 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
 
         await Promise.resolve();
         await jest.advanceTimersByTimeAsync(8);
+        // readTrajectorySnapshot is async — flush the microtask queue
+        // so applyTrajectorySnapshot runs and fires onProgress
+        for (let i = 0; i < 10; i++) await Promise.resolve();
 
-        expect(onTextUpdate).toHaveBeenNthCalledWith(1, 'Analyzed project');
-        expect(onTextUpdate).toHaveBeenLastCalledWith('Analyzed project\n\nFinal reply');
+        // Thinking text goes through onPhaseChange, not onTextUpdate
+        expect(onPhaseChange).toHaveBeenCalledWith('thinking', null);
+        // onTextUpdate only receives trajectory response text
+        expect(onTextUpdate).toHaveBeenCalledWith('Final reply');
 
         await monitor.stop();
     });
@@ -206,6 +213,8 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         client.emit('complete');
         await Promise.resolve();
         await Promise.resolve();
+        await Promise.resolve(); // Extra tick: finishSuccessfully is async (drains timeline pipeline)
+        await Promise.resolve(); // Extra tick: stop() promise chain
 
         expect(client.rawRPC).toHaveBeenCalledWith('GetCascadeTrajectory', { cascadeId: 'cascade-123' });
         expect(onComplete).toHaveBeenCalledWith('Recovered reply');
@@ -408,15 +417,15 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！');
+        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！\n🔧 list_dir');
         expect(onComplete).not.toHaveBeenCalled();
 
         await jest.advanceTimersByTimeAsync(750);
 
         // Text changes because it now correctly concatenates both assistant steps
         // rather than replacing.
-        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n\n完整回复');
-        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n\n完整回复');
+        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n🔧 list_dir\n\n完整回复');
+        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n🔧 list_dir\n\n完整回复');
 
         await monitor.stop();
     });
@@ -496,17 +505,17 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！');
+        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！\n🔧 list_dir');
         expect(onComplete).not.toHaveBeenCalled();
 
         await jest.advanceTimersByTimeAsync(750);
 
-        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n\n完整回复');
+        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n🔧 list_dir\n\n完整回复');
         expect(onComplete).not.toHaveBeenCalled();
 
         await jest.advanceTimersByTimeAsync(750);
 
-        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n\n完整回复');
+        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n🔧 list_dir\n\n完整回复');
 
         await monitor.stop();
     });
@@ -753,6 +762,69 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         expect(onRenderedTimeline).toHaveBeenCalledTimes(1);
         expect(onRenderedTimeline).toHaveBeenCalledWith({
             content: '<blockquote>Rendered timeline</blockquote>',
+            format: 'html',
+            strategy: undefined,
+            contextId: undefined,
+        });
+
+        await monitor.stop();
+    });
+
+    it('renders timeline while the cascade is still running on RUNNING status events', async () => {
+        const client = new FakeGrpcClient();
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'review code' } },
+                    {
+                        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                        plannerResponse: {
+                            thinking: 'Analyzed project',
+                            response: '',
+                        },
+                    },
+                ],
+            },
+        });
+
+        const trajectoryRenderer = {
+            renderTrajectory: jest.fn().mockResolvedValue({
+                ok: true,
+                content: '<blockquote>Analyzed project</blockquote>',
+                format: 'html',
+            }),
+        };
+        const onRenderedTimeline = jest.fn();
+
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-running-html',
+            expectedUserMessage: 'review code',
+            trajectoryRenderer: trajectoryRenderer as any,
+            onRenderedTimeline,
+        });
+
+        await monitor.start();
+        client.emit('data', {
+            type: 'status',
+            text: 'CASCADE_RUN_STATUS_RUNNING',
+            raw: {
+                result: {
+                    plannerResponse: {
+                        thinking: 'Analyzed project',
+                    },
+                },
+            },
+        });
+
+        await jest.advanceTimersByTimeAsync(8);
+        // readTrajectorySnapshot + TimelineRenderPipeline.runRender are deeply async
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+
+        expect(trajectoryRenderer.renderTrajectory).toHaveBeenCalledTimes(1);
+        expect(onRenderedTimeline).toHaveBeenCalledWith({
+            content: '<blockquote>Analyzed project</blockquote>',
             format: 'html',
             strategy: undefined,
             contextId: undefined,

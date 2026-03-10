@@ -6,7 +6,7 @@ import {
     createNotificationTracker,
     resetTrackerDetection,
     processDetection,
-} from './notificationTracker';
+} from './detectorStateManager';
 
 /** Approval button information */
 export interface ApprovalInfo {

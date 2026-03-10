@@ -354,7 +354,7 @@ export class AntigravityTrajectoryRenderer {
             format: request.format,
         });
 
-        return `(() => {
+        return `(async () => {
             if (typeof uCe !== 'function' || typeof w6 !== 'function') {
                 return {
                     ok: false,
@@ -467,15 +467,28 @@ export class AntigravityTrajectoryRenderer {
                     };
                 }
 
-                const html = container.innerHTML.trim();
-                const text = (container.textContent || '').trim();
+                // Preact may flush its render queue asynchronously.
+                // Retry reading innerHTML with increasing delays to handle complex renders
+                // that need more than a single microtask tick to commit their VDOM.
+                const flushDelays = [0, 16, 50];
+                let html = '';
+                let text = '';
+                for (const delay of flushDelays) {
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    html = container.innerHTML.trim();
+                    if (html) break;
+                }
+                text = (container.textContent || '').trim();
                 const preferred = input.format === 'text' ? text : html;
                 const format = input.format === 'text' ? 'text' : 'html';
 
                 if (!preferred) {
                     return {
                         ok: false,
-                        error: 'The detached bundle renderer returned empty content',
+                        error: 'The detached bundle renderer returned empty content'
+                            + ' (steps=' + input.steps.length
+                            + ', runStatus=' + (input.runStatus || 'null')
+                            + ', flushAttempts=' + flushDelays.length + ')',
                         diagnostics: { panelPresent: false, frameworkHint: 'bundle-injected', candidates: ['uCe', 'w6'] },
                     };
                 }

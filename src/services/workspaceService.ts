@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { resolveSafePath } from '../middleware/sanitize';
+import { resolveSafePath } from '../utils/sanitize';
 
 /**
  * Service for workspace filesystem operations and path validation.

@@ -14,6 +14,7 @@ import { logger } from '../utils/logger';
 import { GrpcCascadeClient, CascadeStreamEvent } from './grpcCascadeClient';
 import type { AntigravityTrajectoryRenderer } from './antigravityTrajectoryRenderer';
 import { createHash } from 'crypto';
+import { TimelineRenderPipeline } from './timelineRenderPipeline';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -102,6 +103,22 @@ function extractAssistantStepText(step: any): string {
     return '';
 }
 
+/**
+ * Extract a concise summary of tool calls from a planner response step.
+ * Returns tool names as activity lines (e.g. "🔧 view_file") so the
+ * text-delivery fallback path shows what was executed, even when the
+ * rendered-html path isn't available.
+ */
+function extractToolCallSummary(step: any): string {
+    const toolCalls = step?.plannerResponse?.toolCalls;
+    if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
+    const names = toolCalls
+        .map((tc: any) => tc.name || tc.toolName || tc.function?.name || '')
+        .filter(Boolean);
+    if (names.length === 0) return '';
+    return names.map((n: string) => `🔧 ${n}`).join('\n');
+}
+
 function buildAssistantSignature(step: any, stepIndex: number): string {
     const text = normalizeComparableText(extractAssistantStepText(step));
     const toolCalls = Array.isArray(step?.plannerResponse?.toolCalls) ? step.plannerResponse.toolCalls.length : 0;
@@ -155,10 +172,7 @@ export class GrpcResponseMonitor {
     private reactiveSnapshotTimer: NodeJS.Timeout | null = null;
     private activeTrajectoryRPC: Promise<TrajectoryRecoverySnapshot | null> | null = null;
     private recoveryPromise: Promise<void> | null = null;
-    private timelineRenderPromise: Promise<void> | null = null;
-    private queuedTimelineSnapshot: TrajectoryRecoverySnapshot | null = null;
-    private lastRenderedTimelineKey: string | null = null;
-    private lastRenderedTimelineContent: string | null = null;
+    private renderPipeline: TimelineRenderPipeline | null = null;
 
     constructor(options: GrpcResponseMonitorOptions) {
         this.client = options.grpcClient;
@@ -184,10 +198,20 @@ export class GrpcResponseMonitor {
         this.hasSeenActivity = false;
         this.pendingTerminalAssistantSignature = null;
         this.recoveryPromise = null;
-        this.timelineRenderPromise = null;
-        this.queuedTimelineSnapshot = null;
-        this.lastRenderedTimelineKey = null;
-        this.lastRenderedTimelineContent = null;
+
+        // (Re)initialize the timeline render pipeline
+        if (this.trajectoryRenderer && this.onRenderedTimeline) {
+            this.renderPipeline = new TimelineRenderPipeline(
+                this.trajectoryRenderer,
+                this.onRenderedTimeline,
+                (snap) => [
+                    snap.runStatus ?? '',
+                    buildRenderInputSignature(snap as any),
+                ].join('|'),
+            );
+        } else {
+            this.renderPipeline = null;
+        }
 
         this.setPhase('waiting', null);
 
@@ -223,6 +247,8 @@ export class GrpcResponseMonitor {
             this.reactiveSnapshotTimer = null;
         }
 
+        this.renderPipeline?.dispose();
+        this.renderPipeline = null;
         this.teardownStream();
     }
 
@@ -310,6 +336,9 @@ export class GrpcResponseMonitor {
                 if (this.currentPhase === 'waiting') {
                     this.setPhase('thinking', null);
                 }
+                // Stream payloads tell us the run is alive, but the HTML timeline
+                // has to be rendered from a trajectory snapshot while the run is ongoing.
+                this.scheduleReactiveSnapshotFetch();
             } else {
                 // Generic diff notification — something changed in the cascade.
                 // Schedule a debounced trajectory fetch to get the actual content.
@@ -356,6 +385,17 @@ export class GrpcResponseMonitor {
 
         if (!this.hasSeenActivity) {
             void this.recoverFromSilentStreamClosure('Stream closed before any activity was received');
+            return;
+        }
+
+        // If we saw activity (RUNNING / diffs) but never captured any response
+        // text, the stream likely reconnected to a stale/completed cascade
+        // (e.g. after /restart). Attempt recovery from trajectory instead of
+        // completing with empty text — avoids "(Empty response)" false alarms.
+        if (!this.lastResponseText?.trim()) {
+            void this.recoverFromSilentStreamClosure(
+                'Stream closed with activity but no response text — likely stale reconnection',
+            );
             return;
         }
 
@@ -520,16 +560,30 @@ export class GrpcResponseMonitor {
                 if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
                     latestRole = 'assistant';
 
+                    const parts: string[] = [];
+
                     const thinking = step?.plannerResponse?.thinking;
                     if (typeof thinking === 'string' && thinking.trim().length > 0) {
                         this.emitThinkingDetails(thinking);
+                        const blockquote = thinking.trim().split('\n').map(line => `> ${line}`).join('\n');
+                        parts.push(`> 🤔 **Thinking**\n${blockquote}`);
+                    }
+
+                    const toolSummary = extractToolCallSummary(step);
+                    if (toolSummary) {
+                        parts.push(toolSummary);
                     }
 
                     const stepText = extractAssistantStepText(step);
                     if (stepText) {
+                        parts.push(stepText);
+                    }
+
+                    const fullStepText = parts.join('\n\n');
+                    if (fullStepText) {
                         latestResponseText = latestResponseText
-                            ? latestResponseText + '\n\n' + stepText
-                            : stepText;
+                            ? latestResponseText + '\n\n' + fullStepText
+                            : fullStepText;
                     }
 
                     // Only count PENDING tool calls (no result yet) as "still working".
@@ -590,7 +644,7 @@ export class GrpcResponseMonitor {
             return false;
         }
 
-        this.scheduleTimelineRender(snapshot);
+        this.renderPipeline?.schedule(snapshot);
 
         const latestText = snapshot.latestRole === 'assistant'
             ? (snapshot.latestResponseText ?? '')
@@ -651,10 +705,17 @@ export class GrpcResponseMonitor {
         return true;
     }
 
-    private finishSuccessfully(): void {
+    private async finishSuccessfully(): Promise<void> {
         if (this.currentPhase === 'complete') return; // guard against double-fire
         this.setPhase('complete', this.lastResponseText);
         const text = this.lastResponseText ?? '';
+
+        // Drain any in-flight timeline render before stopping.
+        // stop() disposes the pipeline which aborts pending renders,
+        // so we must drain first to ensure onRenderedTimeline fires
+        // for the final content.
+        await this.renderPipeline?.drain();
+
         this.stop().catch(() => { });
         this.onComplete?.(text);
     }
@@ -708,8 +769,13 @@ export class GrpcResponseMonitor {
         if (verifiedText.length > (this.lastResponseText?.length ?? 0)) {
             this.lastResponseText = verifiedText;
         }
+        // Schedule a final timeline render with the verified snapshot so the
+        // rendered HTML is up-to-date when onComplete fires.
+        // finishSuccessfully() calls drain() internally, so the render will
+        // complete before onComplete fires.
+        this.renderPipeline?.schedule(snapshot);
         logger.info(`[GrpcMonitor] IDLE verified via trajectory — completing (${this.lastResponseText?.length ?? 0} chars)`);
-        this.finishSuccessfully();
+        await this.finishSuccessfully();
     }
 
     private emitThinkingDetailsFromPayload(payload: any): void {
@@ -764,89 +830,5 @@ export class GrpcResponseMonitor {
         }
     }
 
-    private scheduleTimelineRender(snapshot: TrajectoryRecoverySnapshot): void {
-        if (!this.trajectoryRenderer || !this.onRenderedTimeline) return;
-        if (!Array.isArray(snapshot.renderSteps) || snapshot.renderSteps.length === 0) return;
 
-        const renderKey = this.buildRenderedTimelineKey(snapshot);
-        if (renderKey === this.lastRenderedTimelineKey) {
-            return;
-        }
-
-        if (this.timelineRenderPromise) {
-            this.queuedTimelineSnapshot = snapshot;
-            return;
-        }
-
-        this.timelineRenderPromise = this.runTimelineRender(snapshot, renderKey)
-            .catch((error) => {
-                const message = error instanceof Error ? error.message : String(error);
-                logger.debug(`[GrpcMonitor] Timeline render failed: ${message}`);
-            })
-            .finally(async () => {
-                this.timelineRenderPromise = null;
-                if (!this.queuedTimelineSnapshot || !this.isRunning) {
-                    this.queuedTimelineSnapshot = null;
-                    return;
-                }
-
-                const queued = this.queuedTimelineSnapshot;
-                this.queuedTimelineSnapshot = null;
-                this.scheduleTimelineRender(queued);
-            });
-    }
-
-    private buildRenderedTimelineKey(snapshot: TrajectoryRecoverySnapshot): string {
-        return [
-            snapshot.runStatus ?? '',
-            buildRenderInputSignature(snapshot),
-        ].join('|');
-    }
-
-    private async runTimelineRender(
-        snapshot: TrajectoryRecoverySnapshot,
-        renderKey: string,
-    ): Promise<void> {
-        if (!this.trajectoryRenderer || !this.onRenderedTimeline || !this.isRunning) return;
-
-        const t0 = Date.now();
-        const result = await this.trajectoryRenderer.renderTrajectory({
-            steps: snapshot.renderSteps,
-            runStatus: snapshot.runStatus,
-            trajectory: snapshot.renderTrajectory,
-            format: 'html',
-        });
-        const renderMs = Date.now() - t0;
-
-        if (!this.isRunning) return;
-        if (!result.ok || !result.content || result.format !== 'html') {
-            logger.debug(
-                `[GrpcMonitor] Timeline render skipped (${renderMs}ms): ok=${result.ok}, ` +
-                `format=${result.format}, contentLen=${result.content?.length ?? 0}, ` +
-                `error=${result.error || 'none'}, steps=${snapshot.renderSteps.length}`,
-            );
-            return;
-        }
-
-        const content = result.content.trim();
-        if (!content || content === this.lastRenderedTimelineContent) {
-            this.lastRenderedTimelineKey = renderKey;
-            return;
-        }
-
-        if (renderMs > 2000) {
-            logger.warn(`[GrpcMonitor] Timeline render took ${renderMs}ms (strategy=${result.strategy}, ctx=${result.contextId})`);
-        } else {
-            logger.debug(`[GrpcMonitor] Timeline render OK in ${renderMs}ms (strategy=${result.strategy})`);
-        }
-
-        this.lastRenderedTimelineKey = renderKey;
-        this.lastRenderedTimelineContent = content;
-        this.onRenderedTimeline({
-            content,
-            format: result.format ?? 'text',
-            strategy: result.strategy,
-            contextId: result.contextId,
-        });
-    }
 }

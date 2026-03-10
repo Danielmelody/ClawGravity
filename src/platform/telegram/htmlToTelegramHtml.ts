@@ -125,7 +125,31 @@ export function htmlToTelegramHtml(html: string): string {
         return `<tg-spoiler>${content}</tg-spoiler>`;
     });
 
-    // ── Phase 2b: Checkboxes (BEFORE list processing so stripNonTgTags doesn't eat them)
+    // ── Phase 2b-tables: Tables → pipe-separated text ──────────────────
+    // Telegram doesn't support <table> tags, so we convert them into
+    // readable pipe-separated text with bold headers.
+    result = result.replace(/<table[^>]*>([\s\S]*?)<\/table>/gi, (_m, tableContent: string) => {
+        const rows: string[] = [];
+        const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+        let rowMatch: RegExpExecArray | null;
+        let isFirstRow = true;
+        while ((rowMatch = rowRegex.exec(tableContent)) !== null) {
+            const cells: string[] = [];
+            const cellRegex = /<(?:th|td)[^>]*>([\s\S]*?)<\/(?:th|td)>/gi;
+            let cellMatch: RegExpExecArray | null;
+            while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
+                cells.push(stripNonTgTags(cellMatch[1]).trim());
+            }
+            if (cells.length > 0) {
+                const row = cells.join(' | ');
+                rows.push(isFirstRow ? `<b>${row}</b>` : row);
+                isFirstRow = false;
+            }
+        }
+        return rows.length > 0 ? rows.join('\n') + '\n\n' : '';
+    });
+
+    // ── Phase 2b-checkboxes: Checkboxes (BEFORE list processing so stripNonTgTags doesn't eat them)
     result = result.replace(/<input[^>]*type=["']checkbox["'][^>]*checked[^>]*\/?>/gi, '✅ ');
     result = result.replace(/<input[^>]*checked[^>]*type=["']checkbox["'][^>]*\/?>/gi, '✅ ');
     result = result.replace(/<input[^>]*type=["']checkbox["'][^>]*\/?>/gi, '☐ ');

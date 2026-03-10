@@ -1,22 +1,21 @@
 import { EventEmitter } from 'events';
 import { promisify } from 'util';
 
-const execMock = jest.fn();
-(execMock as any)[promisify.custom] = (...args: any[]) => {
-    return new Promise((resolve, reject) => {
-        execMock(...args, (err: Error | null, stdout: string, stderr: string) => {
-            if (err) {
-                reject(err);
-                return;
-            }
-            resolve({ stdout, stderr });
+jest.mock('child_process', () => {
+    const mock = jest.fn();
+    (mock as any)[promisify.custom] = (...args: any[]) => {
+        return new Promise((resolve, reject) => {
+            mock(...args, (err: Error | null, stdout: string, stderr: string) => {
+                if (err) {
+                    reject(err);
+                    return;
+                }
+                resolve({ stdout, stderr });
+            });
         });
-    });
-};
-
-jest.mock('child_process', () => ({
-    exec: execMock,
-}));
+    };
+    return { exec: mock };
+});
 
 jest.mock('https', () => ({
     request: jest.fn(),
@@ -27,13 +26,13 @@ import * as https from 'https';
 import { QuotaService } from '../../src/services/quotaService';
 
 describe('QuotaService', () => {
-    const mockExec = exec as unknown as typeof execMock;
+    const mockExec = exec as unknown as jest.Mock;
     const mockRequest = https.request as unknown as jest.Mock;
     let consoleSpy: jest.SpyInstance;
 
     beforeEach(() => {
         jest.clearAllMocks();
-        consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => { });
     });
 
     afterEach(() => {

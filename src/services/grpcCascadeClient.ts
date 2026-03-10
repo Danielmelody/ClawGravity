@@ -39,6 +39,8 @@ export interface LSConnection {
     port: number;
     csrfToken: string;
     useTls: boolean;
+    /** Encoded workspace ID from --workspace_id CLI arg (e.g. 'file_c_3A_Users_Daniel_Projects_foo') */
+    workspaceId?: string;
 }
 
 /** Cascade config for SendUserCascadeMessage */
@@ -575,6 +577,29 @@ export class GrpcCascadeClient extends EventEmitter {
 }
 
 /**
+ * Decode a workspace_id from LS process args back to an absolute path.
+ *
+ * Encoding scheme (observed from Antigravity LS):
+ *   - Prefix: 'file_' (URI scheme)
+ *   - Colons encoded as '_3A_'
+ *   - Path separators are underscores
+ *
+ * Example: 'file_c_3A_Users_Daniel_Projects_foo' → 'c:/Users/Daniel/Projects/foo'
+ *
+ * @param encodedId The raw --workspace_id value
+ * @returns Decoded path with forward slashes (caller should normalize as needed)
+ */
+export function decodeWorkspaceId(encodedId: string): string {
+    // Strip 'file_' prefix
+    let decoded = encodedId.startsWith('file_') ? encodedId.slice(5) : encodedId;
+    // Restore colons from '_3A_' → ':/' (the trailing _ is the path separator after the colon)
+    decoded = decoded.replace(/_3[Aa]_/g, ':/');
+    // Replace remaining underscores with path separators
+    decoded = decoded.replace(/_/g, '/');
+    return decoded;
+}
+
+/**
  * Discover ALL LS connections when multiple Antigravity instances are running.
  *
  * When multiple LS processes exist (multi-workspace), the caller should probe
@@ -602,6 +627,7 @@ export async function discoverAllLSConnections(): Promise<LSConnection[]> {
                     port: connectPort.port,
                     csrfToken: proc.csrfToken,
                     useTls: connectPort.tls,
+                    workspaceId: proc.workspaceId || undefined,
                 });
             }
         }
@@ -615,12 +641,12 @@ export async function discoverAllLSConnections(): Promise<LSConnection[]> {
 }
 
 /**
- * Shared parser: extract {pid, csrfToken, extPort} from a process command line.
+ * Shared parser: extract {pid, csrfToken, extPort, workspaceId} from a process command line.
  */
 function parseLSProcessLine(
     platform: string,
     line: string,
-): { pid: number; csrfToken: string; extPort: number } | null {
+): { pid: number; csrfToken: string; extPort: number; workspaceId: string | null } | null {
     let pid: number;
     if (platform === 'win32') {
         pid = parseInt(line.split('|')[0].trim(), 10);
@@ -631,9 +657,10 @@ function parseLSProcessLine(
     const csrfToken = extractArg(line, 'csrf_token');
     const extPortStr = extractArg(line, 'extension_server_port');
     const extPort = extPortStr ? parseInt(extPortStr, 10) : 0;
+    const workspaceId = extractArg(line, 'workspace_id');
 
     if (!csrfToken || isNaN(pid)) return null;
-    return { pid, csrfToken, extPort };
+    return { pid, csrfToken, extPort, workspaceId };
 }
 
 /**
@@ -668,9 +695,9 @@ async function getLSProcessLines(platform: string): Promise<string[]> {
  */
 async function findAllLSProcesses(
     platform: string,
-): Promise<{ pid: number; csrfToken: string; extPort: number }[]> {
+): Promise<{ pid: number; csrfToken: string; extPort: number; workspaceId: string | null }[]> {
     const lines = await getLSProcessLines(platform);
-    const results: { pid: number; csrfToken: string; extPort: number }[] = [];
+    const results: { pid: number; csrfToken: string; extPort: number; workspaceId: string | null }[] = [];
     for (const line of lines) {
         const parsed = parseLSProcessLine(platform, line);
         if (parsed) results.push(parsed);
