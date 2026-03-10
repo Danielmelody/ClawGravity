@@ -24,7 +24,7 @@ describe('AntigravityTrajectoryRenderer', () => {
                     ok: true,
                     content: '<blockquote>Rendered trajectory</blockquote>',
                     format: 'html',
-                    strategy: 'window.__antigravity.renderTrajectory',
+                    strategy: 'bundle-detached-render',
                 },
             },
         });
@@ -88,66 +88,53 @@ describe('AntigravityTrajectoryRenderer', () => {
         expect(cdp.callWithRetry).toHaveBeenCalledTimes(2);
     });
 
-    it('bootstraps renderer helpers through Debugger when the context lacks global helper bindings', async () => {
+    it('bootstraps bundle via compileScript/runScript when globals are missing', async () => {
         const cdp = createMockCdpService();
         cdp.getPrimaryContextId.mockReturnValue(1);
         cdp.getContexts.mockReturnValue([
             { id: 1, name: '', url: 'vscode-file://workbench', auxData: { isDefault: true } },
         ]);
+
+        // First probe: bundle globals not available
         cdp.callWithRetry
             .mockResolvedValueOnce({
                 result: {
                     value: {
                         ok: false,
-                        error: 'The Antigravity panel helpers are not available in this execution context',
+                        error: 'Bundle globals are not available in this execution context',
                     },
                 },
             })
+            // Second probe after bootstrap: success
             .mockResolvedValueOnce({
                 result: {
                     value: {
                         ok: true,
                         content: '<blockquote>Bootstrapped timeline</blockquote>',
                         format: 'html',
-                        strategy: 'workbench-panel-detached-render',
+                        strategy: 'bundle-detached-render',
                     },
                 },
             });
 
-        let helpersAvailable = false;
-        cdp.call.mockImplementation(async (method: string, params: any) => {
+        let globalsAvailable = false;
+        cdp.call.mockImplementation(async (method: string, _params: any) => {
             switch (method) {
-                case 'Debugger.enable':
-                    return {};
+                case 'Runtime.compileScript':
+                    return { scriptId: 'bundle-script-1' };
+                case 'Runtime.runScript':
+                    globalsAvailable = true;
+                    return { result: { value: undefined } };
                 case 'Runtime.evaluate':
-                    if (params?.expression?.includes('window.__agRendererHelpers')) {
-                        return { result: { value: helpersAvailable } };
-                    }
-                    if (params?.expression?.includes('return found?.type || null')) {
-                        return { result: { objectId: 'renderer-function-1' } };
-                    }
-                    if (params?.expression?.includes('return found ? found.type(found.props) : null')) {
-                        setImmediate(() => {
-                            cdp.emit('Debugger.paused', {
-                                callFrames: [{ callFrameId: 'frame-1' }],
-                            });
-                        });
-                        return { result: { value: null } };
-                    }
-                    return { result: { value: true } };
-                case 'Debugger.setBreakpointOnFunctionCall':
-                    return { breakpointId: 'bp-1' };
-                case 'Debugger.evaluateOnCallFrame':
-                    helpersAvailable = true;
-                    return { result: { value: true } };
-                case 'Debugger.resume':
-                case 'Debugger.removeBreakpoint':
-                case 'Debugger.disable':
-                    return {};
+                    // checkBundleGlobals
+                    return { result: { value: globalsAvailable } };
                 default:
                     throw new Error(`Unexpected CDP method: ${method}`);
             }
         });
+
+        // Mock fs.readFileSync to return fake bundle source
+        jest.spyOn(require('fs'), 'readFileSync').mockReturnValue('// fake chat.js bundle');
 
         const renderer = new AntigravityTrajectoryRenderer(cdp as any);
         const result = await renderer.renderTrajectory({
@@ -162,13 +149,104 @@ describe('AntigravityTrajectoryRenderer', () => {
             content: '<blockquote>Bootstrapped timeline</blockquote>',
             contextId: 1,
         }));
-        expect(cdp.call).toHaveBeenCalledWith('Debugger.enable', {});
-        expect(cdp.call).toHaveBeenCalledWith('Debugger.setBreakpointOnFunctionCall', {
-            objectId: 'renderer-function-1',
-        });
-        expect(cdp.call).toHaveBeenCalledWith('Debugger.evaluateOnCallFrame', expect.objectContaining({
-            callFrameId: 'frame-1',
+        expect(cdp.call).toHaveBeenCalledWith('Runtime.compileScript', expect.objectContaining({
+            persistScript: true,
+            executionContextId: 1,
+        }));
+        expect(cdp.call).toHaveBeenCalledWith('Runtime.runScript', expect.objectContaining({
+            scriptId: 'bundle-script-1',
+            executionContextId: 1,
         }));
         expect(cdp.callWithRetry).toHaveBeenCalledTimes(2);
+
+        jest.restoreAllMocks();
+    });
+
+    it('builds the detached render expression using input.trajectory', async () => {
+        const cdp = createMockCdpService();
+        cdp.getPrimaryContextId.mockReturnValue(1);
+        cdp.getContexts.mockReturnValue([
+            { id: 1, name: 'cascade-panel', url: 'vscode-webview://cascade-panel', auxData: { isDefault: true } },
+        ]);
+        cdp.callWithRetry.mockResolvedValue({
+            result: {
+                value: {
+                    ok: true,
+                    content: '<blockquote>Rendered trajectory</blockquote>',
+                    format: 'html',
+                },
+            },
+        });
+
+        const renderer = new AntigravityTrajectoryRenderer(cdp as any);
+        await renderer.renderTrajectory({
+            steps: [{ type: 'CORTEX_STEP_TYPE_RESPONSE' }],
+            trajectory: {
+                cascadeId: 'cascade-background',
+                trajectoryId: 'trajectory-background',
+                steps: [{ type: 'CORTEX_STEP_TYPE_RESPONSE' }],
+            },
+            format: 'html',
+        });
+
+        const evaluateParams = cdp.callWithRetry.mock.calls[0][1];
+        expect(evaluateParams.expression).toContain('input.trajectory');
+        expect(evaluateParams.expression).not.toContain('rendererNode');
+        expect(evaluateParams.expression).not.toContain('__agRendererHelpers');
+        expect(evaluateParams.expression).not.toContain('aBe');
+    });
+
+    it('caches the compiled scriptId and reuses it for subsequent renders', async () => {
+        const cdp = createMockCdpService();
+        cdp.getPrimaryContextId.mockReturnValue(1);
+        cdp.getContexts.mockReturnValue([
+            { id: 1, name: '', url: 'vscode-file://workbench', auxData: { isDefault: true } },
+        ]);
+
+        // Both renders will need bootstrap on first, then succeed
+        cdp.callWithRetry
+            // First render: probe fails, bootstrap, probe succeeds
+            .mockResolvedValueOnce({
+                result: { value: { ok: false, error: 'Bundle globals are not available in this execution context' } },
+            })
+            .mockResolvedValueOnce({
+                result: { value: { ok: true, content: '<div>First</div>', format: 'html', strategy: 'bundle-detached-render' } },
+            })
+            // Second render: fast-path probe fails (context lost), needs re-bootstrap
+            .mockResolvedValueOnce({
+                result: { value: { ok: false, error: 'uCe is not defined' } },
+            })
+            .mockResolvedValueOnce({
+                result: { value: { ok: true, content: '<div>Second</div>', format: 'html', strategy: 'bundle-detached-render' } },
+            });
+
+        let callCount = 0;
+        cdp.call.mockImplementation(async (method: string) => {
+            switch (method) {
+                case 'Runtime.compileScript':
+                    callCount++;
+                    return { scriptId: 'bundle-script-1' };
+                case 'Runtime.runScript':
+                    return { result: { value: undefined } };
+                case 'Runtime.evaluate':
+                    return { result: { value: true } };
+                default:
+                    throw new Error(`Unexpected CDP method: ${method}`);
+            }
+        });
+
+        jest.spyOn(require('fs'), 'readFileSync').mockReturnValue('// fake bundle');
+
+        const renderer = new AntigravityTrajectoryRenderer(cdp as any);
+
+        // First render triggers compile + run
+        await renderer.renderTrajectory({ steps: [{}], format: 'html' });
+        expect(callCount).toBe(1); // compileScript called once
+
+        // Second render reuses cached scriptId — only runScript, no compileScript
+        await renderer.renderTrajectory({ steps: [{}], format: 'html' });
+        expect(callCount).toBe(1); // compileScript NOT called again
+
+        jest.restoreAllMocks();
     });
 });

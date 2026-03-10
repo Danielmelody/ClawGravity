@@ -137,6 +137,50 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await monitor.stop();
     });
 
+    it('emits a unified text stream instead of forcing callers to merge thinking and response', async () => {
+        const client = new FakeGrpcClient();
+        const onTextUpdate = jest.fn();
+
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'hi' } },
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Final reply' } },
+                ],
+            },
+        });
+
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-unified-stream',
+            expectedUserMessage: 'hi',
+            onTextUpdate,
+        });
+
+        await monitor.start();
+        client.emit('data', {
+            type: 'status',
+            text: 'CASCADE_RUN_STATUS_RUNNING',
+            raw: {
+                result: {
+                    plannerResponse: {
+                        thinking: 'Analyzed project',
+                    },
+                },
+            },
+        });
+        client.emit('data', { type: 'status', raw: { diff: { fieldDiffs: [{ updateSingular: { stringValue: 'delta' } }] } } });
+
+        await Promise.resolve();
+        await jest.advanceTimersByTimeAsync(8);
+
+        expect(onTextUpdate).toHaveBeenNthCalledWith(1, 'Analyzed project');
+        expect(onTextUpdate).toHaveBeenLastCalledWith('Analyzed project\n\nFinal reply');
+
+        await monitor.stop();
+    });
+
     it('recovers a completed response from trajectory when the stream closes before activity', async () => {
         const client = new FakeGrpcClient();
         client.rawRPC.mockResolvedValue({
@@ -798,6 +842,70 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
             strategy: undefined,
             contextId: undefined,
         });
+
+        await monitor.stop();
+    });
+
+    it('re-opens stream after recovery exhaustion when cascade is still running', async () => {
+        const client = new FakeGrpcClient();
+        // All 8 recovery polls return RUNNING with no assistant response yet
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'hi' } },
+                ],
+            },
+        });
+
+        const onComplete = jest.fn();
+        const onTimeout = jest.fn();
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-reopen',
+            maxDurationMs: 60_000,
+            onComplete,
+            onTimeout,
+        });
+
+        await monitor.start();
+        // Stream closes before any activity → enters recovery
+        client.emit('complete');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Exhaust all 8 recovery retries (500 + 1000 + 2000 + 4000*5 = ~23.5s)
+        await jest.advanceTimersByTimeAsync(30_000);
+
+        expect(client.rawRPC).toHaveBeenCalledTimes(8);
+        expect(onComplete).not.toHaveBeenCalled();
+        expect(onTimeout).not.toHaveBeenCalled();
+
+        // After exhaustion, streamCascadeUpdates should be called AGAIN (re-opened stream)
+        // Initial call = 1, re-open = 2
+        expect(client.streamCascadeUpdates).toHaveBeenCalledTimes(2);
+
+        // Now simulate the re-opened stream delivering events
+        client.emit('data', { type: 'status', text: 'CASCADE_RUN_STATUS_RUNNING' });
+
+        // Update mock to return completed response
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'hi' } },
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Full response after re-open' } },
+                ],
+            },
+        });
+
+        client.emit('data', { type: 'status', text: 'CASCADE_RUN_STATUS_IDLE' });
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(onComplete).toHaveBeenCalledWith('Full response after re-open');
+        expect(onTimeout).not.toHaveBeenCalled();
 
         await monitor.stop();
     });

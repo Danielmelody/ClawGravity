@@ -1962,7 +1962,6 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 workspaceService,
                 modeService,
                 modelService,
-                extractionMode: config.extractionMode,
                 templateRepo,
                 fetchQuota: () => bridge.quota.fetchQuota(),
                 activeMonitors,
@@ -2181,11 +2180,22 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                             userMessageSinkKey: `telegram:${binding.chatId}`,
                             onUserMessage: (info) => {
                                 if (!startupRuntime) return;
-                                handlePassiveUserMessage(tgChannel, startupRuntime, info, activeMonitors, config.extractionMode)
+                                handlePassiveUserMessage(
+                                    tgChannel,
+                                    startupRuntime,
+                                    info,
+                                    activeMonitors,
+                                    undefined,
+                                    telegramSessionStateStore,
+                                )
                                     .catch((err: any) => logger.error('[TelegramPassive:Startup] Error handling PC message:', err?.message || err));
                             },
                         });
                         startupRuntime = prepared.runtime;
+                        const startupCascadeId = await startupRuntime.getActiveCascadeId().catch(() => null);
+                        if (startupCascadeId) {
+                            telegramSessionStateStore.setCurrentCascadeId(binding.chatId, startupCascadeId);
+                        }
                         logger.info(`[TelegramPassive] Eager mirroring started for ${prepared.projectName} → chat ${binding.chatId}`);
                     } catch (e: any) {
                         logger.warn(`[TelegramPassive] Failed to start eager mirroring for ${binding.workspacePath}: ${e?.message || e}`);

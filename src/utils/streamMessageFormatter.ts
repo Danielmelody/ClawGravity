@@ -5,15 +5,13 @@ import { splitPlainText } from './plainTextFormatter';
  * Consolidates into a single line if Fast and Plan models are the same.
  */
 export function buildModeModelLines(modeName: string, fastModel: string, planModel: string): string[] {
-    const lines = [`Current Mode: ${modeName}`];
     if (fastModel.trim().toLowerCase() === planModel.trim().toLowerCase()) {
-        lines.push(`Model: ${fastModel}`);
-        return lines;
+        return [`${modeName} | ${fastModel}`];
     }
 
-    lines.push(`Fast Model: ${fastModel}`);
-    lines.push(`Plan Model: ${planModel}`);
-    return lines;
+    // Only show the model for the current mode
+    const isPlan = /plan/i.test(modeName);
+    return [`${modeName} | ${isPlan ? planModel : fastModel}`];
 }
 
 /**

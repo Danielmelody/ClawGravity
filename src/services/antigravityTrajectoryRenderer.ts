@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { CdpContext, CdpService } from './cdpService';
 import { logger } from '../utils/logger';
 
@@ -43,25 +45,55 @@ interface ScoredContext {
 }
 
 const RENDER_PROBE_TIMEOUT_MS = 12_000;
-const DEBUGGER_BOOTSTRAP_TIMEOUT_MS = 15_000;
-const HELPER_AVAILABILITY_EXPRESSION = `(() => {
-    const helpers = window.__agRendererHelpers;
-    return !!(
-        helpers
-        && typeof helpers.nT === 'function'
-        && typeof helpers.L === 'function'
-        && typeof helpers.Pml === 'function'
-        && helpers.HA
-        && helpers.al
-        && helpers.Zb
-        && helpers.Vhe
-        && helpers.Don
-    );
-})()`;
+
+// ---------------------------------------------------------------------------
+// Bundle path resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the path to the installed Antigravity chat.js bundle.
+ *
+ * Precedence:
+ * 1. `ANTIGRAVITY_BUNDLE_PATH` env override
+ * 2. OS-specific default path
+ */
+function getAntigravityBundlePath(): string {
+    if (process.env.ANTIGRAVITY_BUNDLE_PATH) {
+        return process.env.ANTIGRAVITY_BUNDLE_PATH;
+    }
+
+    if (process.platform === 'win32') {
+        const localAppData = process.env.LOCALAPPDATA;
+        if (localAppData) {
+            return path.join(
+                localAppData,
+                'Programs', 'Antigravity', 'resources', 'app',
+                'extensions', 'antigravity', 'out', 'media', 'chat.js',
+            );
+        }
+    }
+
+    if (process.platform === 'darwin') {
+        return '/Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity/out/media/chat.js';
+    }
+
+    // Linux / fallback — check common AppImage extract paths
+    const home = process.env.HOME || '/tmp';
+    return path.join(home, '.local', 'share', 'Antigravity', 'resources', 'app', 'extensions', 'antigravity', 'out', 'media', 'chat.js');
+}
+
+// ---------------------------------------------------------------------------
+// AntigravityTrajectoryRenderer — bundle-first detached strategy
+// ---------------------------------------------------------------------------
 
 export class AntigravityTrajectoryRenderer {
-    private readonly helperBootstrapPromises = new Map<number, Promise<boolean>>();
+    /**
+     * Per-context cache of `Runtime.compileScript` scriptIds.
+     * Once a context has been bootstrapped, we only need `runScript` to re-activate globals.
+     */
+    private readonly bootstrappedContexts = new Map<number, string>();
     private lastSuccessfulContextId: number | null = null;
+    private bundleSource: string | null = null;
 
     constructor(private readonly cdpService: CdpService) { }
 
@@ -154,6 +186,8 @@ export class AntigravityTrajectoryRenderer {
         return score;
     }
 
+    // ─── Per-context render pipeline ─────────────────────────────────
+
     private async renderInContext(
         contextId: number,
         request: Required<AntigravityTrajectoryRenderRequest>,
@@ -165,10 +199,10 @@ export class AntigravityTrajectoryRenderer {
                 return result;
             }
 
-            if (this.shouldBootstrapHelpers(result)) {
-                logger.debug(`[TrajectoryRenderer] Bootstrapping helpers for ctx=${contextId} (probe took ${Date.now() - t0}ms)`);
+            if (this.shouldBootstrapBundle(result)) {
+                logger.debug(`[TrajectoryRenderer] Bootstrapping bundle for ctx=${contextId} (probe took ${Date.now() - t0}ms)`);
                 const tBoot = Date.now();
-                const bootstrapped = await this.ensureRendererHelpersInContext(contextId);
+                const bootstrapped = await this.ensureBundleInContext(contextId);
                 logger.debug(`[TrajectoryRenderer] Bootstrap ${bootstrapped ? 'OK' : 'FAILED'} for ctx=${contextId} in ${Date.now() - tBoot}ms`);
                 if (bootstrapped) {
                     result = await this.evaluateRenderProbe(contextId, request);
@@ -221,183 +255,94 @@ export class AntigravityTrajectoryRenderer {
         };
     }
 
-    private shouldBootstrapHelpers(result: AntigravityTrajectoryRenderResult): boolean {
-        return result.error === 'The Antigravity panel helpers are not available in this execution context';
+    private shouldBootstrapBundle(result: AntigravityTrajectoryRenderResult): boolean {
+        const err = result.error || '';
+        return err.includes('uCe is not defined')
+            || err.includes('w6 is not defined')
+            || err.includes('Bundle globals are not available')
+            || err.includes('p is not defined')
+            || err.includes('u is not defined');
     }
 
-    private async ensureRendererHelpersInContext(contextId: number): Promise<boolean> {
-        const inFlight = this.helperBootstrapPromises.get(contextId);
-        if (inFlight) {
-            return inFlight;
-        }
+    // ─── Bundle injection via compileScript / runScript ──────────────
 
-        const bootstrapPromise = this.bootstrapRendererHelpers(contextId)
-            .catch((error) => {
-                logger.debug(
-                    `[AntigravityTrajectoryRenderer] Failed to bootstrap renderer helpers in context ${contextId}: ${error instanceof Error ? error.message : String(error)}`,
-                );
-                return false;
-            })
-            .finally(() => {
-                this.helperBootstrapPromises.delete(contextId);
-            });
-
-        this.helperBootstrapPromises.set(contextId, bootstrapPromise);
-        return bootstrapPromise;
-    }
-
-    private async bootstrapRendererHelpers(contextId: number): Promise<boolean> {
-        if (await this.hasRendererHelpers(contextId)) {
-            return true;
-        }
-
-        await this.cdpService.call('Debugger.enable', {});
-
-        let breakpointId: string | null = null;
+    private async ensureBundleInContext(contextId: number): Promise<boolean> {
         try {
-            const objectId = await this.getRendererFunctionObjectId(contextId);
-            if (!objectId) {
+            // If we've already compiled the bundle in this context, just re-run it
+            const existingScriptId = this.bootstrappedContexts.get(contextId);
+            if (existingScriptId) {
+                const available = await this.checkBundleGlobals(contextId);
+                if (available) return true;
+
+                // Globals lost (page reloaded?) — re-run the compiled script
+                await this.cdpService.call('Runtime.runScript', {
+                    scriptId: existingScriptId,
+                    executionContextId: contextId,
+                    returnByValue: true,
+                });
+                return await this.checkBundleGlobals(contextId);
+            }
+
+            // First-time bootstrap: read and compile the bundle
+            const source = this.loadBundleSource();
+            if (!source) return false;
+
+            const compileResult = await this.cdpService.call('Runtime.compileScript', {
+                expression: source,
+                sourceURL: 'antigravity://chat-bundle.js',
+                persistScript: true,
+                executionContextId: contextId,
+            });
+
+            const scriptId = compileResult?.scriptId;
+            if (!scriptId) {
+                logger.debug(`[TrajectoryRenderer] compileScript returned no scriptId for ctx=${contextId}`);
                 return false;
             }
 
-            const pausedPromise = new Promise<boolean>((resolve, reject) => {
-                const timer = setTimeout(() => {
-                    reject(new Error('Timed out while waiting for renderer helper bootstrap'));
-                }, DEBUGGER_BOOTSTRAP_TIMEOUT_MS);
-
-                this.cdpService.once('Debugger.paused', async (params: any) => {
-                    clearTimeout(timer);
-                    try {
-                        const frameId = params?.callFrames?.[0]?.callFrameId;
-                        if (!frameId) {
-                            throw new Error('Debugger paused without a call frame');
-                        }
-
-                        await this.cdpService.call('Debugger.evaluateOnCallFrame', {
-                            callFrameId: frameId,
-                            expression: `(() => {
-                                window.__agRendererHelpers = { nT, L, Pml, HA, al, Zb, Vhe, Don };
-                                return true;
-                            })()`,
-                            returnByValue: true,
-                        });
-                        await this.cdpService.call('Debugger.resume', {});
-                        resolve(true);
-                    } catch (error) {
-                        try {
-                            await this.cdpService.call('Debugger.resume', {});
-                        } catch {
-                            // Ignore resume failures after a debugger error.
-                        }
-                        reject(error);
-                    }
-                });
+            await this.cdpService.call('Runtime.runScript', {
+                scriptId,
+                executionContextId: contextId,
+                returnByValue: true,
             });
 
-            const breakpoint = await this.cdpService.call('Debugger.setBreakpointOnFunctionCall', {
-                objectId,
-            });
-            breakpointId = breakpoint?.breakpointId ?? null;
-
-            try {
-                await this.cdpService.call('Runtime.evaluate', {
-                    expression: this.buildRendererFunctionTriggerExpression(),
-                    contextId,
-                    awaitPromise: true,
-                });
-            } catch {
-                // The trigger call may throw because aBe expects live context during normal execution.
-                // The function-call breakpoint fires before that matters.
+            const available = await this.checkBundleGlobals(contextId);
+            if (available) {
+                this.bootstrappedContexts.set(contextId, scriptId);
             }
-
-            await pausedPromise;
-            return await this.hasRendererHelpers(contextId);
-        } finally {
-            if (breakpointId) {
-                try {
-                    await this.cdpService.call('Debugger.removeBreakpoint', { breakpointId });
-                } catch {
-                    // Ignore breakpoint cleanup failures.
-                }
-            }
-
-            try {
-                await this.cdpService.call('Debugger.disable', {});
-            } catch {
-                // Ignore debugger cleanup failures.
-            }
+            return available;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.debug(`[TrajectoryRenderer] Bundle bootstrap failed for ctx=${contextId}: ${message}`);
+            return false;
         }
     }
 
-    private async hasRendererHelpers(contextId: number): Promise<boolean> {
+    private async checkBundleGlobals(contextId: number): Promise<boolean> {
         const response = await this.cdpService.call('Runtime.evaluate', {
-            expression: HELPER_AVAILABILITY_EXPRESSION,
+            expression: `(() => !!(typeof uCe === 'function' && typeof w6 === 'function' && typeof p === 'object' && typeof u === 'object'))()`,
             returnByValue: true,
-            awaitPromise: true,
             contextId,
         });
         return response?.result?.value === true;
     }
 
-    private async getRendererFunctionObjectId(contextId: number): Promise<string | null> {
-        const response = await this.cdpService.call('Runtime.evaluate', {
-            expression: this.buildRendererFunctionLookupExpression(),
-            contextId,
-            awaitPromise: true,
-        });
+    private loadBundleSource(): string | null {
+        if (this.bundleSource !== null) return this.bundleSource;
 
-        return response?.result?.objectId ?? null;
+        const bundlePath = getAntigravityBundlePath();
+        try {
+            this.bundleSource = fs.readFileSync(bundlePath, 'utf-8');
+            logger.debug(`[TrajectoryRenderer] Loaded bundle from ${bundlePath} (${this.bundleSource.length} bytes)`);
+            return this.bundleSource;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(`[TrajectoryRenderer] Failed to read bundle from ${bundlePath}: ${message}`);
+            return null;
+        }
     }
 
-    private buildRendererFunctionLookupExpression(): string {
-        return `(() => {
-            const panelRoot = document.querySelector('.antigravity-agent-side-panel');
-            const root = panelRoot ? (panelRoot.__k || panelRoot.l || null) : null;
-            if (!root) return null;
-
-            let found = null;
-            const walk = (node) => {
-                if (!node || found) return;
-                const typeName = typeof node.type === 'function'
-                    ? (node.type.name || '(anon)')
-                    : String(node.type);
-                if (typeName === 'aBe') {
-                    found = node;
-                    return;
-                }
-                if (Array.isArray(node.__k)) {
-                    node.__k.forEach(walk);
-                }
-            };
-            walk(root);
-            return found?.type || null;
-        })()`;
-    }
-
-    private buildRendererFunctionTriggerExpression(): string {
-        return `(() => {
-            const panelRoot = document.querySelector('.antigravity-agent-side-panel');
-            const root = panelRoot ? (panelRoot.__k || panelRoot.l || null) : null;
-            if (!root) return null;
-
-            let found = null;
-            const walk = (node) => {
-                if (!node || found) return;
-                const typeName = typeof node.type === 'function'
-                    ? (node.type.name || '(anon)')
-                    : String(node.type);
-                if (typeName === 'aBe') {
-                    found = node;
-                    return;
-                }
-                if (Array.isArray(node.__k)) {
-                    node.__k.forEach(walk);
-                }
-            };
-            walk(root);
-            return found ? found.type(found.props) : null;
-        })()`;
-    }
+    // ─── Detached render expression ──────────────────────────────────
 
     private buildRenderExpression(
         request: Required<AntigravityTrajectoryRenderRequest>,
@@ -410,302 +355,91 @@ export class AntigravityTrajectoryRenderer {
         });
 
         return `(() => {
+            if (typeof uCe !== 'function' || typeof w6 !== 'function') {
+                return {
+                    ok: false,
+                    error: 'Bundle globals are not available in this execution context',
+                    diagnostics: { panelPresent: false, frameworkHint: null, candidates: [] },
+                };
+            }
+
             const input = ${payloadJson};
-            const panelRoot = document.querySelector('.antigravity-agent-side-panel');
-            const diagnostics = {
-                panelPresent: !!panelRoot,
-                frameworkHint: panelRoot ? 'preact-panel-runtime' : null,
-                candidates: [],
-            };
-            if (!panelRoot) {
-                return {
-                    ok: false,
-                    error: 'Antigravity agent side panel is not mounted in this execution context',
-                    diagnostics,
+
+            const rawTrajectory = input.trajectory && typeof input.trajectory === 'object'
+                ? input.trajectory
+                : {
+                    steps: input.steps,
+                    cascadeId: 'detached-cascade',
+                    trajectoryId: 'detached-trajectory:detached-cascade',
+                    trajectoryType: 4,
+                    generatorMetadata: [],
+                    executorMetadatas: [],
                 };
-            }
 
-            const normalizeEnumKey = (value) => (
-                typeof value === 'string'
-                    ? value.replace(/^[A-Z0-9]+(?:_[A-Z0-9]+)*_/, '')
-                    : value
-            );
-
-            const mapEnum = (enumObject, value, fallback) => {
+            const resolveRunStatus = (value) => {
                 if (typeof value === 'number') return value;
-                if (typeof value !== 'string') return fallback;
-                const key = normalizeEnumKey(value);
-                return typeof enumObject?.[key] === 'number'
-                    ? enumObject[key]
-                    : fallback;
+                if (typeof M$ !== 'undefined') {
+                    if (value === 'CASCADE_RUN_STATUS_RUNNING' || value === 'RUNNING') return M$.RUNNING || 2;
+                    if (value === 'CASCADE_RUN_STATUS_IDLE' || value === 'IDLE') return M$.IDLE || 1;
+                }
+                return typeof value === 'string' && value.includes('RUNNING') ? 2 : 1;
             };
 
-            const clone = (value) => {
-                if (value == null || typeof value !== 'object') return value;
-                if (Array.isArray(value)) return value.map(clone);
-                const out = {};
-                for (const [key, nested] of Object.entries(value)) {
-                    out[key] = clone(nested);
-                }
-                return out;
+            const noopFn = () => {};
+            const noopRef = { current: null };
+            const emptyObj = {};
+
+            const minimalCascadeContext = {
+                state: {
+                    cascadeStateProvider: {
+                        getCascadeId: () => rawTrajectory.cascadeId || 'detached-cascade',
+                        getState: () => ({ status: resolveRunStatus(input.runStatus) }),
+                    },
+                },
+                events: {
+                    sendMessage: noopFn,
+                    cancelRun: noopFn,
+                    retryLastStep: noopFn,
+                    applyCodeBlock: noopFn,
+                },
+                services: {},
             };
 
-            const findRendererNode = () => {
-                const root = panelRoot.__k || panelRoot.l || null;
-                if (!root) return null;
-
-                let found = null;
-                const walk = (node) => {
-                    if (!node || found) return;
-                    const typeName = typeof node.type === 'function'
-                        ? (node.type.name || '(anon)')
-                        : String(node.type);
-                    if (typeName === 'aBe') {
-                        found = node;
-                        return;
-                    }
-                    if (Array.isArray(node.__k)) {
-                        node.__k.forEach(walk);
-                    }
-                };
-                walk(root);
-                return found;
-            };
-
-            const rendererNode = findRendererNode();
-            if (!rendererNode?.type || !rendererNode?.__c?.context) {
-                return {
-                    ok: false,
-                    error: 'The Antigravity trajectory renderer is not mounted in this execution context',
-                    diagnostics,
-                };
-            }
-
-            const moduleHelpers = (() => {
-                const helpers = window.__agRendererHelpers || null;
-                if (!helpers) return null;
-
-                return {
-                    aBe: rendererNode.type,
-                    nT: helpers.nT,
-                    L: helpers.L,
-                    Pml: helpers.Pml,
-                    HA: helpers.HA,
-                    al: helpers.al,
-                    Zb: helpers.Zb,
-                    Vhe: helpers.Vhe,
-                    Don: helpers.Don,
-                };
-            })();
-
-            if (!moduleHelpers) {
-                return {
-                    ok: false,
-                    error: 'The Antigravity panel helpers are not available in this execution context',
-                    diagnostics,
-                };
-            }
-
-            diagnostics.candidates.push('panel:aBe');
-            diagnostics.candidates.push('window.__agRendererHelpers.nT');
-            diagnostics.candidates.push('window.__agRendererHelpers.Pml');
-
-            const normalizeCaseValue = (caseKey, value) => {
-                const base = clone(value || {});
-
-                switch (caseKey) {
-                    case 'userInput':
-                        return {
-                            $typeName: 'exa.cortex_pb.CortexStepUserInput',
-                            items: (base.items || []).map((item) => {
-                                if (!item || typeof item !== 'object') return item;
-                                if (item.chunk) return item;
-                                if (typeof item.text === 'string') {
-                                    return {
-                                        $typeName: 'exa.codeium_common_pb.TextOrScopeItem',
-                                        chunk: {
-                                            case: 'text',
-                                            value: item.text,
-                                        },
-                                    };
-                                }
-                                return item;
-                            }),
-                            userResponse: base.userResponse || '',
-                            artifactComments: base.artifactComments || [],
-                            fileDiffComments: base.fileDiffComments || [],
-                            fileComments: base.fileComments || [],
-                            isQueuedMessage: !!base.isQueuedMessage,
-                            clientType: base.clientType || 0,
-                            query: base.query || '',
-                            images: base.images || [],
-                            media: base.media || [],
-                            userConfig: base.userConfig || undefined,
-                        };
-                    case 'conversationHistory':
-                        return {
-                            $typeName: 'exa.cortex_pb.ConversationHistory',
-                            content: base.content || '',
-                        };
-                    case 'ephemeralMessage':
-                        return {
-                            $typeName: 'exa.cortex_pb.CortexStepEphemeralMessage',
-                            content: base.content || '',
-                            media: base.media || [],
-                            triggeredHeuristics: base.triggeredHeuristics || [],
-                            attachments: base.attachments || [],
-                            domTreeUri: base.domTreeUri || '',
-                        };
-                    case 'plannerResponse':
-                        return {
-                            $typeName: 'exa.cortex_pb.CortexStepPlannerResponse',
-                            response: base.response || '',
-                            modifiedResponse: base.modifiedResponse || '',
-                            thinking: base.thinking || '',
-                            signature: base.signature || '',
-                            thinkingSignature: base.thinkingSignature || '',
-                            thinkingRedacted: !!base.thinkingRedacted,
-                            messageId: base.messageId || '',
-                            providerAssignedMessageId: base.providerAssignedMessageId || '',
-                            toolCalls: base.toolCalls || [],
-                            knowledgeBaseItems: base.knowledgeBaseItems || [],
-                            stopReason: base.stopReason || '',
-                            thinkingDuration: typeof base.thinkingDuration === 'object' ? base.thinkingDuration : undefined,
-                        };
-                    case 'viewFile':
-                        return {
-                            $typeName: 'exa.cortex_pb.CortexStepViewFile',
-                            absolutePathUri: base.absolutePathUri || '',
-                            startLine: base.startLine || 1,
-                            endLine: base.endLine || 0,
-                            content: base.content || '',
-                            isSkillFile: !!base.isSkillFile,
-                            rawContent: base.rawContent || base.content || '',
-                            triggeredMemories: base.triggeredMemories || [],
-                            numLines: base.numLines || 0,
-                            numBytes: base.numBytes || 0,
-                            isInjectedReminder: !!base.isInjectedReminder,
-                        };
-                    case 'checkpoint':
-                        return {
-                            $typeName: 'exa.cortex_pb.CortexStepCheckpoint',
-                            checkpointIndex: base.checkpointIndex || 0,
-                            intentOnly: !!base.intentOnly,
-                            includedStepIndexStart: base.includedStepIndexStart || 0,
-                            includedStepIndexEnd: base.includedStepIndexEnd || 0,
-                            conversationTitle: base.conversationTitle || '',
-                            userIntent: base.userIntent || '',
-                            sessionSummary: base.sessionSummary || '',
-                            codeChangeSummary: base.codeChangeSummary || '',
-                            modelSummarizationFailed: !!base.modelSummarizationFailed,
-                            usedFallbackSummary: !!base.usedFallbackSummary,
-                            artifactSnapshots: base.artifactSnapshots || [],
-                            conversationLogUris: base.conversationLogUris || [],
-                            trajectoryFileDiffs: base.trajectoryFileDiffs || [],
-                            userRequests: base.userRequests || [],
-                            editedFileMap: base.editedFileMap || {},
-                            includedStepIndices: base.includedStepIndices || [],
-                            memorySummary: base.memorySummary || '',
-                        };
-                    default:
-                        return base;
-                }
-            };
-
-            const adaptSourceInfo = (info) => (
-                info
-                    ? {
-                        $typeName: 'exa.cortex_pb.SourceTrajectoryStepInfo',
-                        trajectoryId: info.trajectoryId,
-                        stepIndex: info.stepIndex,
-                        metadataIndex: info.metadataIndex,
-                        cascadeId: info.cascadeId,
-                    }
-                    : undefined
-            );
-
-            const adaptMetadata = (metadata) => (
-                metadata
-                    ? {
-                        $typeName: 'exa.cortex_pb.CortexStepMetadata',
-                        ...clone(metadata),
-                        source: mapEnum(moduleHelpers.Vhe, metadata.source, metadata.source),
-                        sourceTrajectoryStepInfo: adaptSourceInfo(metadata.sourceTrajectoryStepInfo),
-                    }
-                    : undefined
-            );
-
-            const adaptStep = (step) => {
-                const reservedStepKeys = new Set([
-                    '$typeName',
-                    'type',
-                    'status',
-                    'metadata',
-                    'completedInteractions',
-                    'subtrajectory',
-                    'error',
-                    'userRejected',
-                ]);
-                const caseKey = Object.keys(step || {}).find((key) => !reservedStepKeys.has(key));
-                const adapted = {
-                    $typeName: 'gemini_coder.Step',
-                    type: mapEnum(moduleHelpers.HA, step?.type, step?.type),
-                    status: mapEnum(moduleHelpers.al, step?.status, step?.status),
-                    metadata: adaptMetadata(step?.metadata),
-                    completedInteractions: clone(step?.completedInteractions || []),
-                };
-
-                if (caseKey) {
-                    adapted.step = {
-                        case: caseKey,
-                        value: normalizeCaseValue(caseKey, step?.[caseKey]),
-                    };
-                }
-
-                if (step?.subtrajectory) {
-                    adapted.subtrajectory = adaptTrajectory(step.subtrajectory);
-                }
-                if (step?.error) {
-                    adapted.error = clone(step.error);
-                }
-                if (step?.userRejected !== undefined) {
-                    adapted.userRejected = step.userRejected;
-                }
-
-                return adapted;
-            };
-
-            const adaptTrajectory = (trajectory) => {
-                const rawTrajectory = trajectory || {};
-                return {
-                    $typeName: 'gemini_coder.Trajectory',
-                    trajectoryId: rawTrajectory.trajectoryId || rendererNode.props?.trajectory?.trajectoryId || 'detached-trajectory',
-                    cascadeId: rawTrajectory.cascadeId || rendererNode.props?.trajectory?.cascadeId || 'detached-cascade',
-                    trajectoryType: mapEnum(moduleHelpers.Don, rawTrajectory.trajectoryType, rawTrajectory.trajectoryType ?? 4),
-                    steps: Array.isArray(rawTrajectory.steps) ? rawTrajectory.steps.map(adaptStep) : [],
-                    parentReferences: clone(rawTrajectory.parentReferences || []),
-                    generatorMetadata: clone(rawTrajectory.generatorMetadata || []),
-                    executorMetadatas: clone(rawTrajectory.executorMetadatas || []),
-                    source: rawTrajectory.source,
-                    metadata: clone(rawTrajectory.metadata),
-                };
+            const providerProps = {
+                cascadeContext: minimalCascadeContext,
+                workspaceInfo: { workspaceFolders: [] },
+                unleashState: emptyObj,
+                stepHandler: {
+                    handleStepAction: noopFn,
+                    handleToolCallAction: noopFn,
+                },
+                chatParams: { artifactsDir: '', knowledgeDir: '', hasDevExtension: false },
+                renderers: {
+                    markdown: (props) => {
+                        if (typeof p !== 'undefined' && p.jsx) {
+                            return p.jsx('div', { dangerouslySetInnerHTML: { __html: props.children || '' } });
+                        }
+                        return null;
+                    },
+                },
+                restartUserStatusUpdater: noopFn,
+                getStepRendererConfig: () => undefined,
+                userStatus: emptyObj,
+                trajectorySummariesProvider: {
+                    getSummary: () => null,
+                    getLatestSummary: () => null,
+                },
+                inputBoxRef: noopRef,
+                tokenizationService: {
+                    tokenize: (text) => [{ type: 'text', value: text }],
+                },
+                metadata: emptyObj,
             };
 
             try {
-                const rawTrajectory = input.trajectory && typeof input.trajectory === 'object'
-                    ? input.trajectory
-                    : {
-                        steps: input.steps,
-                        cascadeId: rendererNode.props?.trajectory?.cascadeId,
-                        trajectoryId: rendererNode.props?.trajectory?.trajectoryId,
-                        trajectoryType: rendererNode.props?.trajectory?.trajectoryType,
-                        generatorMetadata: [],
-                        executorMetadatas: [],
-                    };
-                const trajectory = adaptTrajectory(rawTrajectory);
                 const renderProps = {
-                    trajectory,
-                    status: mapEnum(moduleHelpers.Zb, input.runStatus, 1),
+                    trajectory: rawTrajectory,
+                    status: resolveRunStatus(input.runStatus),
                     queuedSteps: [],
                     debugMode: false,
                     sectionVirtualizer: undefined,
@@ -716,29 +450,33 @@ export class AntigravityTrajectoryRenderer {
                 };
 
                 const container = document.createElement('div');
-                moduleHelpers.nT(
-                    moduleHelpers.L(
-                        moduleHelpers.Pml,
-                        {
-                            context: rendererNode.__c.context,
-                            children: moduleHelpers.L(moduleHelpers.aBe, renderProps),
-                        },
-                    ),
-                    container,
-                );
+
+                if (typeof u !== 'undefined' && u.H) {
+                    const root = u.H(container);
+                    root.render(
+                        p.jsx(w6, {
+                            ...providerProps,
+                            children: p.jsx(uCe, renderProps),
+                        }),
+                    );
+                } else {
+                    return {
+                        ok: false,
+                        error: 'Preact render API (u.H) is not available',
+                        diagnostics: { panelPresent: false, frameworkHint: 'bundle-injected', candidates: ['uCe', 'w6'] },
+                    };
+                }
 
                 const html = container.innerHTML.trim();
                 const text = (container.textContent || '').trim();
-                const preferred = input.format === 'text'
-                    ? text
-                    : html;
+                const preferred = input.format === 'text' ? text : html;
                 const format = input.format === 'text' ? 'text' : 'html';
 
                 if (!preferred) {
                     return {
                         ok: false,
-                        error: 'The detached Antigravity renderer returned empty content',
-                        diagnostics,
+                        error: 'The detached bundle renderer returned empty content',
+                        diagnostics: { panelPresent: false, frameworkHint: 'bundle-injected', candidates: ['uCe', 'w6'] },
                     };
                 }
 
@@ -746,14 +484,14 @@ export class AntigravityTrajectoryRenderer {
                     ok: true,
                     content: preferred,
                     format,
-                    strategy: 'workbench-panel-detached-render',
-                    diagnostics,
+                    strategy: 'bundle-detached-render',
+                    diagnostics: { panelPresent: false, frameworkHint: 'bundle-injected', candidates: ['uCe', 'w6'] },
                 };
             } catch (error) {
                 return {
                     ok: false,
                     error: String(error && error.stack || error),
-                    diagnostics,
+                    diagnostics: { panelPresent: false, frameworkHint: 'bundle-injected', candidates: ['uCe', 'w6'] },
                 };
             }
         })()`;

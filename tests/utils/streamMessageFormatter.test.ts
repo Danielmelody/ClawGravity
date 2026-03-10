@@ -10,17 +10,14 @@ describe('streamMessageFormatter', () => {
         it('consolidates into a single line when both models are the same', () => {
             const lines = buildModeModelLines('Fast', 'Gemini 3.1 Pro (High)', 'Gemini 3.1 Pro (High)');
             expect(lines).toEqual([
-                'Current Mode: Fast',
-                'Model: Gemini 3.1 Pro (High)',
+                'Fast | Gemini 3.1 Pro (High)',
             ]);
         });
 
-        it('shows both Fast and Plan models when they differ', () => {
+        it('shows only the current mode model when they differ', () => {
             const lines = buildModeModelLines('Planning', 'Claude Opus 4.6', 'Gemini 3.1 Pro');
             expect(lines).toEqual([
-                'Current Mode: Planning',
-                'Fast Model: Claude Opus 4.6',
-                'Plan Model: Gemini 3.1 Pro',
+                'Planning | Gemini 3.1 Pro',
             ]);
         });
     });

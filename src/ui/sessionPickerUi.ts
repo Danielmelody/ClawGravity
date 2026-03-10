@@ -7,6 +7,23 @@ import {
 import { t } from '../utils/i18n';
 import { SessionListItem } from '../services/chatSessionService';
 
+/** Format a timestamp into a concise relative-time string (e.g. "3m ago", "2h ago"). */
+function formatRelativeTime(timestampMs: number): string {
+    if (!timestampMs) return '';
+    const diffMs = Date.now() - timestampMs;
+    if (diffMs < 0) return 'just now';
+    const seconds = Math.floor(diffMs / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.floor(days / 30);
+    return `${months}mo ago`;
+}
+
 /** Select menu custom ID for session picker */
 export const SESSION_SELECT_ID = 'session_select';
 
@@ -43,11 +60,18 @@ export function buildSessionPickerUI(
 
     const pageItems = sessions.slice(0, MAX_SELECT_OPTIONS);
 
-    const options = pageItems.map((session) => ({
-        label: session.title.slice(0, 100),
-        value: session.title.slice(0, 100),
-        description: session.isActive ? t('Current') : undefined,
-    }));
+    const options = pageItems.map((session) => {
+        const timeStr = session.lastModifiedTime ? formatRelativeTime(session.lastModifiedTime) : '';
+        const parts = [
+            session.isActive ? t('Current') : '',
+            timeStr,
+        ].filter(Boolean);
+        return {
+            label: session.title.slice(0, 100),
+            value: session.title.slice(0, 100),
+            description: parts.length > 0 ? parts.join(' · ') : undefined,
+        };
+    });
 
     const selectMenu = new StringSelectMenuBuilder()
         .setCustomId(SESSION_SELECT_ID)

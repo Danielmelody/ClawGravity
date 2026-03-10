@@ -58,12 +58,6 @@ export function markdownToTelegramHtmlViaUnified(markdown: string): string {
     return htmlToTelegramHtml(telegramHtml);
 }
 
-/**
- * Convert raw HTML (e.g. from DOM extraction or any HTML source) directly
- * to Telegram-safe HTML. Does NOT parse Markdown — only sanitizes HTML.
- *
- * Use this when you already have HTML and want to make it Telegram-safe.
- */
 export function rawHtmlToTelegramHtml(html: string): string {
     if (!html || !html.trim()) return '';
     return htmlToTelegramHtml(html);

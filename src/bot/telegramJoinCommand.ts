@@ -11,6 +11,23 @@ import { logger } from '../utils/logger';
 export const TG_JOIN_SELECT_ID = 'tg_join_select';
 const MAX_TELEGRAM_HISTORY_CHARS = 3800;
 
+/** Format a timestamp into a concise relative-time string (e.g. "3m ago", "2h ago"). */
+function formatRelativeTime(timestampMs: number): string {
+    if (!timestampMs) return '';
+    const diffMs = Date.now() - timestampMs;
+    if (diffMs < 0) return 'just now';
+    const seconds = Math.floor(diffMs / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.floor(days / 30);
+    return `${months}mo ago`;
+}
+
 export class TelegramSessionStateStore {
     constructor(private readonly recentMessageRepo?: TelegramRecentMessageRepository) { }
 
@@ -124,10 +141,16 @@ export async function handleTelegramJoinCommand(
         type: 'selectMenu',
         customId: TG_JOIN_SELECT_ID,
         placeholder: 'Select a history session',
-        options: sessions.slice(0, 25).map((session: any) => ({
-            label: session.title === currentTitle?.title ? `${session.title} (current)` : session.title,
-            value: session.title,
-        })),
+        options: sessions.slice(0, 25).map((session: any) => {
+            const timeStr = session.lastModifiedTime ? formatRelativeTime(session.lastModifiedTime) : '';
+            const isCurrent = session.title === currentTitle?.title;
+            const suffix = [
+                timeStr,
+                isCurrent ? 'current' : '',
+            ].filter(Boolean).join(', ');
+            const label = suffix ? `${session.title} (${suffix})` : session.title;
+            return { label, value: session.title };
+        }),
     };
 
     await message.reply({

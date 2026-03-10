@@ -64,6 +64,8 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@mermaid-js/mermaid-cli": "^11.12.0",
+    "@swc/core": "^1.15.18",
+    "@swc/jest": "^0.2.39",
     "@types/better-sqlite3": "^7.6.13",
     "@types/jest": "^30.0.0",
     "@types/marked": "^5.0.2",
@@ -76,7 +78,6 @@
     "jscpd": "^4.0.8",
     "knip": "^5.86.0",
     "semantic-release": "^25.0.3",
-    "ts-jest": "^29.4.6",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.57.0"

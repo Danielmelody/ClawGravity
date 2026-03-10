@@ -1206,7 +1206,16 @@ export class CdpService extends EventEmitter {
             }
         })()`;
 
-        for (const ctx of this.contexts) {
+        // Sort contexts by priority to avoid cross-workspace contamination.
+        // Extension host contexts are shared across all VS Code windows and
+        // their performance timeline contains LS requests from whichever
+        // workspace was most recently active — which may not be this one.
+        // Webview/cascade-panel contexts are workspace-specific and reliable.
+        const prioritized = [...this.contexts].sort((a, b) => {
+            return this.contextPriority(a) - this.contextPriority(b);
+        });
+
+        for (const ctx of prioritized) {
             try {
                 const result = await this.call('Runtime.evaluate', {
                     expression: script,
@@ -1216,6 +1225,11 @@ export class CdpService extends EventEmitter {
 
                 const port = result?.result?.value;
                 if (typeof port === 'number' && port > 0) {
+                    logger.debug(
+                        `[CdpService] detectLSPortViaCDP returned ${port} ` +
+                        `from context: ${ctx.name || ctx.id} (type: ${ctx.auxData?.type}, ` +
+                        `priority: ${this.contextPriority(ctx)})`,
+                    );
                     return port;
                 }
             } catch {
@@ -1224,6 +1238,29 @@ export class CdpService extends EventEmitter {
         }
 
         return null;
+    }
+
+    /**
+     * Assign a priority score to a CDP execution context for LS port detection.
+     * Lower = higher priority. Webview contexts are workspace-specific (most
+     * reliable). Extension host contexts are shared across windows (least
+     * reliable — they contain LS resource entries from any workspace).
+     */
+    private contextPriority(ctx: CdpContext): number {
+        const name = (ctx.name || '').toLowerCase();
+        const url = ((ctx as any).url || '').toLowerCase();
+        const type = (ctx.auxData?.type || '').toLowerCase();
+
+        // Cascade-panel webview — always workspace-specific
+        if (url.includes('cascade-panel') || name.includes('cascade-panel')) return 0;
+        // Other webview contexts
+        if (url.includes('webview') || name.includes('webview')) return 1;
+        // Main page / default frame
+        if (type === 'default' || type === '') return 2;
+        // Extension host — shared across windows, least reliable
+        if (name.includes('extension') || type === 'isolated') return 4;
+        // Everything else
+        return 3;
     }
 
     /**

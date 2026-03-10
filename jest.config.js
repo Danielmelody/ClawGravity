@@ -1,6 +1,5 @@
-/** @type {import('ts-jest').JestConfigWithTsJest} */
+/** @type {import('jest').Config} */
 module.exports = {
-    preset: 'ts-jest',
     testEnvironment: 'node',
     roots: ['<rootDir>/tests'],
     testPathIgnorePatterns: [
@@ -9,6 +8,9 @@ module.exports = {
         '<rootDir>/tests/services/responseMonitor.stopButtonSelector.test.ts',
         '<rootDir>/tests/bot/refactorBaseline.test.ts',
     ],
+    transform: {
+        '^.+\\.ts$': '@swc/jest',
+    },
     moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/src/$1',
     },

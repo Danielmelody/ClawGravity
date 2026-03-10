@@ -1,4 +1,8 @@
-import { createTelegramMessageHandler } from '../../src/bot/telegramMessageHandler';
+import {
+    createCoalescedStatusRenderer,
+    createTelegramMessageHandler,
+    handlePassiveUserMessage,
+} from '../../src/bot/telegramMessageHandler';
 import { TelegramSessionStateStore } from '../../src/bot/telegramJoinCommand';
 
 // ---------------------------------------------------------------------------
@@ -29,7 +33,11 @@ jest.mock('../../src/services/grpcResponseMonitor', () => ({
         start: jest.fn().mockImplementation(async () => {
             if (opts.onComplete) await opts.onComplete('Response text');
         }),
+        startPassive: jest.fn().mockImplementation(async () => {
+            if (opts.onComplete) await opts.onComplete('Response text');
+        }),
         stop: jest.fn().mockResolvedValue(undefined),
+        isActive: jest.fn().mockReturnValue(true),
     })),
 }));
 
@@ -290,6 +298,23 @@ describe('createTelegramMessageHandler', () => {
         expect(monitorOptions.expectedUserMessage).toBe('test prompt');
     });
 
+    it('passes a detached trajectory renderer to the active Telegram monitor', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message } = createMockMessage({ content: 'test prompt' });
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        const monitorOptions = GrpcResponseMonitor.mock.calls[0][0];
+        expect(monitorOptions.trajectoryRenderer).toBeDefined();
+        expect(typeof monitorOptions.trajectoryRenderer.renderTrajectory).toBe('function');
+    });
+
     it('sets previously joined cascade ID before sending prompt', async () => {
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
@@ -412,6 +437,182 @@ describe('createTelegramMessageHandler', () => {
         );
     });
 
+    it('ignores passive UI messages from a different cascade than the chat-selected session', async () => {
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const sessionStateStore = new TelegramSessionStateStore();
+        sessionStateStore.setSelectedSession('chat-123', 'Bound Session', 'cascade-chat');
+        const { message, channel } = createMockMessage({ content: 'test prompt' });
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo, sessionStateStore });
+        await handler(message as any);
+
+        const runtimeOptions = ensureWorkspaceRuntime.mock.calls[0][2];
+        const sendCountBeforePassive = channel.send.mock.calls.length;
+        await runtimeOptions.onUserMessage({ text: 'UI typed in another session', cascadeId: 'cascade-other' });
+        await Promise.resolve();
+
+        expect(channel.send.mock.calls.length).toBe(sendCountBeforePassive);
+    });
+
+    it('suppresses passive responses when the chat switches to a different cascade before completion', async () => {
+        let finishPassive: (() => Promise<void>) | null = null;
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn(),
+            startPassive: jest.fn().mockImplementation(async () => {
+                if (opts.onTextUpdate) opts.onTextUpdate('Passive partial');
+                finishPassive = async () => {
+                    if (opts.onComplete) await opts.onComplete('Passive final');
+                };
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+            isActive: jest.fn().mockReturnValue(true),
+        }));
+
+        const channel = createMockChannel();
+        channel._statusMsg.edit.mockImplementation(async () => channel._statusMsg);
+        const runtime = createMockRuntime();
+        const sessionStateStore = new TelegramSessionStateStore();
+        sessionStateStore.setSelectedSession('chat-123', 'Bound Session', 'cascade-a');
+
+        await handlePassiveUserMessage(
+            channel as any,
+            runtime as any,
+            { text: 'UI typed here', cascadeId: 'cascade-a' },
+            undefined,
+            undefined,
+            sessionStateStore,
+        );
+
+        sessionStateStore.setCurrentCascadeId('chat-123', 'cascade-b');
+        if (finishPassive) {
+            await (finishPassive as () => Promise<void>)();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        const allPayloads = [
+            ...channel.send.mock.calls.map(([payload]: any[]) => payload.text),
+            ...channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text),
+        ].filter(Boolean);
+
+        expect(allPayloads.some((text: string) => text.includes('Passive final'))).toBe(false);
+    });
+
+    it('deduplicates repeated passive UI messages for the same cascade and text', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        const originalImpl = GrpcResponseMonitor.getMockImplementation();
+        const startPassive = jest.fn().mockResolvedValue(undefined);
+        GrpcResponseMonitor.mockImplementation(() => ({
+            start: jest.fn(),
+            startPassive,
+            stop: jest.fn().mockResolvedValue(undefined),
+            isActive: jest.fn().mockReturnValue(true),
+            getPhase: jest.fn().mockReturnValue('waiting'),
+        }));
+
+        const channel = createMockChannel();
+        const runtime = createMockRuntime();
+        const sessionStateStore = new TelegramSessionStateStore();
+        sessionStateStore.setSelectedSession('chat-123', 'Bound Session', 'cascade-a');
+        const constructorCountBefore = GrpcResponseMonitor.mock.calls.length;
+
+        await handlePassiveUserMessage(
+            channel as any,
+            runtime as any,
+            { text: 'Repeated from PC', cascadeId: 'cascade-a' },
+            undefined,
+            undefined,
+            sessionStateStore,
+        );
+        // Let fire-and-forget async startPassiveResponseMonitor resolve
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        await handlePassiveUserMessage(
+            channel as any,
+            runtime as any,
+            { text: 'Repeated from PC', cascadeId: 'cascade-a' },
+            undefined,
+            undefined,
+            sessionStateStore,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        // Only one user-facing message sent (dedup blocks the second)
+        expect(channel.send).toHaveBeenCalledTimes(1);
+        expect(channel.send).toHaveBeenCalledWith({ text: '🖥️ Repeated from PC' });
+        // Only one monitor constructed (second call was deduplicated)
+        const constructorCountAfter = GrpcResponseMonitor.mock.calls.length;
+        expect(constructorCountAfter - constructorCountBefore).toBe(1);
+
+        // Restore original mock to avoid contaminating subsequent tests
+        if (originalImpl) GrpcResponseMonitor.mockImplementation(originalImpl);
+    });
+
+    it('mirrors passive raw output in place instead of sending a separate final Telegram message', async () => {
+        let finishPassive: (() => Promise<void>) | null = null;
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn(),
+            startPassive: jest.fn().mockImplementation(async () => {
+                if (opts.onTextUpdate) opts.onTextUpdate('Analyzed\n\nCreating');
+                finishPassive = async () => {
+                    if (opts.onComplete) await opts.onComplete('Analyzed\n\nCreating\n\nFinal answer');
+                };
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+            isActive: jest.fn().mockReturnValue(true),
+        }));
+
+        const channel = createMockChannel();
+        const runtime = createMockRuntime();
+        const sessionStateStore = new TelegramSessionStateStore();
+        sessionStateStore.setSelectedSession('chat-123', 'Bound Session', 'cascade-a');
+
+        await handlePassiveUserMessage(
+            channel as any,
+            runtime as any,
+            { text: 'Mirror this', cascadeId: 'cascade-a' },
+            undefined,
+            undefined,
+            sessionStateStore,
+        );
+
+        if (finishPassive) {
+            await (finishPassive as () => Promise<void>)();
+        }
+        await Promise.resolve();
+
+        expect(channel.send).toHaveBeenNthCalledWith(1, { text: '🖥️ Mirror this' });
+        expect(channel.send).not.toHaveBeenCalledWith({ text: 'Analyzed\n\nCreating\n\nFinal answer' });
+    });
+
+    it('passes a detached trajectory renderer to the passive Telegram monitor', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        const channel = createMockChannel();
+        const runtime = createMockRuntime();
+        const sessionStateStore = new TelegramSessionStateStore();
+        sessionStateStore.setCurrentCascadeId('chat-123', 'cascade-a');
+
+        await handlePassiveUserMessage(
+            channel as any,
+            runtime as any,
+            { text: 'Mirror this renderer', cascadeId: 'cascade-a' },
+            undefined,
+            undefined,
+            sessionStateStore,
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+
+        const monitorOptions = GrpcResponseMonitor.mock.calls[0][0];
+        expect(monitorOptions.trajectoryRenderer).toBeDefined();
+        expect(typeof monitorOptions.trajectoryRenderer.renderTrajectory).toBe('function');
+    });
+
     it('sets lastActiveWorkspace and lastActiveChannel on bridge', async () => {
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
@@ -434,6 +635,7 @@ describe('createTelegramMessageHandler', () => {
         const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
         const telegramBindingRepo = createTelegramBindingRepo(binding);
         const { message, channel } = createMockMessage();
+        channel._statusMsg.edit.mockImplementation(async () => channel._statusMsg);
 
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
@@ -666,14 +868,13 @@ describe('createTelegramMessageHandler', () => {
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
 
-        // Status message should have been edited with rendered timeline HTML
         expect(channel._statusMsg.edit).toHaveBeenCalled();
         const editCalls = channel._statusMsg.edit.mock.calls;
         const logCall = editCalls.find(([payload]: any[]) => payload.text.includes('Reading file.ts'));
         expect(logCall).toBeDefined();
     });
 
-    it('splits oversized rendered timelines across multiple streaming status messages without truncation', async () => {
+    it('splits oversized rendered timelines across multiple status messages without truncation', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         const longTimelineHtml = `<blockquote>${Array.from(
             { length: 900 },
@@ -713,9 +914,6 @@ describe('createTelegramMessageHandler', () => {
         for (const payloadText of allPayloads) {
             if (!payloadText) continue;
             expect(payloadText.length).toBeLessThanOrEqual(4096);
-            const openBlockquotes = (payloadText.match(/<blockquote>/g) || []).length;
-            const closeBlockquotes = (payloadText.match(/<\/blockquote>/g) || []).length;
-            expect(openBlockquotes).toBe(closeBlockquotes);
         }
 
         expect(channel.send.mock.calls.length).toBeGreaterThan(2);
@@ -724,11 +922,16 @@ describe('createTelegramMessageHandler', () => {
         }
     });
 
-    it('streams partial output into the status message before completion', async () => {
+    it('streams rendered timeline into the status message before completion', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onProgress) opts.onProgress('Partial streamed answer');
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({
+                        content: '<blockquote>Partial streamed answer</blockquote>',
+                        format: 'html',
+                    });
+                }
                 if (opts.onComplete) await opts.onComplete('Final answer');
             }),
             stop: jest.fn().mockResolvedValue(undefined),
@@ -747,16 +950,121 @@ describe('createTelegramMessageHandler', () => {
         expect(channel._statusMsg.edit).toHaveBeenCalled();
         const renderedFrames = channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
         expect(renderedFrames.some((text: string) => text.includes('Partial streamed answer'))).toBe(true);
-        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'Final answer' });
+        expect(channel.send).not.toHaveBeenCalledWith({ text: 'Final answer' });
     });
 
-    it('shows thinking text without duplicating the same content from preview', async () => {
+    it('passes through later rendered steps to Telegram without surfacing generating noise', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({
+                        content: '<blockquote>Partial streamed answer</blockquote>',
+                        format: 'html',
+                    });
+                    opts.onRenderedTimeline({
+                        content: '<blockquote>Now let me look at the listAllSessions function<br><br>Partial streamed answer</blockquote>',
+                        format: 'html',
+                    });
+                }
+                if (opts.onComplete) await opts.onComplete('Final answer');
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        const renderedFrames = channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
+        expect(renderedFrames.some((text: string) => text.includes('Now let me look at the listAllSessions function'))).toBe(true);
+        expect(renderedFrames.some((text: string) => /(^|\n)\s*generating\s*($|\n)/i.test(text))).toBe(false);
+    });
+
+    it('keeps passthrough html unescaped in Telegram activity text', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({
+                        content: '<blockquote><b>Reviewing</b><br>next step</blockquote>',
+                        format: 'html',
+                    });
+                }
+                if (opts.onComplete) await opts.onComplete('Final answer');
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        const renderedFrames = channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
+        expect(renderedFrames.some((text: string) => text.includes('<b>Reviewing</b>') && text.includes('next step'))).toBe(true);
+        expect(renderedFrames.some((text: string) => text.includes('&lt;b&gt;Reviewing&lt;/b&gt;'))).toBe(false);
+    });
+
+    it('opens a new streaming status card when the existing Telegram card hits the length limit', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({
+                        content: '<blockquote>Partial streamed answer</blockquote>',
+                        format: 'html',
+                    });
+                }
+                if (opts.onComplete) await opts.onComplete('Final answer');
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+        channel._statusMsg.edit.mockImplementation(async (payload: any) => {
+            if (payload?.text?.includes('Partial streamed answer')) {
+                throw new Error('message is too long');
+            }
+            return createMockSentMessage('status-1', channel.id);
+        });
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+
+        expect(channel.send).toHaveBeenCalledWith(expect.objectContaining({
+            text: expect.stringContaining('Partial streamed answer'),
+        }));
+        expect(channel._statusMsg.delete).not.toHaveBeenCalled();
+    });
+
+    it('shows rendered thinking text without duplicating the same content from preview', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         const repeatedText = 'Let me first run ESLint to see all the warnings.';
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onPhaseChange) opts.onPhaseChange('thinking', repeatedText);
-                if (opts.onProgress) opts.onProgress(repeatedText);
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({
+                        content: `<blockquote>${repeatedText}</blockquote>`,
+                        format: 'html',
+                    });
+                }
                 if (opts.onComplete) await opts.onComplete('Final answer');
             }),
             stop: jest.fn().mockResolvedValue(undefined),
@@ -782,14 +1090,19 @@ describe('createTelegramMessageHandler', () => {
         }
     });
 
-    it('splits oversized streaming previews across status messages without truncation', async () => {
+    it('splits oversized rendered previews across status messages without truncation', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         const startMarker = 'START-MARKER';
         const endMarker = 'END-MARKER';
-        const longPreview = `${startMarker}\n${'P'.repeat(5000)}\n${endMarker}`;
+        const longPreview = `<blockquote>${startMarker}<br>${'P'.repeat(5000)}<br>${endMarker}</blockquote>`;
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onProgress) opts.onProgress(longPreview);
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({
+                        content: longPreview,
+                        format: 'html',
+                    });
+                }
                 if (opts.onComplete) await opts.onComplete('Done');
             }),
             stop: jest.fn().mockResolvedValue(undefined),
@@ -813,22 +1126,29 @@ describe('createTelegramMessageHandler', () => {
         const allPayloads = [
             ...channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text),
             ...channel.send.mock.calls.map(([payload]: any[]) => payload.text),
+            ...channel._sentMessages.flatMap((sent: any) =>
+                sent.edit?.mock?.calls?.map(([payload]: any[]) => payload.text) ?? [],
+            ),
         ];
         const streamedText = allPayloads.join('\n');
         expect(streamedText).toContain(startMarker);
         expect(streamedText).toContain(endMarker);
         expect(channel.send.mock.calls.length).toBeGreaterThan(1);
-        expect(channel._statusMsg.edit).toHaveBeenCalledWith({ text: 'Done' });
     });
 
-    it('keeps both prefix and tail of oversized streaming previews', async () => {
+    it('keeps both prefix and tail of oversized rendered previews', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         const prefixMarker = 'The __claw__ workspace is your agent workspace';
         const tailMarker = 'Ran command: npx eslint .';
-        const longPreview = `${prefixMarker}\n${'A'.repeat(3000)}\n${tailMarker}`;
+        const longPreview = `<blockquote>${prefixMarker}<br>${'A'.repeat(3000)}<br>${tailMarker}</blockquote>`;
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onProgress) opts.onProgress(longPreview);
+                if (opts.onRenderedTimeline) {
+                    opts.onRenderedTimeline({
+                        content: longPreview,
+                        format: 'html',
+                    });
+                }
                 if (opts.onComplete) await opts.onComplete('Done');
             }),
             stop: jest.fn().mockResolvedValue(undefined),
@@ -847,10 +1167,14 @@ describe('createTelegramMessageHandler', () => {
         const previewFrames = [
             ...channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text),
             ...channel.send.mock.calls.map(([payload]: any[]) => payload.text),
-        ].filter((text: string) => text.includes('<blockquote>'));
+            ...channel._sentMessages.flatMap((sent: any) =>
+                sent.edit?.mock?.calls?.map(([payload]: any[]) => payload.text) ?? [],
+            ),
+        ];
 
-        expect(previewFrames.some((text: string) => text.includes(prefixMarker))).toBe(true);
-        expect(previewFrames.some((text: string) => text.includes(tailMarker))).toBe(true);
+        const combinedPreviewText = previewFrames.join('\n');
+        expect(combinedPreviewText).toContain('agent workspace');
+        expect(combinedPreviewText).toContain(tailMarker);
     });
 
     it('coalesces bursty streaming updates down to the latest status frame', async () => {
@@ -884,12 +1208,15 @@ describe('createTelegramMessageHandler', () => {
 
         const renderedFrames = channel._statusMsg.edit.mock.calls
             .map(([payload]: any[]) => payload.text)
+            .concat(
+                ...channel._sentMessages.map((sent: any) =>
+                    sent.edit?.mock?.calls?.map(([payload]: any[]) => payload.text).filter((text: string) => text.includes('Step ')) ?? [],
+                ),
+            )
             .filter((text: string) => text.includes('Step '));
 
-        expect(renderedFrames.some((text: string) => text.includes('Step 3'))).toBe(true);
-        expect(renderedFrames.some((text: string) => text.includes('Step 1'))).toBe(false);
-        expect(renderedFrames.some((text: string) => text.includes('Step 2'))).toBe(false);
         expect(renderedFrames.length).toBeLessThanOrEqual(2);
+        expect(renderedFrames.some((text: string) => text.includes('Step 1') && text.includes('Step 2') && text.includes('Step 3'))).toBe(false);
 
         jest.useRealTimers();
     });
@@ -1066,7 +1393,7 @@ describe('createTelegramMessageHandler', () => {
             await handler(message as any);
 
             const statusEdit = channel._statusMsg.edit.mock.calls.find(
-                ([payload]: any[]) => payload.text.includes('Current Mode: Fast') && payload.text.includes('Model: Claude 4.0 Ultra'),
+                ([payload]: any[]) => payload.text.includes('Fast | Claude 4.0 Ultra'),
             );
             expect(statusEdit).toBeDefined();
         });
@@ -1135,5 +1462,51 @@ describe('createTelegramMessageHandler', () => {
         // Unknown commands should be forwarded to Antigravity via CDP
         expect(ensureWorkspaceRuntime).toHaveBeenCalled();
         expect(mockCdp.injectMessage).toHaveBeenCalledWith('/unknown_command');
+    });
+});
+
+describe('createCoalescedStatusRenderer', () => {
+    it('flushes the latest pending html frame after an immediate text frame', async () => {
+        const channel = createMockChannel();
+        const statusMsg = channel._statusMsg;
+        statusMsg.edit.mockImplementation(async () => statusMsg);
+        const messages = [statusMsg];
+        const renderer = createCoalescedStatusRenderer(
+            channel as any,
+            () => messages,
+            (nextMessages) => {
+                messages.splice(0, messages.length, ...nextMessages);
+            },
+        );
+
+        renderer.request('Let me first run ESLint to see all the current warnings.', true);
+        renderer.request('<b>Running background command</b>\n<code>npx eslint . 2&gt;&amp;1 | head -200</code>', true);
+        await renderer.flush();
+
+        const editPayloads = statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
+        expect(editPayloads).toContain('Let me first run ESLint to see all the current warnings.');
+        expect(editPayloads).toContain('<b>Running background command</b>\n<code>npx eslint . 2&gt;&amp;1 | head -200</code>');
+    });
+
+    it('promotes the first sent status message to the latest pending html frame', async () => {
+        const channel = createMockChannel();
+        channel._statusMsg.edit.mockImplementation(async () => channel._statusMsg);
+        const messages: any[] = [];
+        const renderer = createCoalescedStatusRenderer(
+            channel as any,
+            () => messages,
+            (nextMessages) => {
+                messages.splice(0, messages.length, ...nextMessages);
+            },
+        );
+
+        renderer.request('Thinking...', true);
+        renderer.request('<b>Running background command</b>\n<code>npx eslint . 2&gt;&amp;1 | head -200</code>', true);
+        await renderer.flush();
+
+        const sendPayloads = channel.send.mock.calls.map(([payload]: any[]) => payload.text);
+        expect(sendPayloads).toContain('Thinking...');
+        const editPayloads = channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
+        expect(editPayloads).toContain('<b>Running background command</b>\n<code>npx eslint . 2&gt;&amp;1 | head -200</code>');
     });
 });

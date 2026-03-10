@@ -433,13 +433,15 @@ export class GrpcResponseMonitor {
         }
 
         if (this.isRunning) {
-            logger.warn(`[GrpcMonitor] Recovery exhausted after ${retries} attempts`);
+            logger.warn(`[GrpcMonitor] Recovery exhausted after ${retries} attempts — re-opening stream`);
+            this.initStream();
         }
     }
 
     private async readTrajectorySnapshot(): Promise<TrajectoryRecoverySnapshot | null> {
         try {
             const trajectoryResp = await this.client.rawRPC('GetCascadeTrajectory', { cascadeId: this.cascadeId });
+            logger.warn(`[GrpcMonitor] FULL TRAJECTORY PAYLOAD: ${JSON.stringify(trajectoryResp).slice(0, 3000)}`);
             const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
             const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
 
@@ -473,7 +475,10 @@ export class GrpcResponseMonitor {
                 }
 
                 if (anchorIndex === -1) {
-                    logger.warn(`[GrpcMonitor] Anchor not matched and no user input steps found. Expected: "${this.expectedUserMessage.slice(0, 50)}..."`);
+                    logger.warn(`[GrpcMonitor] Anchor not matched. Expected: "${this.expectedUserMessage.slice(0, 50)}..."`);
+                    const stepTypes = steps.map((s: any) => s?.type || 'UNKNOWN').join(', ');
+                    logger.warn(`[GrpcMonitor] Available step types: ${stepTypes}`);
+                    logger.warn(`[GrpcMonitor] Full steps payload dump: ${JSON.stringify(steps).slice(0, 3000)}`);
                     return {
                         steps,
                         renderSteps: steps.slice(0),
