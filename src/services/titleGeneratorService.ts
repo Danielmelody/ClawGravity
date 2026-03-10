@@ -10,7 +10,7 @@ export class TitleGeneratorService {
      * @param prompt User's prompt
      * @param _cdpService Unused (kept for API compatibility)
      */
-    async generateTitle(prompt: string, _cdpService?: unknown): Promise<string> {
+    async generateTitle(prompt: string,): Promise<string> {
         return this.extractTitleFromText(prompt);
     }
 

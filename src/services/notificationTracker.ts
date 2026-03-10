@@ -6,7 +6,6 @@
  * This module extracts that pattern.
  */
 
-import { logger } from '../utils/logger';
 
 /** Maximum size of notifiedKeys before pruning oldest entries */
 const DEFAULT_MAX_NOTIFIED_KEYS = 50;

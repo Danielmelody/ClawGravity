@@ -1,8 +1,7 @@
-import * as net from 'net';
 import * as os from 'os';
 import { execFile, spawn } from 'child_process';
 import { CDP_PORTS } from '../../utils/cdpPorts';
-import { isPortFree, findFreeCdpPort } from '../../utils/portUtils';
+import { findFreeCdpPort } from '../../utils/portUtils';
 import { getAntigravityCliPath } from '../../utils/pathUtils';
 
 const APP_NAME = 'Antigravity';

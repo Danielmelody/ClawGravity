@@ -36,17 +36,6 @@ export function sanitizeFileName(fileName: string): string {
     return sanitized || `image-${Date.now()}.png`;
 }
 
-function buildPromptWithAttachmentUrls(prompt: string, attachments: InboundImageAttachment[]): string {
-    const base = prompt.trim() || 'Please review the attached images and respond accordingly.';
-    if (attachments.length === 0) return base;
-
-    const lines = attachments.map((image, index) =>
-        `${index + 1}. ${image.name}\nURL: ${image.url}`,
-    );
-
-    return `${base}\n\n[Discord Attached Images]\n${lines.join('\n\n')}\n\nPlease refer to the attached images above in your response.`;
-}
-
 export async function downloadInboundImageAttachments(message: Message): Promise<InboundImageAttachment[]> {
     const allAttachments = Array.from(message.attachments.values());
     const imageAttachments = allAttachments

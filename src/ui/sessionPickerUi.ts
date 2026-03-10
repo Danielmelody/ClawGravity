@@ -6,14 +6,6 @@ import {
 
 import { t } from '../utils/i18n';
 import { SessionListItem } from '../services/chatSessionService';
-import type { MessagePayload } from '../platform/types';
-import {
-    createRichContent,
-    withTitle,
-    withDescription,
-    withColor,
-    withTimestamp,
-} from '../platform/richContentBuilder';
 
 /** Select menu custom ID for session picker */
 export const SESSION_SELECT_ID = 'session_select';
@@ -26,51 +18,6 @@ const MAX_SELECT_OPTIONS = 25;
  */
 export function isSessionSelectId(customId: string): boolean {
     return customId === SESSION_SELECT_ID;
-}
-
-/**
- * Build a platform-agnostic MessagePayload for session picker UI.
- */
-function buildSessionPickerPayload(
-    sessions: SessionListItem[],
-): MessagePayload {
-    const MAX_OPTIONS = 25;
-
-    let rc = withTimestamp(
-        withColor(
-            withTitle(createRichContent(), t('Join Session')),
-            0x5865F2,
-        ),
-    );
-
-    if (sessions.length === 0) {
-        rc = withDescription(rc, t('No sessions found in the Antigravity side panel.'));
-        return { richContent: rc, components: [] };
-    }
-
-    rc = withDescription(rc, t('Select a session to join ({{count}} found)', { count: sessions.length }));
-
-    const pageItems = sessions.slice(0, MAX_OPTIONS);
-
-    return {
-        richContent: rc,
-        components: [
-            {
-                components: [
-                    {
-                        type: 'selectMenu' as const,
-                        customId: SESSION_SELECT_ID,
-                        placeholder: t('Select a session...'),
-                        options: pageItems.map((session) => ({
-                            label: session.title.slice(0, 100),
-                            value: session.title.slice(0, 100),
-                            description: session.isActive ? t('Current') : undefined,
-                        })),
-                    },
-                ],
-            },
-        ],
-    };
 }
 
 /**

@@ -5,7 +5,6 @@
  * to eliminate duplicated start/stop/isActive/detection logic.
  */
 
-import { logger } from '../utils/logger';
 
 export interface DetectorState<TInfo> {
     isRunning: boolean;

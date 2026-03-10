@@ -326,7 +326,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             let sessionLines: string[] = [];
             let isStatusTerminal = false;
             let currentStateIndicator = '⏳ Waiting for response...';
-            let lastPhaseName = '';
             const getStatusActivityText = () => renderedTimelineHtml;
 
             const refreshStatusMessage = (mode: 'streaming' | 'complete' | 'timeout' | 'error') => {
@@ -395,19 +394,20 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 const trajectoryRenderer = new AntigravityTrajectoryRenderer(cdp);
 
                 const monitorConfig = {
-                    onProgress: (progressText: string) => {
+                    onProgress: () => {
                         refreshStatusMessage('streaming');
                     },
 
                     onPhaseChange: (phase: string, text: string | null) => {
                         const len = text ? text.length : 0;
-                        const phaseChanged = phase !== lastPhaseName;
                         lastPhaseName = phase;
 
                         if (phase === 'thinking') {
                             currentStateIndicator = '🤔 Thinking...';
                         } else if (phase === 'generating') {
                             currentStateIndicator = `✍️ Generating (${len} chars)...`;
+                        } else if (phase === 'complete') {
+                            currentStateIndicator = '✅ Finished';
                         } else if (phase === 'error') {
                             currentStateIndicator = '❌ Error';
                             renderedTimelineHtml = '';
@@ -420,16 +420,21 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
                     onRenderedTimeline: (timeline: { content: string; format: 'text' | 'html' }) => {
                         if (timeline.format !== 'html') return;
-                        if (!timeline.content || timeline.content.trim().length === 0) return;
+                        if (!timeline.content || timeline.content.trim().length === 0) {
+                            logger.debug('[TelegramHandler] onRenderedTimeline: empty content');
+                            return;
+                        }
                         renderedTimelineHtml = rawHtmlToTelegramHtml(timeline.content).trim();
-                        if (!renderedTimelineHtml) return;
+                        if (!renderedTimelineHtml) {
+                            logger.debug('[TelegramHandler] onRenderedTimeline: rawHtmlToTelegramHtml produced empty output');
+                            return;
+                        }
                         refreshStatusMessage('streaming');
                     },
 
                     onComplete: async (finalText: string) => {
                         isStatusTerminal = true;
                         try {
-                            const elapsed = Math.round((Date.now() - startTime) / 1000);
 
                             // Flash "Done" state on the card before replacing with final text
                             currentStateIndicator = `✅ Finished`;
@@ -450,11 +455,13 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             } else if (finalText && finalText.trim().length > 0) {
                                 await deliverFinalTelegramText(null, channel, finalText);
                             } else {
-                                if (statusMessages.length > 0) {
-                                    await deleteStreamingStatusMessages(statusMessages);
-                                    statusMessages = [];
-                                }
                                 await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
+                            }
+
+                            // Clean up the streaming status card after delivering final text
+                            if (statusMessages.length > 0) {
+                                await deleteStreamingStatusMessages(statusMessages);
+                                statusMessages = [];
                             }
 
                             // Intercept @claw commands and handle follow-up chain
@@ -557,6 +564,12 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                 await sendTextChunked(channel, `(Timeout) ${lastText}`);
                             } else {
                                 await channel.send({ text: 'Response timed out.' }).catch(logger.error);
+                            }
+
+                            // Clean up the streaming status card
+                            if (statusMessages.length > 0) {
+                                await deleteStreamingStatusMessages(statusMessages);
+                                statusMessages = [];
                             }
                         } finally {
                             statusRenderer.dispose();
@@ -1012,7 +1025,7 @@ async function startPassiveResponseMonitor(
     );
 
     const monitorConfig = {
-        onProgress: (progressText: string) => {
+        onProgress: () => {
             ensureStatusMsg().then(() => refreshStatusMessage('streaming')).catch(() => { });
         },
 
@@ -1044,11 +1057,17 @@ async function startPassiveResponseMonitor(
                 refreshStatusMessage('complete');
                 await statusRenderer.flush();
 
-                // Deliver final text — send new message without replacing status msg so the process log is preserved
+                // Deliver final text
                 if (statusMessages.length > 0) {
                     await deliverFinalTelegramText(null, channel, finalText);
                 } else {
                     await sendTextChunked(channel, finalText);
+                }
+
+                // Clean up the streaming status card after delivering final text
+                if (statusMessages.length > 0) {
+                    await deleteStreamingStatusMessages(statusMessages);
+                    statusMessages = [];
                 }
 
                 // Handle @claw commands if interceptor is available
@@ -1132,11 +1151,13 @@ async function startPassiveResponseMonitor(
                 statusRenderer.dispose();
             }
         },
-        onPhaseChange: (phase: string, _text: string | null) => {
+        onPhaseChange: (phase: string,) => {
             if (phase === 'thinking') {
                 currentStateIndicator = '🤔 Thinking...';
             } else if (phase === 'generating') {
                 currentStateIndicator = '✍️ Generating...';
+            } else if (phase === 'complete') {
+                currentStateIndicator = '✅ Finished';
             } else if (phase === 'error') {
                 currentStateIndicator = '❌ Error';
                 renderedTimelineHtml = '';
@@ -1170,6 +1191,12 @@ async function startPassiveResponseMonitor(
                 } else {
                     await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(() => { });
                 }
+            }
+
+            // Clean up the streaming status card
+            if (statusMessages.length > 0) {
+                await deleteStreamingStatusMessages(statusMessages);
+                statusMessages = [];
             }
             statusRenderer.dispose();
         },

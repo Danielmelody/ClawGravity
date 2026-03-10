@@ -180,7 +180,7 @@ export class RunCommandDetector {
      * Accept/run the pending terminal command via VS Code command.
      * Uses `antigravity.terminalCommand.run` from the verified SDK.
      */
-    async runButton(_buttonText?: string): Promise<boolean> {
+    async runButton(): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.terminalCommand.run');
             if (result?.ok) {
@@ -198,7 +198,7 @@ export class RunCommandDetector {
      * Reject the pending terminal command via VS Code command.
      * Uses `antigravity.terminalCommand.reject` from the verified SDK.
      */
-    async rejectButton(_buttonText?: string): Promise<boolean> {
+    async rejectButton(): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.terminalCommand.reject');
             if (result?.ok) {

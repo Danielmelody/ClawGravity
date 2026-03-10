@@ -36,17 +36,6 @@ const TAG_ALIASES: Record<string, string> = {
     del: 's',
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function escapeHtmlEntities(text: string): string {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-}
-
 import { decodeHtmlEntities } from '../../utils/htmlEntities';
 
 // ---------------------------------------------------------------------------

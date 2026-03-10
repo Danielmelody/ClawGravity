@@ -141,7 +141,6 @@ export class TrajectoryStreamRouter {
             const cascadeId = await this.cdpService.getActiveCascadeId();
             if (!cascadeId) {
                 this.reconnectFailures = 0;
-                logger.debug(`[StreamRouter:${this.projectName}] No active cascade, retrying in ${IDLE_RETRY_DELAY_MS}ms`);
                 this.scheduleIdleRetry();
                 return;
             }
@@ -231,7 +230,7 @@ export class TrajectoryStreamRouter {
 
     // ─── Stream Event Handlers ──────────────────────────────────────
 
-    private handleStreamData(_evt: CascadeStreamEvent): void {
+    private handleStreamData(): void {
         // The stream fires on every diff. Debounce to avoid hammering
         // the trajectory API when changes arrive in bursts.
         if (this.debounceTimer) {

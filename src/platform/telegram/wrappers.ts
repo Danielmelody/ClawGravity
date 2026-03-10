@@ -339,7 +339,7 @@ export function wrapTelegramChannel(
             try {
                 const sent = await withRetry429(() => api.sendMessage(chatId, text, rest));
                 return wrapTelegramSentMessage(sent, api, chatId);
-            } catch (htmlErr: any) {
+            } catch {
                 // HTML parse error — retry with raw text, no parse_mode
                 const rawText = payload.text || text;
                 const sent = await withRetry429(() => api.sendMessage(chatId, rawText, {}));
@@ -526,7 +526,7 @@ export function wrapTelegramSentMessage(
             try {
                 const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), text, rest));
                 return wrapTelegramSentMessage(edited, api, chatId);
-            } catch (htmlErr: any) {
+            } catch {
                 // HTML parse error — retry with raw text, no parse_mode
                 const rawText = payload.text || text;
                 const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), rawText, {}));

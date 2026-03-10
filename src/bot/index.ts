@@ -4,10 +4,8 @@ import type { LogLevel } from '../utils/logger';
 import { logBuffer } from '../utils/logBuffer';
 import {
     Client, GatewayIntentBits, Events, Message,
-    ChatInputCommandInteraction, Interaction,
-    AttachmentBuilder, ButtonBuilder, ButtonStyle,
-    ActionRowBuilder, EmbedBuilder,
-    StringSelectMenuBuilder, MessageFlags,
+    ChatInputCommandInteraction,
+    AttachmentBuilder, EmbedBuilder, MessageFlags,
 } from 'discord.js';
 import Database from 'better-sqlite3';
 import * as path from 'path';
@@ -17,11 +15,10 @@ import { wrapDiscordChannel } from '../platform/discord/wrappers';
 import type { PlatformType } from '../platform/types';
 import { loadConfig, resolveResponseDeliveryMode } from '../utils/config';
 import type { ExtractionMode } from '../utils/config';
-import { parseMessageContent } from '../commands/messageParser';
 import { SlashCommandHandler } from '../commands/slashCommandHandler';
 import { registerSlashCommands } from '../commands/registerSlashCommands';
 
-import { ModeService, AVAILABLE_MODES, MODE_DISPLAY_NAMES, MODE_DESCRIPTIONS, MODE_UI_NAMES } from '../services/modeService';
+import { ModeService, MODE_DISPLAY_NAMES, MODE_UI_NAMES } from '../services/modeService';
 import { ModelService } from '../services/modelService';
 import { applyDefaultModel } from '../services/defaultModelApplicator';
 import { TemplateRepository } from '../database/templateRepository';
@@ -32,20 +29,14 @@ import type { ScheduleRecord } from '../database/scheduleRepository';
 import { WorkspaceService } from '../services/workspaceService';
 import {
     WorkspaceCommandHandler,
-    PROJECT_SELECT_ID,
-    WORKSPACE_SELECT_ID,
 } from '../commands/workspaceCommandHandler';
 import { ChatCommandHandler } from '../commands/chatCommandHandler';
 import {
     CleanupCommandHandler,
-    CLEANUP_ARCHIVE_BTN,
-    CLEANUP_DELETE_BTN,
-    CLEANUP_CANCEL_BTN,
 } from '../commands/cleanupCommandHandler';
 import { ChannelManager } from '../services/channelManager';
 import { TitleGeneratorService } from '../services/titleGeneratorService';
 import { JoinCommandHandler } from '../commands/joinCommandHandler';
-import { isSessionSelectId } from '../ui/sessionPickerUi';
 
 // CDP integration services
 import { CdpService } from '../services/cdpService';
@@ -58,8 +49,8 @@ import { getAntigravityCdpHint } from '../utils/pathUtils';
 import { AutoAcceptService } from '../services/autoAcceptService';
 import { PromptDispatcher } from '../services/promptDispatcher';
 import { ScheduleService } from '../services/scheduleService';
+import { AntigravityTrajectoryRenderer } from '../services/antigravityTrajectoryRenderer';
 import {
-    buildApprovalCustomId,
     CdpBridge,
     ensureWorkspaceRuntime,
     getCurrentCdp,
@@ -73,18 +64,16 @@ import {
 } from '../services/cdpBridgeManager';
 import { buildModeModelLines, buildSessionLines, fitForSingleEmbedDescription, splitForEmbedDescription } from '../utils/streamMessageFormatter';
 import { formatForDiscord, splitOutputAndLogs } from '../utils/discordFormatter';
+import { htmlToDiscordMarkdown } from '../utils/htmlToDiscordMarkdown';
 import {
-    cleanupInboundImageAttachments,
-    downloadInboundImageAttachments,
     InboundImageAttachment,
-    isImageAttachment,
     toDiscordAttachment,
 } from '../utils/imageHandler';
 import { sendModeUI } from '../ui/modeUi';
 import { sendModelsUI, buildModelsUI } from '../ui/modelsUi';
 import { sendTemplateUI } from '../ui/templateUi';
 import { sendAutoAcceptUI } from '../ui/autoAcceptUi';
-import { sendOutputUI, OUTPUT_BTN_EMBED, OUTPUT_BTN_PLAIN } from '../ui/outputUi';
+import { sendOutputUI } from '../ui/outputUi';
 import { handleScreenshot } from '../ui/screenshotUi';
 import { UserPreferenceRepository, OutputFormat } from '../database/userPreferenceRepository';
 import { formatAsPlainText, splitPlainText } from '../utils/plainTextFormatter';
@@ -138,6 +127,7 @@ const PHASE_ICONS = {
 
 const MAX_OUTBOUND_GENERATED_IMAGES = 4;
 const RESPONSE_DELIVERY_MODE = resolveResponseDeliveryMode();
+const DISCORD_STREAM_RENDER_COALESCE_MS = 75;
 
 /** Tracks channel IDs where /stop was explicitly invoked by the user */
 const userStopRequestedChannels = new Set<string>();
@@ -164,6 +154,83 @@ export function createSerialTaskQueueForTest(queueName: string, traceId: string)
         });
 
         return queue;
+    };
+}
+
+function createCoalescedDiscordRenderScheduler<T>(
+    apply: (payload: T) => Promise<void>,
+): {
+    request: (payload: T, immediate?: boolean) => void;
+    flush: () => Promise<void>;
+    dispose: () => void;
+} {
+    let pendingPayload: T | null = null;
+    let renderTimer: NodeJS.Timeout | null = null;
+    let renderPromise: Promise<void> | null = null;
+    let disposed = false;
+
+    const scheduleFlush = () => {
+        if (disposed || renderTimer) return;
+        renderTimer = setTimeout(() => {
+            renderTimer = null;
+            void flushPending();
+        }, DISCORD_STREAM_RENDER_COALESCE_MS);
+    };
+
+    const flushPending = async (): Promise<void> => {
+        if (disposed || renderPromise) {
+            return renderPromise ?? Promise.resolve();
+        }
+
+        renderPromise = (async () => {
+            while (!disposed && pendingPayload) {
+                const nextPayload = pendingPayload;
+                pendingPayload = null;
+                await apply(nextPayload);
+            }
+        })()
+            .catch(() => { })
+            .finally(() => {
+                renderPromise = null;
+                if (!disposed && pendingPayload) {
+                    scheduleFlush();
+                }
+            });
+
+        return renderPromise;
+    };
+
+    return {
+        request(payload: T, immediate = false): void {
+            if (disposed) return;
+            pendingPayload = payload;
+
+            if (immediate) {
+                if (renderTimer) {
+                    clearTimeout(renderTimer);
+                    renderTimer = null;
+                }
+                void flushPending();
+                return;
+            }
+
+            scheduleFlush();
+        },
+        async flush(): Promise<void> {
+            if (renderTimer) {
+                clearTimeout(renderTimer);
+                renderTimer = null;
+            }
+            await flushPending();
+        },
+        dispose(): void {
+            disposed = true;
+            pendingPayload = null;
+            if (renderTimer) {
+                clearTimeout(renderTimer);
+                renderTimer = null;
+            }
+        },
     };
 }
 
@@ -452,6 +519,7 @@ async function sendPromptToAntigravity(
     let lastLiveActivityKey = '';
     let liveResponseUpdateVersion = 0;
     let liveActivityUpdateVersion = 0;
+    let latestRenderedActivityText = '';
 
     const ACTIVITY_PLACEHOLDER = t('Waiting for rendered timeline...');
 
@@ -616,6 +684,42 @@ async function sendPromptToAntigravity(
         }
     }, `upsert-activity:${opts?.source ?? 'unknown'}`);
 
+    const responseRenderScheduler = createCoalescedDiscordRenderScheduler<{
+        title: string;
+        rawText: string;
+        color: number;
+        footerText: string;
+        opts?: {
+            source?: string;
+            expectedVersion?: number;
+            skipWhenFinalized?: boolean;
+        };
+    }>((payload) => upsertLiveResponseEmbeds(
+        payload.title,
+        payload.rawText,
+        payload.color,
+        payload.footerText,
+        payload.opts,
+    ));
+
+    const activityRenderScheduler = createCoalescedDiscordRenderScheduler<{
+        title: string;
+        rawText: string;
+        color: number;
+        footerText: string;
+        opts?: {
+            source?: string;
+            expectedVersion?: number;
+            skipWhenFinalized?: boolean;
+        };
+    }>((payload) => upsertLiveActivityEmbeds(
+        payload.title,
+        payload.rawText,
+        payload.color,
+        payload.footerText,
+        payload.opts,
+    ));
+
 
     try {
 
@@ -651,6 +755,13 @@ async function sendPromptToAntigravity(
             PHASE_COLORS.thinking,
             t('⏱️ Elapsed: 0s | Process log'),
             { source: 'initial' },
+        );
+        await upsertLiveResponseEmbeds(
+            `${PHASE_ICONS.generating} Live Output`,
+            '',
+            PHASE_COLORS.generating,
+            t('⏱️ Elapsed: 0s | Waiting for output'),
+            { source: 'initial-response' },
         );
 
         const grpcClient = await cdp.getGrpcClient();
@@ -708,8 +819,10 @@ async function sendPromptToAntigravity(
             grpcClient,
             cascadeId,
             maxDurationMs: 300000,
+            expectedUserMessage: prompt,
+            trajectoryRenderer: new AntigravityTrajectoryRenderer(cdp),
 
-            onPhaseChange: (_phase, _text) => {
+            onPhaseChange: () => {
                 // Phase transitions are already logged inside GrpcResponseMonitor.setPhase()
             },
 
@@ -717,11 +830,47 @@ async function sendPromptToAntigravity(
                 if (isFinalized) return;
                 if (text && text.trim().length > 0) {
                     lastProgressText = text;
+                    const elapsed = Math.round((Date.now() - startTime) / 1000);
+                    responseRenderScheduler.request({
+                        title: `${PHASE_ICONS.generating} Live Output`,
+                        rawText: text,
+                        color: PHASE_COLORS.generating,
+                        footerText: t(`⏱️ Elapsed: ${elapsed}s | Streaming latest output`),
+                        opts: {
+                            source: 'progress',
+                            skipWhenFinalized: true,
+                        },
+                    });
                 }
+            },
+
+            onRenderedTimeline: (timeline) => {
+                if (isFinalized || !timeline.content || timeline.content.trim().length === 0) return;
+
+                const activityText = timeline.format === 'html'
+                    ? htmlToDiscordMarkdown(timeline.content)
+                    : timeline.content;
+                const normalized = activityText.trim();
+                if (!normalized || normalized === latestRenderedActivityText) return;
+
+                latestRenderedActivityText = normalized;
+                const elapsed = Math.round((Date.now() - startTime) / 1000);
+                activityRenderScheduler.request({
+                    title: `${PHASE_ICONS.thinking} Process Log`,
+                    rawText: normalized,
+                    color: PHASE_COLORS.thinking,
+                    footerText: t(`⏱️ Elapsed: ${elapsed}s | Process log`),
+                    opts: {
+                        source: 'rendered-timeline',
+                        skipWhenFinalized: true,
+                    },
+                });
             },
 
             onComplete: async (finalText) => {
                 isFinalized = true;
+                responseRenderScheduler.dispose();
+                activityRenderScheduler.dispose();
 
                 try {
                     // If the user explicitly pressed /stop, skip output display entirely
@@ -839,6 +988,8 @@ async function sendPromptToAntigravity(
 
             onTimeout: async (lastText) => {
                 isFinalized = true;
+                responseRenderScheduler.dispose();
+                activityRenderScheduler.dispose();
                 try {
                     const elapsed = Math.round((Date.now() - startTime) / 1000);
                     if (monitor.getPhase() === 'quotaReached') {
@@ -904,7 +1055,7 @@ async function sendPromptToAntigravity(
             const activityVersion = liveActivityUpdateVersion;
             upsertLiveActivityEmbeds(
                 `${PHASE_ICONS.thinking} Process Log`,
-                ACTIVITY_PLACEHOLDER,
+                latestRenderedActivityText || ACTIVITY_PLACEHOLDER,
                 PHASE_COLORS.thinking,
                 t(`⏱️ Elapsed: ${elapsed}s | Process log`),
                 {
@@ -1531,7 +1682,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
                 try {
                     await registerSlashCommands(discordToken, discordClientId, config.guildId);
-                } catch (error) {
+                } catch {
                     logger.warn('Failed to register slash commands, but text commands remain available.');
                 }
 
@@ -2237,10 +2388,6 @@ async function handleSlashInteraction(
 
         case 'status': {
             const activeNames = bridge.pool.getActiveWorkspaceNames();
-            const currentModel = (() => {
-                const cdp = getCurrentCdp(bridge);
-                return cdp ? 'CDP Connected' : 'Disconnected';
-            })();
             const currentMode = modeService.getCurrentMode();
 
             const mirroringWorkspaces = activeNames.filter(

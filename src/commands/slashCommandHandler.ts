@@ -72,7 +72,7 @@ export class SlashCommandHandler {
                     success: true,
                     message: t(`✅ Template **${name}** registered.`),
                 };
-            } catch (e: any) {
+            } catch {
                 return {
                     success: false,
                     message: t(`⚠️ Failed to register template. Name might be duplicated.`),

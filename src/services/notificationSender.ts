@@ -10,7 +10,6 @@ import type {
     ButtonDef,
     ButtonStyle,
     ComponentRow,
-    RichContentField,
     RichContent,
 } from '../platform/types';
 import {

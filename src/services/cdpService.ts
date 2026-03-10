@@ -70,12 +70,6 @@ export interface UiSyncResult {
     error?: string;
 }
 
-/** Antigravity UI DOM selector constants (kept minimal for CDP probe) */
-const SELECTORS = {
-    /** Keyword to identify message injection target context */
-    CONTEXT_URL_KEYWORD: 'cascade-panel',
-};
-
 const RECENT_CASCADE_PROPAGATION_GRACE_MS = 15_000;
 
 export class CdpService extends EventEmitter {
@@ -150,7 +144,7 @@ export class CdpService extends EventEmitter {
             try {
                 const list = await this.getJson(`http://127.0.0.1:${port}/json/list`);
                 allPages.push(...list);
-            } catch (e) {
+            } catch {
                 // Ignore port not found
             }
         }
@@ -854,7 +848,7 @@ export class CdpService extends EventEmitter {
                 resolve();
             };
 
-            const onFailed = (_err: Error) => {
+            const onFailed = () => {
                 cleanup();
                 reject(new Error('WebSocket is not connected'));
             };
@@ -931,7 +925,7 @@ export class CdpService extends EventEmitter {
      * Wait for gRPC client readiness (replaces DOM cascade-panel wait).
      * @returns true if gRPC client is ready
      */
-    async waitForCascadePanelReady(timeoutMs = 10000, _pollIntervalMs = 500): Promise<boolean> {
+    async waitForCascadePanelReady(timeoutMs = 10000,): Promise<boolean> {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
             const client = await this.ensureGrpcClient();
@@ -1224,7 +1218,7 @@ export class CdpService extends EventEmitter {
                 if (typeof port === 'number' && port > 0) {
                     return port;
                 }
-            } catch (err: any) {
+            } catch {
                 // Try next context
             }
         }
@@ -1454,7 +1448,7 @@ export class CdpService extends EventEmitter {
      * NOTE: No gRPC equivalent — image extraction not available in headless mode.
      * @returns Always returns empty array
      */
-    async extractLatestResponseImages(_maxImages: number = 4): Promise<ExtractedResponseImage[]> {
+    async extractLatestResponseImages(): Promise<ExtractedResponseImage[]> {
         logger.debug('[CdpService] extractLatestResponseImages: not available via gRPC, returning []');
         return [];
     }
@@ -1846,7 +1840,7 @@ export class CdpService extends EventEmitter {
             // from another workspace. That causes multiple workspace runtimes to
             // subscribe to the same foreign cascade and creates reconnect storms.
             if (this.currentWorkspacePath) {
-                logger.debug(`[CdpService] No cascades matched workspace "${this.currentWorkspacePath}"`);
+                // No cascades for this workspace — caller will idle-retry silently
                 return null;
             }
 

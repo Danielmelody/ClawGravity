@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger';
 import { CDP_PORTS } from '../utils/cdpPorts';
 import { getAntigravityCliPath, getAntigravityCdpHint } from '../utils/pathUtils';
-import { checkCdpPort, isPortFree, findFreeCdpPort } from '../utils/portUtils';
+import { checkCdpPort, findFreeCdpPort } from '../utils/portUtils';
 import { execFile, spawn } from 'child_process';
 
 /** How long to wait for Antigravity to become responsive after launch (ms) */

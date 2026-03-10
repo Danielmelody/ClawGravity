@@ -112,7 +112,6 @@ export class CleanupCommandHandler {
 
         // Build session list
         const sessionLines = scanResult.inactiveSessions.map((s) => {
-            const name = s.channelName;
             const category = s.categoryName ? `📂 ${s.categoryName}` : '(No category)';
             return `• <#${s.channelId}> — ${category} — Last activity: **${s.daysSinceActivity} days ago**`;
         });
@@ -399,7 +398,6 @@ export class CleanupCommandHandler {
         thresholdDays: number,
     ): Promise<CleanupScanResult> {
         const now = new Date();
-        const thresholdMs = thresholdDays * 24 * 60 * 60 * 1000;
 
         // Fetch all channels
         const allChannels = await guild.channels.fetch();

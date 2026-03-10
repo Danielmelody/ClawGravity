@@ -574,52 +574,6 @@ export class GrpcCascadeClient extends EventEmitter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LS Process Discovery (compliant — same as antigravity-sdk)
-// ---------------------------------------------------------------------------
-
-/**
- * Discover LS connection by inspecting the Language Server process CLI args.
- *
- * Compliant strategy (same as antigravity-sdk):
- *   1. Find the LS process via ps/Get-CimInstance
- *   2. Extract --csrf_token and --extension_server_port from CLI args
- *   3. Find the ConnectRPC port via netstat (exclude extension_server_port)
- *   4. Probe ports to determine TLS vs plaintext
- *
- * NO OAuth tokens are extracted.
- */
-async function discoverLSConnection(workspaceHint?: string): Promise<LSConnection | null> {
-    try {
-        const platform = process.platform;
-
-        // Phase 1: Find LS process and extract CLI args
-        const processInfo = await findLSProcess(platform, workspaceHint);
-        if (!processInfo) {
-            logger.debug('[GrpcDiscovery] No LS process found');
-            return null;
-        }
-
-        logger.debug(`[GrpcDiscovery] LS process: PID=${processInfo.pid}, csrf=present, ext_port=${processInfo.extPort}`);
-
-        // Phase 2: Find ConnectRPC port via netstat
-        const connectPort = await findConnectPort(platform, processInfo.pid, processInfo.extPort);
-        if (!connectPort) {
-            logger.debug('[GrpcDiscovery] Could not find ConnectRPC port');
-            return null;
-        }
-
-        return {
-            port: connectPort.port,
-            csrfToken: processInfo.csrfToken,
-            useTls: connectPort.tls,
-        };
-    } catch (err: any) {
-        logger.debug(`[GrpcDiscovery] Discovery failed: ${err.message}`);
-        return null;
-    }
-}
-
 /**
  * Discover ALL LS connections when multiple Antigravity instances are running.
  *
@@ -707,31 +661,6 @@ async function getLSProcessLines(platform: string): Promise<string[]> {
         return [];
     }
     return output.split('\n').filter(l => l.trim().length > 0);
-}
-
-/**
- * Phase 1: Find the Language Server process and extract CLI args.
- */
-async function findLSProcess(
-    platform: string,
-    workspaceHint?: string,
-): Promise<{ pid: number; csrfToken: string; extPort: number } | null> {
-    const lines = await getLSProcessLines(platform);
-    if (lines.length === 0) return null;
-
-    // Pick the best line (matching workspace if possible)
-    let bestLine: string | null = null;
-    if (workspaceHint) {
-        for (const line of lines) {
-            if (line.toLowerCase().includes(workspaceHint.toLowerCase())) {
-                bestLine = line;
-                break;
-            }
-        }
-    }
-    if (!bestLine) bestLine = lines[0];
-
-    return parseLSProcessLine(platform, bestLine);
 }
 
 /**

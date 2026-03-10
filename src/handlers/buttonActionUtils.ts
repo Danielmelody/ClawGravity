@@ -10,7 +10,7 @@ import type { CdpBridge } from '../services/cdpBridgeManager';
 import { logger } from '../utils/logger';
 
 /** The shape returned by all parse*CustomId helpers. */
-export interface ParsedAction {
+interface ParsedAction {
     action: string;
     projectName?: string | null;
     channelId?: string | null;
@@ -22,7 +22,7 @@ export interface ParsedAction {
  * @param parseFn A function like `parseApprovalCustomId` that extracts
  *                typed action data from a Discord/Telegram custom ID.
  */
-export function buildMatcher(
+function buildMatcher(
     parseFn: (customId: string) => ParsedAction | null,
 ): (customId: string) => Record<string, string> | null {
     return (customId: string) => {
@@ -42,7 +42,7 @@ export function buildMatcher(
  *
  * Returns the detector or null (after replying with an error where needed).
  */
-export async function resolveDetector<T>(
+async function resolveDetector<T>(
     interaction: PlatformButtonInteraction,
     params: Record<string, string>,
     bridge: CdpBridge,

@@ -1,7 +1,7 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
 
 import { CdpService } from '../services/cdpService';
-import type { MessagePayload, ButtonDef, ComponentRow } from '../platform/types';
+import type { MessagePayload, ComponentRow } from '../platform/types';
 import {
     createRichContent,
     withTitle,

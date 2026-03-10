@@ -32,16 +32,16 @@ marked.use({
         em({ text }) { return `<i>${text}</i>`; },
         del({ text }) { return `<s>${text}</s>`; },
         codespan({ text }) { return `<code>${escapeHtml(text)}</code>`; },
-        code({ text, lang }) {
+        code({ text, }) {
             return `<pre><code>${escapeHtml(text)}</code></pre>\n`;
         },
-        link({ href, title, text }) { return `<a href="${href}">${text}</a>`; },
-        heading({ text, depth }) { return `<b>${text}</b>\n\n`; },
+        link({ href, text }) { return `<a href="${href}">${text}</a>`; },
+        heading({ text, }) { return `<b>${text}</b>\n\n`; },
         blockquote({ text }) { return `<blockquote>${text}</blockquote>\n`; },
-        list({ items, ordered, start }) {
+        list({ items, }) {
             return items ? items.map((i: any) => i.text ? `• ${i.text}\n` : "").join("") : "\n";
         },
-        listitem({ text, task, checked }) {
+        listitem({ text, }) {
             return `• ${text}\n`;
         },
         br() { return '\n'; },

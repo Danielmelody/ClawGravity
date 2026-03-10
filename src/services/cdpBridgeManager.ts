@@ -223,14 +223,6 @@ const ERROR_POPUP_PREFIX_MAP = {
     retry: ERROR_POPUP_RETRY_ACTION_PREFIX,
 } as const;
 
-function buildErrorPopupCustomId(
-    action: 'dismiss' | 'copy_debug' | 'retry',
-    projectName: string,
-    channelId?: string,
-): string {
-    return buildCustomId(ERROR_POPUP_PREFIX_MAP, action, projectName, channelId);
-}
-
 export function parseErrorPopupCustomId(customId: string): ParsedCustomId<'dismiss' | 'copy_debug' | 'retry'> | null {
     return parseCustomId(ERROR_POPUP_PREFIX_MAP, customId);
 }

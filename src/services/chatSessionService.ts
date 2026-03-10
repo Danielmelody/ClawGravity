@@ -158,7 +158,7 @@ export class ChatSessionService {
                 return { title: item.summary || '(Untitled)', hasActiveChat: true, cascadeId: activeId };
             }
             return { title: '(Untitled)', hasActiveChat: true, cascadeId: activeId };
-        } catch (error) {
+        } catch {
             return { title: '(Failed to retrieve)', hasActiveChat: false };
         }
     }

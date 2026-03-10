@@ -8,7 +8,6 @@ export const UPDATE_CHECK_FILE = 'update-check.json';
 export const COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const REGISTRY_URL = 'https://registry.npmjs.org/claw-gravity/latest';
-const REQUEST_TIMEOUT_MS = 5000;
 
 interface UpdateCheckCache {
     lastCheck: number;

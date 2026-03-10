@@ -98,7 +98,7 @@ export class ScheduleService {
      * Stop all running cron jobs (called on bot shutdown)
      */
     public stopAll(): void {
-        for (const [id, task] of this.activeTasks) {
+        for (const [ task] of this.activeTasks) {
             task.stop();
         }
         this.activeTasks.clear();

@@ -148,7 +148,7 @@ export class QuotaService {
                             return { label, model, quotaInfo };
                         });
                         resolve({ clientModelConfigs: configs });
-                    } catch (e) {
+                    } catch {
                         reject(new Error('Invalid JSON response'));
                     }
                 });
@@ -191,7 +191,7 @@ export class QuotaService {
                     targetPort = port;
                     this.cachedPort = port;
                     return data.clientModelConfigs || [];
-                } catch (e) {
+                } catch {
                     continue; // try next port
                 }
             }
@@ -199,7 +199,7 @@ export class QuotaService {
             try {
                 const data = await this.requestApi(targetPort, csrf_token);
                 return data.clientModelConfigs || [];
-            } catch (e) {
+            } catch {
                 // cache might be invalid
                 this.cachedPort = null;
                 return this.fetchQuota();

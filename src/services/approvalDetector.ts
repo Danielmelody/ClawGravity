@@ -165,7 +165,7 @@ export class ApprovalDetector {
      * Approve the current agent step via VS Code command.
      * Uses `antigravity.agent.acceptAgentStep` from the verified SDK.
      */
-    async approveButton(_buttonText?: string): Promise<boolean> {
+    async approveButton(): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.agent.acceptAgentStep');
             if (result?.ok) {
@@ -192,7 +192,7 @@ export class ApprovalDetector {
      * Reject the current agent step via VS Code command.
      * Uses `antigravity.agent.rejectAgentStep` from the verified SDK.
      */
-    async denyButton(_buttonText?: string): Promise<boolean> {
+    async denyButton(): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.agent.rejectAgentStep');
             if (result?.ok) {
