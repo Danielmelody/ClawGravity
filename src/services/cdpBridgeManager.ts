@@ -59,7 +59,7 @@ function buildSessionRouteKey(projectName: string, sessionTitle: string): string
 
 export async function getCurrentChatTitle(cdp: CdpService): Promise<string | null> {
     try {
-        const client = await cdp.getGrpcClient();
+        const client = await cdp.getLSClient();
         if (!client) return null;
 
         const summaries = await client.listCascades();
@@ -271,7 +271,7 @@ export function initCdpBridge(autoApproveDefault: boolean): CdpBridge {
     quota.setRPCResolver(async () => {
         const cdp = getCurrentCdp(bridge);
         if (!cdp) return null;
-        const client = await cdp.getGrpcClient();
+        const client = await cdp.getLSClient();
         return client ? (method: string, payload: any) => client.rawRPC(method, payload) : null;
     });
 
@@ -599,7 +599,7 @@ function ensureUserMessageDetector(
 
 /**
  * Ensure a TrajectoryStreamRouter is running for the workspace.
- * The router subscribes to the gRPC reactive stream and dispatches
+ * The router subscribes to the LS API reactive stream and dispatches
  * trajectory updates to all registered passive detectors.
  *
  * Call this AFTER all detectors have been created and registered.
@@ -647,7 +647,7 @@ export interface EnsureWorkspaceRuntimeOptions {
 /**
  * Ensure the workspace runtime is connected and that its passive services are
  * initialized in a serialized order. This prevents message-send paths from
- * racing stream-router / gRPC startup for the same workspace.
+ * racing stream-router / LS client startup for the same workspace.
  */
 export async function ensureWorkspaceRuntime(
     bridge: CdpBridge,
@@ -678,7 +678,7 @@ export async function ensureWorkspaceRuntime(
         }
 
         if (options.enableActionDetectors || runtime.hasUserMessageSinks()) {
-            await runtimeCdp.getGrpcClient();
+            await runtimeCdp.getLSClient();
             ensureStreamRouter(bridge, runtimeCdp, projectName);
         }
         return runtimeCdp;

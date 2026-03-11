@@ -32,7 +32,7 @@ describe('CdpService model selection', () => {
         };
 
         primeUiModel(service, 'Claude Opus 4.6 (Thinking)');
-        jest.spyOn(service as any, 'ensureGrpcClient').mockResolvedValue(mockClient);
+        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
         service.setCachedCascadeId('cascade-123');
 
         await expect(service.injectMessage('hello')).resolves.toMatchObject({
@@ -62,7 +62,7 @@ describe('CdpService model selection', () => {
         };
 
         primeUiModel(service, 'Claude Opus 4.6 (Thinking)');
-        jest.spyOn(service as any, 'ensureGrpcClient').mockResolvedValue(mockClient);
+        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
         service.setCachedCascadeId('cascade-456');
 
         await expect(service.injectMessage('hello again')).resolves.toMatchObject({
@@ -92,7 +92,7 @@ describe('CdpService model selection', () => {
         };
 
         primeUiModel(service, 'Claude Opus 4.6 (Thinking)');
-        jest.spyOn(service as any, 'ensureGrpcClient').mockResolvedValue(mockClient);
+        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
         service.setCachedCascadeId('cascade-789');
 
         await expect(service.injectMessage('hello string model')).resolves.toMatchObject({

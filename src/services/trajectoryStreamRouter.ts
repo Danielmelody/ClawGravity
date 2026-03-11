@@ -151,7 +151,7 @@ export class TrajectoryStreamRouter {
         this.isFetching = true;
 
         try {
-            const client = await this.cdpService.getGrpcClient();
+            const client = await this.cdpService.getLSClient();
             if (!client) return;
 
             const cascadeId = this.currentCascadeId

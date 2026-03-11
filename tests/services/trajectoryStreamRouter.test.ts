@@ -28,7 +28,7 @@ describe('TrajectoryStreamRouter', () => {
     it('start() does not poll or log when no cascade exists', async () => {
         const client = new FakeGrpcClient();
         const cdpService = {
-            getGrpcClient: jest.fn().mockResolvedValue(client),
+            getLSClient: jest.fn().mockResolvedValue(client),
             getActiveCascadeId: jest.fn().mockResolvedValue(null),
         };
 
@@ -42,7 +42,7 @@ describe('TrajectoryStreamRouter', () => {
         // start() is synchronous and does NOT call connectStream
         expect(router.isActive()).toBe(true);
         expect(cdpService.getActiveCascadeId).not.toHaveBeenCalled();
-        expect(cdpService.getGrpcClient).not.toHaveBeenCalled();
+        expect(cdpService.getLSClient).not.toHaveBeenCalled();
 
         // Wait plenty of time — nothing should happen
         await jest.advanceTimersByTimeAsync(30000);
@@ -57,7 +57,7 @@ describe('TrajectoryStreamRouter', () => {
     it('connectToCascade() activates polling for a specific cascade', async () => {
         const client = new FakeGrpcClient();
         const cdpService = {
-            getGrpcClient: jest.fn().mockResolvedValue(client),
+            getLSClient: jest.fn().mockResolvedValue(client),
             getActiveCascadeId: jest.fn().mockResolvedValue(null),
         };
 
@@ -86,7 +86,7 @@ describe('TrajectoryStreamRouter', () => {
     it('connectToCascade() is a no-op if already polling the same cascade', async () => {
         const client = new FakeGrpcClient();
         const cdpService = {
-            getGrpcClient: jest.fn().mockResolvedValue(client),
+            getLSClient: jest.fn().mockResolvedValue(client),
             getActiveCascadeId: jest.fn().mockResolvedValue(null),
         };
 

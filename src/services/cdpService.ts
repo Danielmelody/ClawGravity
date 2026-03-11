@@ -79,13 +79,13 @@ export class CdpService extends EventEmitter {
     private contexts: CdpContext[] = [];
     private pendingCalls = new Map<number, { resolve: (value: any) => void, reject: (reason?: any) => void, timeoutId: NodeJS.Timeout }>();
 
-    /** Lazy-initialized gRPC client for direct API communication */
-    private grpcClient: GrpcCascadeClient | null = null;
-    private grpcInitPromise: Promise<GrpcCascadeClient | null> | null = null;
-    private lastGrpcUnavailableReason: string | null = null;
+    /** Lazy-initialized LS client for direct API communication (CDP-proxied) */
+    private lsClient: GrpcCascadeClient | null = null;
+    private lsClientInitPromise: Promise<GrpcCascadeClient | null> | null = null;
+    private lastLSUnavailableReason: string | null = null;
     /** LS credentials sniffed from CDP Network events */
     private sniffedLSCredentials: LSConnection | null = null;
-    /** Cached cascade ID for gRPC calls */
+    /** Cached cascade ID for LS API calls */
     private cachedCascadeId: string | null = null;
     /** Newly created cascade ID awaiting visibility in listCascades() */
     private recentCreatedCascadeId: string | null = null;
@@ -275,9 +275,9 @@ export class CdpService extends EventEmitter {
                     useTls: url.startsWith('https'),
                 };
                 logger.info(`[CdpService] Sniffed LS credentials: port=${this.sniffedLSCredentials.port}`);
-                // Re-init gRPC client with the new credentials
-                this.grpcClient = null;
-                this.grpcInitPromise = null;
+                // Re-init LS client with the new credentials
+                this.lsClient = null;
+                this.lsClientInitPromise = null;
             }
         });
     }
@@ -334,9 +334,9 @@ export class CdpService extends EventEmitter {
         this.currentWorkspacePath = null;
         this.currentWorkspaceName = null;
         this.targetFrameId = null;
-        // Reset gRPC state so next connection re-probes auth
-        this.grpcClient = null;
-        this.grpcInitPromise = null;
+        // Reset LS client state so next connection re-probes auth
+        this.lsClient = null;
+        this.lsClientInitPromise = null;
         this.sniffedLSCredentials = null;
         this.cachedCascadeId = null;
         this.recentCreatedCascadeId = null;
@@ -518,11 +518,11 @@ export class CdpService extends EventEmitter {
 
         this.disconnectQuietly();
 
-        // Reset gRPC + sniffed state so ensureGrpcClient() re-discovers the correct LS
-        // for the NEW workspace page. Without this, the old gRPC client
+        // Reset LS client + sniffed state so ensureLSClient() re-discovers the correct LS
+        // for the NEW workspace page. Without this, the old LS client
         // continues pointing to the previous workspace's LS process (cross-talk bug).
-        this.grpcClient = null;
-        this.grpcInitPromise = null;
+        this.lsClient = null;
+        this.lsClientInitPromise = null;
         this.sniffedLSCredentials = null;
         this.cachedCascadeId = null;
         this.recentCreatedCascadeId = null;
@@ -947,13 +947,13 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Wait for gRPC client readiness (replaces DOM cascade-panel wait).
-     * @returns true if gRPC client is ready
+     * Wait for LS client readiness (replaces DOM cascade-panel wait).
+     * @returns true if LS client is ready
      */
     async waitForCascadePanelReady(timeoutMs = 10000,): Promise<boolean> {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
-            const client = await this.ensureGrpcClient();
+            const client = await this.ensureLSClient();
             if (client?.isReady()) return true;
             await new Promise(r => setTimeout(r, 500));
         }
@@ -987,7 +987,7 @@ export class CdpService extends EventEmitter {
     }
 
     // DOM methods removed: focusChatInput, clearInputField, pressEnterToSend
-    // All injection now goes through gRPC.
+    // All injection now goes through the LS client (CDP-proxied).
 
     /**
      * Detect file input in the UI and attach the specified files.
@@ -1109,23 +1109,23 @@ export class CdpService extends EventEmitter {
         return { ok: true };
     }
 
-    // injectViaLexicalApi removed — all injection now goes through gRPC.
+    // injectViaLexicalApi removed — all injection now goes through the LS client.
 
     /**
-     * Lazy-initialize the gRPC client by discovering the LS process.
+     * Lazy-initialize the LS client by discovering credentials.
      * Uses the passive CDP Network sniffing mechanism (listening for x-codeium-csrf-token).
      */
-    private async ensureGrpcClient(): Promise<GrpcCascadeClient | null> {
-        if (this.grpcClient?.isReady()) {
-            this.lastGrpcUnavailableReason = null;
-            return this.grpcClient;
+    private async ensureLSClient(): Promise<GrpcCascadeClient | null> {
+        if (this.lsClient?.isReady()) {
+            this.lastLSUnavailableReason = null;
+            return this.lsClient;
         }
 
-        if (this.grpcInitPromise) {
-            return this.grpcInitPromise;
+        if (this.lsClientInitPromise) {
+            return this.lsClientInitPromise;
         }
 
-        this.grpcInitPromise = (async () => {
+        this.lsClientInitPromise = (async () => {
             try {
                 if (!this.sniffedLSCredentials) {
                     // Try to trigger an LS request if we haven't sniffed one naturally
@@ -1133,14 +1133,14 @@ export class CdpService extends EventEmitter {
                 }
 
                 if (!this.sniffedLSCredentials) {
-                    this.lastGrpcUnavailableReason = 'gRPC unavailable: No LS credentials sniffed from CDP.';
-                    logger.debug(`[CdpService] ${this.lastGrpcUnavailableReason}`);
+                    this.lastLSUnavailableReason = 'LS client unavailable: No LS credentials sniffed from CDP.';
+                    logger.debug(`[CdpService] ${this.lastLSUnavailableReason}`);
                     return null;
                 }
 
-                this.grpcClient = new GrpcCascadeClient();
-                // Inject the CDP evaluation callback so GrpcCascadeClient can run fetch() inside the renderer
-                this.grpcClient.setCdpEvaluate(async (expression: string) => {
+                this.lsClient = new GrpcCascadeClient();
+                // Inject the CDP evaluation callback so the LS client can run fetch() inside the renderer
+                this.lsClient.setCdpEvaluate(async (expression: string) => {
                     return this.call('Runtime.evaluate', {
                         expression,
                         returnByValue: true,
@@ -1148,21 +1148,21 @@ export class CdpService extends EventEmitter {
                         timeout: 10000,
                     });
                 });
-                this.grpcClient.setConnection(this.sniffedLSCredentials);
+                this.lsClient.setConnection(this.sniffedLSCredentials);
                 
-                this.lastGrpcUnavailableReason = null;
-                logger.info(`[CdpService] gRPC client initialized: port=${this.sniffedLSCredentials.port}, tls=${this.sniffedLSCredentials.useTls}`);
-                return this.grpcClient;
+                this.lastLSUnavailableReason = null;
+                logger.info(`[CdpService] LS client initialized: port=${this.sniffedLSCredentials.port}, tls=${this.sniffedLSCredentials.useTls}`);
+                return this.lsClient;
             } catch (err: any) {
-                this.lastGrpcUnavailableReason = `gRPC unavailable: ${err?.message || String(err)}`;
-                logger.error(`[CdpService] gRPC init failed: ${this.lastGrpcUnavailableReason}`);
+                this.lastLSUnavailableReason = `LS client unavailable: ${err?.message || String(err)}`;
+                logger.error(`[CdpService] LS client init failed: ${this.lastLSUnavailableReason}`);
                 return null;
             } finally {
-                this.grpcInitPromise = null;
+                this.lsClientInitPromise = null;
             }
         })();
 
-        return this.grpcInitPromise;
+        return this.lsClientInitPromise;
     }
 
     /**
@@ -1245,24 +1245,31 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Get the active gRPC client if available.
+     * Get the active LS client if available.
      * Attempts discovery if not already attempted.
      */
-    async getGrpcClient(): Promise<GrpcCascadeClient | null> {
-        return this.ensureGrpcClient();
+    async getLSClient(): Promise<GrpcCascadeClient | null> {
+        return this.ensureLSClient();
     }
 
     /**
-     * Try to inject a message via the gRPC direct API.
+     * @deprecated Use getLSClient() instead. Kept for backward compatibility.
+     */
+    async getGrpcClient(): Promise<GrpcCascadeClient | null> {
+        return this.getLSClient();
+    }
+
+    /**
+     * Try to inject a message via the LS direct API.
      * Bypasses the entire DOM — sends directly to the LanguageServer.
      * Uses only CSRF token (no OAuth tokens).
      *
-     * @returns InjectResult with method='grpc' on success, or null if unavailable
+     * @returns InjectResult with method='ls-api' on success, or null if unavailable
      */
-    private async injectViaGrpc(text: string, overrideCascadeId?: string): Promise<InjectResult | null> {
-        const client = await this.ensureGrpcClient();
+    private async injectViaLS(text: string, overrideCascadeId?: string): Promise<InjectResult | null> {
+        const client = await this.ensureLSClient();
         if (!client) {
-            return { ok: false, error: this.lastGrpcUnavailableReason || 'gRPC injection failed' };
+            return { ok: false, error: this.lastLSUnavailableReason || 'LS client unavailable' };
         }
 
         // If we have an explicit cascade ID (e.g. from a previous createCascade), try to reuse it
@@ -1271,11 +1278,11 @@ export class CdpService extends EventEmitter {
 
         if (cascadeId) {
             // Send to existing cascade
-            logger.warn(`[CdpService] injectViaGrpc: sending to existing cascade=${cascadeId.slice(0, 16)}... model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
+            logger.warn(`[CdpService] injectViaLS: sending to existing cascade=${cascadeId.slice(0, 16)}... model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
             const result = await client.sendMessage(cascadeId, text, modelId || undefined);
             if (result.ok) {
                 logger.warn(`[CdpService] sendMessage OK, response: ${JSON.stringify(result.data)?.slice(0, 200)}`);
-                return { ok: true, method: 'grpc', cascadeId };
+                return { ok: true, method: 'ls-api', cascadeId };
             }
             // If existing cascade failed, fall through to create a new one
             logger.warn(`[CdpService] sendMessage to existing cascade failed: ${result.error}, creating new cascade`);
@@ -1287,38 +1294,38 @@ export class CdpService extends EventEmitter {
         }
 
         // Create a new Antigravity cascade and send the message
-        logger.warn(`[CdpService] injectViaGrpc: creating new cascade with model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
+        logger.warn(`[CdpService] injectViaLS: creating new cascade with model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
         const newCascadeId = await client.createCascade(text, modelId || undefined);
         if (newCascadeId) {
             this.rememberCreatedCascade(newCascadeId);
             logger.warn(`[CdpService] New cascade created: ${newCascadeId.slice(0, 16)}...`);
-            return { ok: true, method: 'grpc', cascadeId: newCascadeId };
+            return { ok: true, method: 'ls-api', cascadeId: newCascadeId };
         }
 
-        const lastGrpcError = client.getLastOperationError?.() || null;
-        logger.error(`[CdpService] createCascade returned null — cannot inject${lastGrpcError ? `: ${lastGrpcError}` : ''}`);
-        return { ok: false, error: lastGrpcError || 'gRPC injection failed' };
+        const lastLSError = client.getLastOperationError?.() || null;
+        logger.error(`[CdpService] createCascade returned null — cannot inject${lastLSError ? `: ${lastLSError}` : ''}`);
+        return { ok: false, error: lastLSError || 'LS client injection failed' };
     }
 
     /**
      * Inject and send the specified text into Antigravity.
      *
-     * Strategy: gRPC direct API only — zero DOM dependency.
+     * Strategy: LS direct API only — zero DOM dependency.
      */
     async injectMessage(text: string, overrideCascadeId?: string): Promise<InjectResult> {
-        // gRPC direct API (no DOM dependency at all)
-        const grpcResult = await this.injectViaGrpc(text, overrideCascadeId);
-        if (grpcResult) {
-            return grpcResult;
+        // LS direct API (no DOM dependency at all)
+        const lsResult = await this.injectViaLS(text, overrideCascadeId);
+        if (lsResult) {
+            return lsResult;
         }
 
-        return { ok: false, error: 'gRPC injection failed' };
+        return { ok: false, error: 'LS client injection failed' };
     }
 
     /**
      * Inject a message with image files.
      *
-     * Strategy: attach images via CDP DOM file input, then send text via gRPC.
+     * Strategy: attach images via CDP DOM file input, then send text via LS API.
      * If CDP is not connected or image attachment fails, falls back to text-only.
      */
     async injectMessageWithImageFiles(text: string, imageFilePaths: string[], overrideCascadeId?: string): Promise<InjectResult> {
@@ -1336,21 +1343,21 @@ export class CdpService extends EventEmitter {
                 logger.warn(`[CdpService] Image attachment error: ${err?.message || err}. Sending text-only.`);
             }
         }
-        // Send text via gRPC (images are already in the chat input from CDP attachment)
+        // Send text via LS API (images are already in the chat input from CDP attachment)
         return this.injectMessage(text, overrideCascadeId);
     }
 
     /**
      * Extract images from the latest AI response.
-     * NOTE: No gRPC equivalent — image extraction not available in headless mode.
+     * NOTE: No LS API equivalent — image extraction not available in headless mode.
      * @returns Always returns empty array
      */
     async extractLatestResponseImages(): Promise<ExtractedResponseImage[]> {
-        logger.debug('[CdpService] extractLatestResponseImages: not available via gRPC, returning []');
+        logger.debug('[CdpService] extractLatestResponseImages: not available via LS API, returning []');
         return [];
     }
 
-    // ─── Mode / Model (gRPC-based, no DOM) ─────────────────────────────
+    // ─── Mode / Model (LS API-based, no DOM) ─────────────────────────────
 
     /** Cached mode name: 'fast' (conversational) or 'plan' (normal) */
     private cachedModeName: string = 'fast';
@@ -1386,12 +1393,12 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Retrieve available models from gRPC GetUserStatus.
+     * Retrieve available models from LS API GetUserStatus.
      * Uses cascadeModelConfigData.clientModelConfigs from the LS API.
      */
     async getUiModels(): Promise<string[]> {
         try {
-            const client = await this.ensureGrpcClient();
+            const client = await this.ensureLSClient();
             if (!client) return [];
 
             const status = await client.getUserStatus();
@@ -1407,7 +1414,7 @@ export class CdpService extends EventEmitter {
             });
             return this.cachedModelConfigs.map(c => c.label);
         } catch (err: any) {
-            logger.error('[CdpService] getUiModels via gRPC failed:', err.message);
+            logger.error('[CdpService] getUiModels via LS API failed:', err.message);
             return [];
         }
     }
@@ -1420,7 +1427,7 @@ export class CdpService extends EventEmitter {
      *   2. Read from Antigravity UI DOM (the model selector button)
      *   3. null if both fail
      *
-     * Also refreshes the cached model config list from gRPC as a side effect.
+     * Also refreshes the cached model config list from LS API as a side effect.
      */
     async getCurrentModel(): Promise<string | null> {
         // 1. If the bot explicitly set a model (via /model command), return it
@@ -1449,7 +1456,7 @@ export class CdpService extends EventEmitter {
             return this.cachedModelLabel;
         }
 
-        // 3. Refresh model configs from gRPC (side effect for /model command)
+        // 3. Refresh model configs from LS API (side effect for /model command)
         await this.refreshModelConfigs();
 
         return this.cachedModelLabel;
@@ -1497,13 +1504,13 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Refresh the cached model config list from gRPC GetUserStatus.
+     * Refresh the cached model config list from LS API GetUserStatus.
      * Does NOT set cachedModelLabel — only populates cachedModelConfigs
      * for use by setUiModel/getSelectedModelId.
      */
     private async refreshModelConfigs(): Promise<void> {
         try {
-            const client = await this.ensureGrpcClient();
+            const client = await this.ensureLSClient();
             if (!client) return;
 
             const status = await client.getUserStatus();
@@ -1680,7 +1687,7 @@ export class CdpService extends EventEmitter {
         return { ok: false, error: 'Command execution failed in all contexts' };
     }
 
-    // ─── Session Info (gRPC-based) ───────────────────────────────────
+    // ─── Session Info (LS API-based) ───────────────────────────────────
 
     /**
      * Get information about the currently active session.
@@ -1688,7 +1695,7 @@ export class CdpService extends EventEmitter {
      */
     async getActiveSessionInfo(): Promise<{ id: string, title: string, summary: string } | null> {
         try {
-            const client = await this.ensureGrpcClient();
+            const client = await this.ensureLSClient();
             if (!client) return null;
 
             const summaries = await client.listCascades();
@@ -1761,14 +1768,14 @@ export class CdpService extends EventEmitter {
                 return toSessionInfo(firstId, summaries[firstId]);
             }
         } catch (err: any) {
-            logger.debug(`[CdpService] getActiveSessionInfo via gRPC failed: ${err.message}`);
+            logger.debug(`[CdpService] getActiveSessionInfo via LS API failed: ${err.message}`);
         }
         return null;
     }
 
     /**
      * Get the currently active cascade (conversation) ID.
-     * Uses gRPC GetAllCascadeTrajectories to find the most recent cascade.
+     * Uses LS API GetAllCascadeTrajectories to find the most recent cascade.
      *
      * @returns The active cascade ID string, or null if not found
      */
@@ -1801,10 +1808,10 @@ export class CdpService extends EventEmitter {
      *
      * Steps:
      *   1. Cancel any active cascade (stop running generation)
-     *   2. Tear down gRPC client (force re-discovery on next use)
+     *   2. Tear down LS client (force re-discovery on next use)
      *   3. Clear cached cascade ID and model configs
      *   4. Reconnect CDP (refresh browser connection)
-     *   5. Re-discover the LS process and establish a new gRPC client
+     *   5. Re-discover the LS process and establish a new LS client
      *
      * @returns Result object with success status and details
      */
@@ -1813,9 +1820,9 @@ export class CdpService extends EventEmitter {
 
         try {
             // Step 1: Cancel active cascade (if one is running)
-            if (this.cachedCascadeId && this.grpcClient?.isReady()) {
+            if (this.cachedCascadeId && this.lsClient?.isReady()) {
                 try {
-                    await this.grpcClient.cancelCascade(this.cachedCascadeId);
+                    await this.lsClient.cancelCascade(this.cachedCascadeId);
                     steps.push(`Cancelled cascade ${this.cachedCascadeId.slice(0, 12)}...`);
                 } catch (err: any) {
                     // Not fatal — cascade may have already ended
@@ -1825,11 +1832,11 @@ export class CdpService extends EventEmitter {
                 steps.push('No active cascade to cancel');
             }
 
-            // Step 2: Tear down gRPC client
-            this.grpcClient = null;
-            this.grpcInitPromise = null;
+            // Step 2: Tear down LS client
+            this.lsClient = null;
+            this.lsClientInitPromise = null;
             this.sniffedLSCredentials = null;
-            steps.push('gRPC client reset');
+            steps.push('LS client reset');
 
             // Step 3: Clear cached state
             this.cachedCascadeId = null;
@@ -1848,22 +1855,22 @@ export class CdpService extends EventEmitter {
                     steps.push(`CDP reconnected to "${projectName}"`);
                 } catch (err: any) {
                     steps.push(`CDP reconnect warning: ${err?.message || 'failed'}`);
-                    // Not fatal — gRPC-only mode can still work
+                    // Not fatal — LS client can still work if CDP reconnects on next call
                 }
             } else {
                 steps.push('CDP: no workspace path cached (skipped reconnect)');
             }
 
-            // Step 5: Re-discover gRPC client
+            // Step 5: Re-discover LS client
             try {
-                const client = await this.ensureGrpcClient();
+                const client = await this.ensureLSClient();
                 if (client?.isReady()) {
-                    steps.push('gRPC client re-established');
+                    steps.push('LS client re-established');
                 } else {
-                    steps.push('gRPC client discovery returned null (will retry on next message)');
+                    steps.push('LS client discovery returned null (will retry on next message)');
                 }
             } catch (err: any) {
-                steps.push(`gRPC re-discovery warning: ${err?.message || 'failed'}`);
+                steps.push(`LS re-discovery warning: ${err?.message || 'failed'}`);
             }
 
             logger.info(`[CdpService] Gateway restart completed: ${steps.length} steps`);

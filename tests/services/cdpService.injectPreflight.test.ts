@@ -5,18 +5,18 @@ describe('CdpService injection preflight', () => {
         jest.restoreAllMocks();
     });
 
-    it('surfaces the last gRPC initialization error instead of the generic injection failure', async () => {
+    it('surfaces the last LS initialization error instead of the generic injection failure', async () => {
         const service = new CdpService({ maxReconnectAttempts: 0 });
 
-        (service as any).lastGrpcUnavailableReason =
-            'gRPC unavailable: could not match workspace "antigravity-tunnel" to a Language Server process.';
-        jest.spyOn(service as any, 'ensureGrpcClient').mockResolvedValue(null);
+        (service as any).lastLSUnavailableReason =
+            'LS client unavailable: could not match workspace "antigravity-tunnel" to a Language Server process.';
+        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(null);
 
         const result = await service.injectMessage('hi');
 
         expect(result).toMatchObject({
             ok: false,
-            error: 'gRPC unavailable: could not match workspace "antigravity-tunnel" to a Language Server process.',
+            error: 'LS client unavailable: could not match workspace "antigravity-tunnel" to a Language Server process.',
         });
     });
 
@@ -35,7 +35,7 @@ describe('CdpService injection preflight', () => {
             getUserStatus: jest.fn().mockResolvedValue({}),
         };
 
-        jest.spyOn(service as any, 'ensureGrpcClient').mockResolvedValue(mockClient);
+        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
         jest.spyOn(service, 'getActiveCascadeId').mockResolvedValue(null);
         jest.spyOn(service as any, 'resolveSelectedModelId').mockResolvedValue(null);
 

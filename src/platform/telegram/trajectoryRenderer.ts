@@ -1,5 +1,5 @@
 /**
- * Trajectory Renderer — converts raw Markdown (from gRPC trajectory) into
+ * Trajectory Renderer — converts raw Markdown (from LS API trajectory) into
  * Telegram-safe HTML through a unified marked → sanitize pipeline.
  *
  * This module is a PURE FUNCTION with zero side effects — safe for concurrent

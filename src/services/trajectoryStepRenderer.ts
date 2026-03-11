@@ -204,7 +204,7 @@ function renderToolCalls(toolCalls: any[], showArgs: boolean, showResults: boole
         const statusIcon = status === 'pending' ? '⏳' : status === 'error' ? '❌' : '✅';
         const summary = buildCompactToolSummary(tc);
 
-        let line = statusIcon;
+        let line = `${statusIcon}${summary.icon}`;
         if (showArgs && summary.subject) {
             line += ` <b>${escapeHtml(summary.label)}</b> <code>${escapeHtml(summary.subject)}</code>`;
         } else {
@@ -244,6 +244,8 @@ function resolveToolStatus(tc: any): 'pending' | 'success' | 'error' {
 // ---------------------------------------------------------------------------
 
 interface CompactToolSummary {
+    /** Emoji icon for the tool category (e.g. 🔍, 📄, ✏️, ▶️) */
+    icon: string;
     /** Human-readable action label (e.g. "Searched", "Analyzed", "Ran command") */
     label: string;
     /** Key subject (e.g. query text, filename) */
@@ -432,20 +434,20 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
             const scope = args?.SearchPath && !args.SearchPath.endsWith('/')
                 ? ` in ${fileBasename(args.SearchPath)}`
                 : '';
-            return { label: 'Searched', subject: query + scope, resultBrief: extractResultCount(result) };
+            return { icon: '🔍', label: 'Searched', subject: query + scope, resultBrief: extractResultCount(result) };
         }
         case 'find_by_name':
         case 'findbyname': {
             const pattern = args?.Pattern || '';
             const dir = args?.SearchDirectory ? ` in ${fileBasename(args.SearchDirectory)}` : '';
-            return { label: 'Searched', subject: pattern + dir, resultBrief: extractResultCount(result) };
+            return { icon: '🔍', label: 'Searched', subject: pattern + dir, resultBrief: extractResultCount(result) };
         }
         case 'codebase_search':
         case 'codebasesearch':
-            return { label: 'Searched', subject: args?.query || args?.Query || '', resultBrief: extractResultCount(result) };
+            return { icon: '🔍', label: 'Searched', subject: args?.query || args?.Query || '', resultBrief: extractResultCount(result) };
         case 'search_web':
         case 'searchweb':
-            return { label: 'Web searched', subject: args?.query || '', resultBrief: '' };
+            return { icon: '🌐', label: 'Web searched', subject: args?.query || '', resultBrief: '' };
 
         // ── File viewing tools ──────────────────────────────────────────
         case 'view_file':
@@ -457,6 +459,7 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
             // Extract total lines from result if available
             const linesBrief = extractBriefStatus(result, [/Total Lines:\s*(\d+)/i]);
             return {
+                icon: '📄',
                 label: 'Analyzed',
                 subject: `${fileBasename(fp)} ${range}`.trim(),
                 resultBrief: linesBrief ? `${linesBrief} lines` : '',
@@ -464,26 +467,26 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
         }
         case 'view_file_outline':
         case 'viewfileoutline':
-            return { label: 'Viewed outline', subject: fileBasename(args?.AbsolutePath || args?.path || ''), resultBrief: '' };
+            return { icon: '📄', label: 'Viewed outline', subject: fileBasename(args?.AbsolutePath || args?.path || ''), resultBrief: '' };
         case 'view_code_item':
         case 'viewcodeitem': {
             const sym = args?.node_identifier || args?.symbol || '';
             const file = args?.file ? fileBasename(args.file) : '';
             const subj = file ? `${sym} in ${file}` : sym;
-            return { label: 'Viewed symbol', subject: subj, resultBrief: '' };
+            return { icon: '📄', label: 'Viewed symbol', subject: subj, resultBrief: '' };
         }
         case 'view_content_chunk':
-            return { label: 'Read chunk', subject: `#${args?.position ?? '?'}`, resultBrief: '' };
+            return { icon: '📄', label: 'Read chunk', subject: `#${args?.position ?? '?'}`, resultBrief: '' };
         case 'read_url_content':
         case 'readurlcontent':
-            return { label: 'Read URL', subject: (args?.Url || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
+            return { icon: '🌐', label: 'Read URL', subject: (args?.Url || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
 
         // ── File modification tools ─────────────────────────────────────
         case 'write_to_file':
         case 'writetofile': {
             const fn = fileBasename(args?.TargetFile || '');
             const desc = args?.Description;
-            return { label: 'Created', subject: fn, resultBrief: typeof desc === 'string' ? desc.slice(0, 60) : '' };
+            return { icon: '📝', label: 'Created', subject: fn, resultBrief: typeof desc === 'string' ? desc.slice(0, 60) : '' };
         }
         case 'replace_file_content':
         case 'multi_replace_file_content':
@@ -496,6 +499,7 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
             if (stats) briefParts.push(stats);
             if (typeof desc === 'string') briefParts.push(desc.slice(0, 60));
             return {
+                icon: '✏️',
                 label: 'Edited',
                 subject: fn,
                 resultBrief: briefParts.join(' · '),
@@ -504,7 +508,7 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
         }
         case 'propose_code':
         case 'proposecode':
-            return { label: 'Proposed edit', subject: fileBasename(args?.TargetFile || args?.file || ''), resultBrief: '' };
+            return { icon: '✏️', label: 'Proposed edit', subject: fileBasename(args?.TargetFile || args?.file || ''), resultBrief: '' };
 
         // ── Terminal / command tools ─────────────────────────────────────
         case 'run_command':
@@ -518,6 +522,7 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
             ]);
             const resultSummary = extractCommandResultBrief(cmdLine, result, exitBrief);
             return {
+                icon: '▶️',
                 label: 'Ran command',
                 subject: isShort ? cmdLine : '',
                 resultBrief: resultSummary,
@@ -526,19 +531,19 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
         }
         case 'shell_exec':
         case 'shellexec':
-            return { label: 'Ran shell', subject: '', resultBrief: '', codePreview: args?.command || args?.CommandLine || undefined };
+            return { icon: '▶️', label: 'Ran shell', subject: '', resultBrief: '', codePreview: args?.command || args?.CommandLine || undefined };
         case 'command_status': {
             const statusBrief = extractBriefStatus(result, [/status[:\s]+"?(running|done|completed)"?/i]);
-            return { label: 'Checked command', subject: args?.CommandId ? `#${args.CommandId}` : '', resultBrief: statusBrief };
+            return { icon: '▶️', label: 'Checked command', subject: args?.CommandId ? `#${args.CommandId}` : '', resultBrief: statusBrief };
         }
         case 'send_command_input':
         case 'sendcommandinput': {
             const inputPreview = args?.Input ? args.Input.trim().slice(0, 40) : '';
-            return { label: 'Sent input', subject: inputPreview, resultBrief: '' };
+            return { icon: '▶️', label: 'Sent input', subject: inputPreview, resultBrief: '' };
         }
         case 'read_terminal':
         case 'readterminal':
-            return { label: 'Read terminal', subject: args?.Name || '', resultBrief: '' };
+            return { icon: '▶️', label: 'Read terminal', subject: args?.Name || '', resultBrief: '' };
 
         // ── Directory tools ─────────────────────────────────────────────
         case 'list_dir':
@@ -548,20 +553,20 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
             const dirSubject = shortenPath(dirPath);
             // Try to extract entry count from result
             const entryCount = extractBriefStatus(result, [/(\d+)\s+(?:children|entries|items|files)/i]);
-            return { label: 'Listed', subject: dirSubject, resultBrief: entryCount ? `${entryCount} entries` : '' };
+            return { icon: '📁', label: 'Listed', subject: dirSubject, resultBrief: entryCount ? `${entryCount} entries` : '' };
         }
 
         // ── Browser tools ───────────────────────────────────────────────
         case 'open_browser_url':
         case 'openbrowserurl':
-            return { label: 'Opened browser', subject: (args?.url || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
+            return { icon: '🌐', label: 'Opened browser', subject: (args?.url || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
         case 'read_browser_page':
         case 'readbrowserpage':
-            return { label: 'Read browser page', subject: args?.url ? args.url.replace(/^https?:\/\//, '').slice(0, 50) : '', resultBrief: '' };
+            return { icon: '🌐', label: 'Read browser page', subject: args?.url ? args.url.replace(/^https?:\/\//, '').slice(0, 50) : '', resultBrief: '' };
         case 'list_browser_pages':
         case 'listbrowserpages': {
             const pageCt = extractBriefStatus(result, [/(\d+)\s+pages?/i]);
-            return { label: 'Listed browser pages', subject: '', resultBrief: pageCt ? `${pageCt} pages` : '' };
+            return { icon: '🌐', label: 'Listed browser pages', subject: '', resultBrief: pageCt ? `${pageCt} pages` : '' };
         }
 
         // ── Agent / MCP tools ───────────────────────────────────────────
@@ -570,32 +575,32 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
             const server = args?.server || args?.ServerName || '';
             const tool = args?.tool || args?.toolName || args?.name || '';
             const mcpSubj = server ? `${server}:${tool}` : tool;
-            return { label: 'MCP tool', subject: mcpSubj, resultBrief: '' };
+            return { icon: '🔌', label: 'MCP tool', subject: mcpSubj, resultBrief: '' };
         }
         case 'invoke_subagent':
         case 'invokesubagent':
-            return { label: 'Invoked subagent', subject: args?.agent || args?.name || '', resultBrief: '' };
+            return { icon: '🤖', label: 'Invoked subagent', subject: args?.agent || args?.name || '', resultBrief: '' };
 
         // ── Memory / Knowledge tools ────────────────────────────────────
         case 'memory':
-            return { label: 'Memory', subject: args?.action || '', resultBrief: '' };
+            return { icon: '🧠', label: 'Memory', subject: args?.action || '', resultBrief: '' };
         case 'knowledge_generation':
         case 'knowledgegeneration':
-            return { label: 'Generated knowledge', subject: '', resultBrief: '' };
+            return { icon: '🧠', label: 'Generated knowledge', subject: '', resultBrief: '' };
 
         // ── Miscellaneous ───────────────────────────────────────────────
         case 'generate_image':
-            return { label: 'Generated image', subject: args?.ImageName || args?.Prompt?.slice(0, 40) || '', resultBrief: '' };
+            return { icon: '🖼️', label: 'Generated image', subject: args?.ImageName || args?.Prompt?.slice(0, 40) || '', resultBrief: '' };
         case 'read_resource':
-            return { label: 'Read resource', subject: args?.Uri || '', resultBrief: '' };
+            return { icon: '📦', label: 'Read resource', subject: args?.Uri || '', resultBrief: '' };
         case 'wait':
-            return { label: 'Waiting', subject: args?.duration ? `${args.duration}ms` : '', resultBrief: '' };
+            return { icon: '⏱️', label: 'Waiting', subject: args?.duration ? `${args.duration}ms` : '', resultBrief: '' };
         case 'task_boundary':
         case 'taskboundary':
-            return { label: 'Task', subject: args?.TaskName || '', resultBrief: args?.TaskStatus || '' };
+            return { icon: '📋', label: 'Task', subject: args?.TaskName || '', resultBrief: args?.TaskStatus || '' };
         case 'notify_user':
         case 'notifyuser':
-            return { label: 'Notified user', subject: '', resultBrief: '' };
+            return { icon: '🔔', label: 'Notified user', subject: '', resultBrief: '' };
 
         default: {
             // Handle MCP server tools: mcp_<server>_<tool> → "MCP: <tool>"
@@ -603,9 +608,9 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
                 const parts = name.split('_');
                 const serverPart = parts.length > 2 ? parts[1] : '';
                 const toolPart = parts.length > 2 ? parts.slice(2).join('_') : parts.slice(1).join('_');
-                return { label: 'MCP', subject: serverPart ? `${serverPart}:${toolPart}` : toolPart, resultBrief: '' };
+                return { icon: '🔌', label: 'MCP', subject: serverPart ? `${serverPart}:${toolPart}` : toolPart, resultBrief: '' };
             }
-            return { label: name || 'unknown', subject: '', resultBrief: '' };
+            return { icon: '🔧', label: name || 'unknown', subject: '', resultBrief: '' };
         }
     }
 }
@@ -852,7 +857,7 @@ function renderDiscordStep(step: any, opts: Required<StepRenderOptions>): string
                 const statusIcon = status === 'pending' ? '⏳' : status === 'error' ? '❌' : '✅';
                 const summary = buildCompactToolSummary(tc);
 
-                let card = statusIcon;
+                let card = `${statusIcon}${summary.icon}`;
                 if (opts.showToolArgs && summary.subject) {
                     card += ` **${summary.label}** \`${summary.subject}\``;
                 } else {
