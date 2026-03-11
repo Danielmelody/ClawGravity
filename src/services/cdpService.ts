@@ -2,7 +2,7 @@ import { logger } from '../utils/logger';
 import { CDP_PORTS } from '../utils/cdpPorts';
 import { EventEmitter } from 'events';
 import * as http from 'http';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
 import WebSocket from 'ws';
 import { GrpcCascadeClient, ModelId, LSConnection } from './grpcCascadeClient';
@@ -1113,7 +1113,7 @@ export class CdpService extends EventEmitter {
 
     /**
      * Lazy-initialize the LS client by discovering credentials.
-     * Uses the passive CDP Network sniffing mechanism (listening for x-codeium-csrf-token).
+     * Strategy: process-based discovery (wmic + netstat), with passive CDP Network sniffing as fallback.
      */
     private async ensureLSClient(): Promise<GrpcCascadeClient | null> {
         if (this.lsClient?.isReady()) {
@@ -1128,12 +1128,12 @@ export class CdpService extends EventEmitter {
         this.lsClientInitPromise = (async () => {
             try {
                 if (!this.sniffedLSCredentials) {
-                    // Try to trigger an LS request if we haven't sniffed one naturally
-                    await this.triggerLSCredentialProbe();
+                    // Primary: discover from LS process CLI args + netstat
+                    await this.discoverLSCredentialsFromProcess();
                 }
 
                 if (!this.sniffedLSCredentials) {
-                    this.lastLSUnavailableReason = 'LS client unavailable: No LS credentials sniffed from CDP.';
+                    this.lastLSUnavailableReason = 'LS client unavailable: Could not discover LS credentials from process or Network sniffing.';
                     logger.debug(`[CdpService] ${this.lastLSUnavailableReason}`);
                     return null;
                 }
@@ -1166,155 +1166,143 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Probes the renderer to discover LS credentials (port + CSRF token).
+     * Discover LS credentials by inspecting the language_server OS process.
      *
-     * Two strategies:
-     *   1. Performance entries: find existing LS URLs and issue a POST.
-     *      The renderer's fetch interceptor auto-injects x-codeium-csrf-token
-     *      on POST requests to 127.0.0.1 with ConnectRPC headers.
-     *      Network.requestWillBeSent then captures the outgoing CSRF header.
-     *   2. Port scan: fire POST requests at common LS ports as fallback.
+     * 1. `wmic process` → find LS processes with --csrf_token and --workspace_id
+     * 2. Match by workspace path (from CDP window title)
+     * 3. `netstat -ano` → find the HTTPS port the LS PID is listening on
      *
-     * Diagnostic logging is added at each step to trace where failures occur.
+     * This works reliably after bot restarts because the LS process stays alive.
+     * All RPC calls still go through CDP Runtime.evaluate + fetch() in the renderer.
      */
-    private async triggerLSCredentialProbe(): Promise<void> {
-        if (!this.contexts.length) {
-            logger.warn('[CdpService:probe] No contexts available — cannot probe');
-            return;
-        }
-        
-        const ctxId = this.getPrimaryContextId() || this.contexts[0].id;
-        const ctxInfo = this.contexts.find(c => c.id === ctxId);
-        logger.info(`[CdpService:probe] Starting credential probe. context=${ctxId} name="${ctxInfo?.name || '?'}" url="${((ctxInfo as any)?.url || '?').slice(0, 80)}" totalContexts=${this.contexts.length}`);
-        
-        // Temporarily add a verbose Network listener to log ALL LS-related events
-        // during the probe window, so we can see if events fire at all
-        let networkEventCount = 0;
-        let networkLSEventCount = 0;
-        let lastNetworkLSUrl = '';
-        let networkLSHadCsrf = false;
-        const diagnosticListener = (params: any) => {
-            networkEventCount++;
-            const url = params?.request?.url || '';
-            if (url.includes('127.0.0.1')) {
-                networkLSEventCount++;
-                lastNetworkLSUrl = url.slice(0, 120);
-                const headers = params?.request?.headers || {};
-                const csrf = headers['x-codeium-csrf-token']
-                    || headers['X-Codeium-Csrf-Token']
-                    || headers['x-Codeium-Csrf-Token'];
-                if (csrf) {
-                    networkLSHadCsrf = true;
-                    logger.info(`[CdpService:probe] Network.requestWillBeSent: CSRF found! url=${url.slice(0, 80)}`);
-                } else {
-                    logger.debug(`[CdpService:probe] Network.requestWillBeSent: 127.0.0.1 request WITHOUT csrf. url=${url.slice(0, 80)} headers=${JSON.stringify(Object.keys(headers))}`);
-                }
-            }
-        };
-        this.on('Network.requestWillBeSent', diagnosticListener);
-
+    private async discoverLSCredentialsFromProcess(): Promise<void> {
         try {
-            // ─── Strategy 1: Performance entries + POST ─────────────────────
-            const strategy1Script = `(async () => {
-                try {
-                    const entries = performance.getEntriesByType('resource');
-                    const lsEntries = entries.filter(e =>
-                        e.name.includes('127.0.0.1') &&
-                        e.name.includes('language_server_pb')
-                    );
-                    
-                    const result = {
-                        totalEntries: entries.length,
-                        lsEntryCount: lsEntries.length,
-                        sampleUrls: lsEntries.slice(-3).map(e => e.name.slice(0, 120)),
-                    };
-                    
-                    if (lsEntries.length > 0) {
-                        const lastUrl = lsEntries[lsEntries.length - 1].name;
-                        const baseUrl = lastUrl.replace(/\\\\/[^\\\\/]+$/, '/GetUserStatus');
-                        result.probeUrl = baseUrl.slice(0, 120);
-                        
-                        // Fire a POST → renderer's fetch interceptor should inject CSRF
-                        await fetch(baseUrl, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'connect-protocol-version': '1',
-                            },
-                            body: '{}',
-                        }).catch(e => { result.fetchError = e.message || String(e); });
-                        
-                        result.strategy = 'post';
-                    } else {
-                        result.strategy = 'no-entries';
-                    }
-                    return result;
-                } catch (e) {
-                    return { strategy: 'error', message: e.message || String(e) };
-                }
-            })()`;
+            logger.info('[CdpService:discover] Starting process-based credential discovery...');
 
+            // ── Step 1: Find all language_server processes and their CLI args ──
+            let wmicOutput: string;
             try {
-                const r1 = await this.call('Runtime.evaluate', {
-                    expression: strategy1Script,
-                    returnByValue: true,
-                    awaitPromise: true,
-                    contextId: ctxId,
-                });
-                const val = r1?.result?.value;
-                logger.info(`[CdpService:probe] Strategy 1 result: ${JSON.stringify(val)}`);
-                
-                if (val?.strategy === 'post') {
-                    // Wait for Network.requestWillBeSent to fire
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    logger.info(`[CdpService:probe] After wait: sniffed=${!!this.sniffedLSCredentials} networkEvents=${networkEventCount} lsEvents=${networkLSEventCount} hadCsrf=${networkLSHadCsrf} lastLSUrl="${lastNetworkLSUrl}"`);
-                    if (this.sniffedLSCredentials) return;
-                }
-            } catch (err) {
-                logger.warn(`[CdpService:probe] Strategy 1 Runtime.evaluate failed: ${err}`);
+                wmicOutput = execSync(
+                    'wmic process where "name like \'%language_server%\'" get ProcessId,CommandLine /format:csv',
+                    { encoding: 'utf8', timeout: 5000 }
+                );
+            } catch (err: any) {
+                logger.warn(`[CdpService:discover] wmic failed: ${err.message}`);
+                return;
             }
 
-            // ─── Strategy 2: Port scan ──────────────────────────────────────
-            if (!this.sniffedLSCredentials) {
-                const strategy2Script = `(async () => {
-                    const results = [];
-                    for (const port of [13337, 13338, 13339, 42100, 42101, 42102]) {
-                        try {
-                            fetch('https://127.0.0.1:' + port + '/exa.language_server_pb.LanguageServerService/GetUserStatus', {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                    'connect-protocol-version': '1',
-                                },
-                                body: '{}',
-                            }).catch(() => {});
-                            results.push(port);
-                        } catch {}
-                    }
-                    return { strategy: 'port-scan', ports: results };
-                })()`;
+            // Parse wmic CSV output into structured records
+            const lsProcesses: Array<{ pid: number; csrfToken: string; workspaceId: string }> = [];
+            for (const line of wmicOutput.split('\n')) {
+                const trimmed = line.trim();
+                if (!trimmed || !trimmed.includes('--csrf_token')) continue;
 
+                const csrfMatch = trimmed.match(/--csrf_token\s+(\S+)/);
+                const wsIdMatch = trimmed.match(/--workspace_id\s+(\S+)/);
+                // PID is the last CSV field
+                const pidMatch = trimmed.match(/(\d+)\s*$/);
+
+                if (csrfMatch && pidMatch) {
+                    lsProcesses.push({
+                        pid: parseInt(pidMatch[1], 10),
+                        csrfToken: csrfMatch[1],
+                        workspaceId: wsIdMatch?.[1] || '',
+                    });
+                }
+            }
+
+            if (lsProcesses.length === 0) {
+                logger.warn('[CdpService:discover] No language_server processes found');
+                return;
+            }
+            logger.info(`[CdpService:discover] Found ${lsProcesses.length} LS process(es): ${lsProcesses.map(p => `pid=${p.pid} ws=${p.workspaceId}`).join(', ')}`);
+
+            // ── Step 2: Match by workspace path ──
+            // The CDP window title contains the workspace folder path.
+            // The LS --workspace_id encodes the path as: file_c_3A_Users_Daniel_Projects_foo
+            let targetProcess = lsProcesses[0]; // Default to first if only one
+
+            if (lsProcesses.length > 1 && this.targetUrl) {
+                // Try to match using the title which contains the workspace path
+                // Title format: "projectName-C:\Users\Daniel\Projects\projectName"
+                for (const proc of lsProcesses) {
+                    if (!proc.workspaceId) continue;
+                    // Decode workspace_id: file_c_3A_Users_Daniel_Projects_foo
+                    // → c:/Users/Daniel/Projects/foo  (lowered and normalized)
+                    const decoded = proc.workspaceId
+                        .replace(/^file_/, '')
+                        .replace(/_3A_/gi, ':/')
+                        .replace(/_/g, '/');
+                    
+                    if (this.targetUrl.toLowerCase().includes(decoded.toLowerCase())) {
+                        targetProcess = proc;
+                        break;
+                    }
+                }
+            }
+
+            logger.info(`[CdpService:discover] Using LS process: pid=${targetProcess.pid} csrf=${targetProcess.csrfToken.slice(0, 8)}... ws=${targetProcess.workspaceId}`);
+
+            // ── Step 3: Find HTTPS port via netstat ──
+            let netstatOutput: string;
+            try {
+                netstatOutput = execSync(
+                    `netstat -ano | findstr "LISTENING" | findstr "${targetProcess.pid}"`,
+                    { encoding: 'utf8', timeout: 5000 }
+                );
+            } catch (err: any) {
+                logger.warn(`[CdpService:discover] netstat failed: ${err.message}`);
+                return;
+            }
+
+            // Parse listening ports for this PID
+            const ports: number[] = [];
+            for (const line of netstatOutput.split('\n')) {
+                const m = line.match(/127\.0\.0\.1:(\d+)/);
+                if (m) ports.push(parseInt(m[1], 10));
+            }
+
+            if (ports.length === 0) {
+                logger.warn(`[CdpService:discover] No listening ports found for PID ${targetProcess.pid}`);
+                return;
+            }
+            logger.info(`[CdpService:discover] PID ${targetProcess.pid} listening on ports: ${ports.join(', ')}`);
+
+            // ── Step 4: Validate HTTPS port by making a test RPC call via CDP ──
+            // The LS typically has 3 ports: httpsPort, httpPort, lspPort.
+            // We need the HTTPS one. Try each port with a lightweight RPC call.
+            for (const port of ports) {
                 try {
-                    const r2 = await this.call('Runtime.evaluate', {
-                        expression: strategy2Script,
+                    const testScript = `fetch("https://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetUserStatus",{method:"POST",headers:{"Content-Type":"application/proto","Connect-Protocol-Version":"1","x-codeium-csrf-token":"${targetProcess.csrfToken}"},body:new Uint8Array([])}).then(r=>r.status).catch(()=>0)`;
+
+                    const result = await this.call('Runtime.evaluate', {
+                        expression: testScript,
                         returnByValue: true,
                         awaitPromise: true,
-                        contextId: ctxId,
+                        timeout: 5000,
                     });
-                    logger.info(`[CdpService:probe] Strategy 2 result: ${JSON.stringify(r2?.result?.value)}`);
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    logger.info(`[CdpService:probe] After port-scan wait: sniffed=${!!this.sniffedLSCredentials} networkEvents=${networkEventCount} lsEvents=${networkLSEventCount} hadCsrf=${networkLSHadCsrf}`);
-                } catch (err) {
-                    logger.warn(`[CdpService:probe] Strategy 2 Runtime.evaluate failed: ${err}`);
+
+                    const status = result?.result?.value;
+                    if (status === 200) {
+                        this.sniffedLSCredentials = {
+                            port,
+                            csrfToken: targetProcess.csrfToken,
+                            useTls: true,
+                            workspaceId: targetProcess.workspaceId,
+                        };
+                        logger.info(`[CdpService:discover] ✅ Validated HTTPS port ${port} (status=200)`);
+                        return;
+                    } else {
+                        logger.debug(`[CdpService:discover] Port ${port} returned status=${status}, trying next...`);
+                    }
+                } catch (err: any) {
+                    logger.debug(`[CdpService:discover] Port ${port} probe failed: ${err.message}`);
                 }
             }
 
-            // Final diagnostic summary
-            if (!this.sniffedLSCredentials) {
-                logger.warn(`[CdpService:probe] ❌ All strategies failed. networkEvents=${networkEventCount} lsEvents=${networkLSEventCount} hadCsrf=${networkLSHadCsrf} lastLSUrl="${lastNetworkLSUrl}"`);
-            }
-        } finally {
-            this.removeListener('Network.requestWillBeSent', diagnosticListener);
+            logger.warn(`[CdpService:discover] ❌ No HTTPS port validated for PID ${targetProcess.pid}`);
+        } catch (err: any) {
+            logger.error(`[CdpService:discover] Process discovery failed: ${err.message}`);
         }
     }
 
