@@ -5,13 +5,14 @@
  * and dispatches trajectory data to registered passive detectors.
  *
  * Architecture:
+ *   Lazy-connect: does NOT poll on startup. The router stays idle until
+ *   `connectToCascade(id)` is called (typically after a user sends a
+ *   message and a cascade is created or selected).
+ *
  *   Stream event (diff) arrives
  *     → debounce (300ms)
  *     → fetch trajectory + summaries ONCE
  *     → fan out to all registered detectors via evaluate()
- *
- * Replaces the old model where 5 independent detectors each ran
- * their own polling timers.
  */
 
 import { logger } from '../utils/logger';
@@ -28,8 +29,6 @@ const STREAM_DEBOUNCE_MS = 300;
 
 /** Delay before reconnecting the stream after a closed/error */
 const RECONNECT_DELAY_MS = 3000;
-/** Delay when the workspace simply has no active cascade yet */
-const IDLE_RETRY_DELAY_MS = 3000;
 
 /** Maximum consecutive reconnect failures before giving up */
 const MAX_RECONNECT_FAILURES = 10;
@@ -95,11 +94,12 @@ export class TrajectoryStreamRouter {
 
     // ─── Lifecycle ──────────────────────────────────────────────────
 
-    async start(): Promise<void> {
-        if (this.isRunning) return;
+    /**
+     * Mark the router as ready. Does NOT start polling.
+     * Call `connectToCascade(id)` to actually begin streaming.
+     */
+    start(): void {
         this.isRunning = true;
-        this.reconnectFailures = 0;
-        await this.connectStream();
     }
 
     async stop(): Promise<void> {
@@ -119,34 +119,48 @@ export class TrajectoryStreamRouter {
         return this.isRunning;
     }
 
+    /**
+     * Connect (or reconnect) the stream to a specific cascade.
+     * Called on-demand when a cascade is created, selected, or discovered.
+     * If already streaming the same cascade, this is a no-op.
+     */
+    connectToCascade(cascadeId: string): void {
+        if (!this.isRunning) {
+            this.isRunning = true;
+        }
+        if (this.currentCascadeId === cascadeId && this.abortController) {
+            return; // Already streaming this cascade
+        }
+        if (this.currentCascadeId && this.currentCascadeId !== cascadeId) {
+            logger.info(`[StreamRouter:${this.projectName}] Cascade changed from ${this.currentCascadeId.slice(0, 12)} to ${cascadeId.slice(0, 12)}, reconnecting`);
+            this.teardownStream();
+        }
+        void this.connectStream(cascadeId);
+    }
+
     // ─── Stream Connection ──────────────────────────────────────────
 
-    private async connectStream(): Promise<void> {
+    private async connectStream(cascadeId?: string): Promise<void> {
         if (!this.isRunning) return;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
 
+        // If no cascade ID provided, try to discover one. If none exists, just stop
+        // — the router sits idle until connectToCascade() is called explicitly.
+        const targetCascadeId = cascadeId ?? await this.cdpService.getActiveCascadeId();
+        if (!targetCascadeId) return;
+
         try {
             const client = await this.cdpService.getGrpcClient();
             if (!client) {
-                this.reconnectFailures = 0;
-                logger.warn(`[StreamRouter:${this.projectName}] gRPC client not ready, retrying in ${IDLE_RETRY_DELAY_MS}ms`);
-                this.scheduleIdleRetry();
+                logger.warn(`[StreamRouter:${this.projectName}] gRPC client not ready`);
+                this.scheduleReconnect();
                 return;
             }
 
-            // Discover the active cascade to stream
-            const cascadeId = await this.cdpService.getActiveCascadeId();
-            if (!cascadeId) {
-                this.reconnectFailures = 0;
-                logger.debug(`[StreamRouter:${this.projectName}] No active cascade, retrying in ${IDLE_RETRY_DELAY_MS}ms`);
-                this.scheduleIdleRetry();
-                return;
-            }
-
-            this.currentCascadeId = cascadeId;
+            this.currentCascadeId = targetCascadeId;
             this.boundClient = client;
 
             // Wire up event listeners
@@ -159,10 +173,10 @@ export class TrajectoryStreamRouter {
             client.on('error', this.errorListener);
 
             // Open the reactive stream
-            this.abortController = client.streamCascadeUpdates(cascadeId);
+            this.abortController = client.streamCascadeUpdates(targetCascadeId);
             this.reconnectFailures = 0;
 
-            logger.info(`[StreamRouter:${this.projectName}] Stream connected for cascade=${cascadeId.slice(0, 12)}...`);
+            logger.info(`[StreamRouter:${this.projectName}] Stream connected for cascade=${targetCascadeId.slice(0, 12)}...`);
 
             // Do an initial evaluation immediately so we don't miss already-pending states
             void this.fetchAndDispatch();
@@ -219,15 +233,7 @@ export class TrajectoryStreamRouter {
         }, delay);
     }
 
-    private scheduleIdleRetry(): void {
-        if (!this.isRunning) return;
-        if (this.reconnectTimer) return;
 
-        this.reconnectTimer = setTimeout(() => {
-            this.reconnectTimer = null;
-            void this.connectStream();
-        }, IDLE_RETRY_DELAY_MS);
-    }
 
     // ─── Stream Event Handlers ──────────────────────────────────────
 
@@ -277,9 +283,7 @@ export class TrajectoryStreamRouter {
 
             // If the cascade changed (user switched conversations), reconnect the stream
             if (this.currentCascadeId && cascadeId !== this.currentCascadeId) {
-                logger.info(`[StreamRouter:${this.projectName}] Cascade changed from ${this.currentCascadeId.slice(0, 12)} to ${cascadeId.slice(0, 12)}, reconnecting`);
-                this.teardownStream();
-                void this.connectStream();
+                this.connectToCascade(cascadeId);
                 return;
             }
 

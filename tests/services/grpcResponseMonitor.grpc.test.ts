@@ -175,7 +175,7 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         client.emit('data', { type: 'status', raw: { diff: { fieldDiffs: [{ updateSingular: { stringValue: 'delta' } }] } } });
 
         await Promise.resolve();
-        await jest.advanceTimersByTimeAsync(8);
+        await jest.advanceTimersByTimeAsync(150);
         // readTrajectorySnapshot is async — flush the microtask queue
         // so applyTrajectorySnapshot runs and fires onProgress
         for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -353,7 +353,7 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
 
         expect(client.rawRPC).not.toHaveBeenCalled();
 
-        await jest.advanceTimersByTimeAsync(8);
+        await jest.advanceTimersByTimeAsync(150);
 
         expect(client.rawRPC).toHaveBeenCalledWith('GetCascadeTrajectory', { cascadeId: 'cascade-fast-diff' });
         expect(onProgress).toHaveBeenCalledWith('Partial reply');
@@ -417,15 +417,15 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！\n🔧 list_dir');
+        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！');
         expect(onComplete).not.toHaveBeenCalled();
 
         await jest.advanceTimersByTimeAsync(750);
 
         // Text changes because it now correctly concatenates both assistant steps
         // rather than replacing.
-        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n🔧 list_dir\n\n完整回复');
-        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n🔧 list_dir\n\n完整回复');
+        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n\n完整回复');
+        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n\n完整回复');
 
         await monitor.stop();
     });
@@ -505,17 +505,17 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！\n🔧 list_dir');
+        expect(onProgress).toHaveBeenCalledWith('让我看看当前项目的结构！');
         expect(onComplete).not.toHaveBeenCalled();
 
         await jest.advanceTimersByTimeAsync(750);
 
-        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n🔧 list_dir\n\n完整回复');
+        expect(onProgress).toHaveBeenLastCalledWith('让我看看当前项目的结构！\n\n完整回复');
         expect(onComplete).not.toHaveBeenCalled();
 
         await jest.advanceTimersByTimeAsync(750);
 
-        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n🔧 list_dir\n\n完整回复');
+        expect(onComplete).toHaveBeenCalledWith('让我看看当前项目的结构！\n\n完整回复');
 
         await monitor.stop();
     });
@@ -707,216 +707,6 @@ describe('GrpcResponseMonitor stream-first fallback', () => {
         await monitor.stop();
     });
 
-    it('renders timeline snapshots once per unique trajectory state', async () => {
-        const client = new FakeGrpcClient();
-        client.rawRPC.mockResolvedValue({
-            trajectory: {
-                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
-                steps: [
-                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
-                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Partial reply' } },
-                ],
-            },
-        });
-
-        const trajectoryRenderer = {
-            renderTrajectory: jest.fn().mockResolvedValue({
-                ok: true,
-                content: '<blockquote>Rendered timeline</blockquote>',
-                format: 'html',
-            }),
-        };
-        const onRenderedTimeline = jest.fn();
-
-        const monitor = new GrpcResponseMonitor({
-            grpcClient: client as any,
-            cascadeId: 'cascade-rendered-timeline',
-            expectedUserMessage: 'commit',
-            trajectoryRenderer: trajectoryRenderer as any,
-            onRenderedTimeline,
-        });
-
-        await monitor.start();
-        client.emit('error', new Error('HTTP 415: unsupported media type'));
-        await Promise.resolve();
-        await Promise.resolve();
-
-        await jest.advanceTimersByTimeAsync(1600);
-
-        expect(trajectoryRenderer.renderTrajectory).toHaveBeenCalledTimes(1);
-        expect(trajectoryRenderer.renderTrajectory).toHaveBeenCalledWith({
-            steps: [
-                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
-                { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Partial reply' } },
-            ],
-            runStatus: 'CASCADE_RUN_STATUS_RUNNING',
-            trajectory: {
-                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
-                steps: [
-                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
-                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Partial reply' } },
-                ],
-            },
-            format: 'html',
-        });
-        expect(onRenderedTimeline).toHaveBeenCalledTimes(1);
-        expect(onRenderedTimeline).toHaveBeenCalledWith({
-            content: '<blockquote>Rendered timeline</blockquote>',
-            format: 'html',
-            strategy: undefined,
-            contextId: undefined,
-        });
-
-        await monitor.stop();
-    });
-
-    it('renders timeline while the cascade is still running on RUNNING status events', async () => {
-        const client = new FakeGrpcClient();
-        client.rawRPC.mockResolvedValue({
-            trajectory: {
-                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
-                steps: [
-                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'review code' } },
-                    {
-                        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
-                        plannerResponse: {
-                            thinking: 'Analyzed project',
-                            response: '',
-                        },
-                    },
-                ],
-            },
-        });
-
-        const trajectoryRenderer = {
-            renderTrajectory: jest.fn().mockResolvedValue({
-                ok: true,
-                content: '<blockquote>Analyzed project</blockquote>',
-                format: 'html',
-            }),
-        };
-        const onRenderedTimeline = jest.fn();
-
-        const monitor = new GrpcResponseMonitor({
-            grpcClient: client as any,
-            cascadeId: 'cascade-running-html',
-            expectedUserMessage: 'review code',
-            trajectoryRenderer: trajectoryRenderer as any,
-            onRenderedTimeline,
-        });
-
-        await monitor.start();
-        client.emit('data', {
-            type: 'status',
-            text: 'CASCADE_RUN_STATUS_RUNNING',
-            raw: {
-                result: {
-                    plannerResponse: {
-                        thinking: 'Analyzed project',
-                    },
-                },
-            },
-        });
-
-        await jest.advanceTimersByTimeAsync(8);
-        // readTrajectorySnapshot + TimelineRenderPipeline.runRender are deeply async
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-
-        expect(trajectoryRenderer.renderTrajectory).toHaveBeenCalledTimes(1);
-        expect(onRenderedTimeline).toHaveBeenCalledWith({
-            content: '<blockquote>Analyzed project</blockquote>',
-            format: 'html',
-            strategy: undefined,
-            contextId: undefined,
-        });
-
-        await monitor.stop();
-    });
-
-    it('re-renders timeline when the same step grows in place', async () => {
-        const client = new FakeGrpcClient();
-        client.rawRPC
-            .mockResolvedValueOnce({
-                trajectory: {
-                    cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
-                    steps: [
-                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'review cdpService.ts' } },
-                        {
-                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
-                            plannerResponse: {
-                                thinking: 'Reading the file.',
-                                response: '',
-                            },
-                        },
-                    ],
-                },
-            })
-            .mockResolvedValueOnce({
-                trajectory: {
-                    cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
-                    steps: [
-                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'review cdpService.ts' } },
-                        {
-                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
-                            plannerResponse: {
-                                thinking: 'Reading the file.\nAnalyzed cdpService.ts #L1-800',
-                                response: '',
-                            },
-                        },
-                    ],
-                },
-            });
-
-        const trajectoryRenderer = {
-            renderTrajectory: jest.fn()
-                .mockResolvedValueOnce({
-                    ok: true,
-                    content: '<blockquote>Reading the file.</blockquote>',
-                    format: 'html',
-                })
-                .mockResolvedValueOnce({
-                    ok: true,
-                    content: '<blockquote>Reading the file.<br>Analyzed cdpService.ts #L1-800</blockquote>',
-                    format: 'html',
-                }),
-        };
-        const onRenderedTimeline = jest.fn();
-
-        const monitor = new GrpcResponseMonitor({
-            grpcClient: client as any,
-            cascadeId: 'cascade-timeline-streaming',
-            expectedUserMessage: 'review cdpService.ts',
-            trajectoryRenderer: trajectoryRenderer as any,
-            onRenderedTimeline,
-        });
-
-        await monitor.start();
-
-        client.emit('data', { type: 'status', text: 'DIFF_1', raw: { result: {} } });
-        await jest.advanceTimersByTimeAsync(350);
-        await Promise.resolve();
-
-        client.emit('data', { type: 'status', text: 'DIFF_2', raw: { result: {} } });
-        await jest.advanceTimersByTimeAsync(350);
-        await Promise.resolve();
-
-        expect(trajectoryRenderer.renderTrajectory).toHaveBeenCalledTimes(2);
-        expect(onRenderedTimeline).toHaveBeenCalledTimes(2);
-        expect(onRenderedTimeline).toHaveBeenNthCalledWith(1, {
-            content: '<blockquote>Reading the file.</blockquote>',
-            format: 'html',
-            strategy: undefined,
-            contextId: undefined,
-        });
-        expect(onRenderedTimeline).toHaveBeenNthCalledWith(2, {
-            content: '<blockquote>Reading the file.<br>Analyzed cdpService.ts #L1-800</blockquote>',
-            format: 'html',
-            strategy: undefined,
-            contextId: undefined,
-        });
-
-        await monitor.stop();
-    });
 
     it('re-opens stream after recovery exhaustion when cascade is still running', async () => {
         const client = new FakeGrpcClient();

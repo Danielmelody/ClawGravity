@@ -625,7 +625,7 @@ function ensureStreamRouter(
 
     router.start();
     bridge.pool.registerStreamRouter(projectName, router);
-    logger.info(`[StreamRouter:${projectName}] Started event-driven trajectory routing`);
+    logger.info(`[StreamRouter:${projectName}] Registered (idle — will connect when a cascade is active)`);
 }
 
 export interface EnsureWorkspaceRuntimeOptions {

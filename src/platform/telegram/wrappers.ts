@@ -19,7 +19,7 @@ import type {
     ButtonDef,
     SelectMenuDef,
 } from '../types';
-import { richContentToHtml, markdownToTelegramHtml } from './telegramFormatter';
+import { rawHtmlToTelegramHtml } from './trajectoryRenderer';
 
 // ---------------------------------------------------------------------------
 // grammy-compatible interfaces (no grammy import needed)
@@ -199,11 +199,24 @@ export function toTelegramPayload(payload: MessagePayload): TelegramSendOptions 
     const parts: string[] = [];
 
     if (payload.text) {
-        parts.push(markdownToTelegramHtml(payload.text));
+        parts.push(payload.text);
     }
 
     if (payload.richContent) {
-        parts.push(richContentToHtml(payload.richContent));
+        const rc = payload.richContent;
+        const rcParts: string[] = [];
+        if (rc.title) rcParts.push(`<b>${rawHtmlToTelegramHtml(rc.title)}</b>`);
+        if (rc.description) rcParts.push(rawHtmlToTelegramHtml(rc.description));
+        if (rc.fields) {
+            rc.fields.forEach(f => {
+                rcParts.push(`<b>${rawHtmlToTelegramHtml(f.name)}</b>\n${rawHtmlToTelegramHtml(f.value)}`);
+            });
+        }
+        if (rc.footer) rcParts.push(`<i>${rawHtmlToTelegramHtml(rc.footer)}</i>`);
+        
+        if (rcParts.length > 0) {
+            parts.push(rcParts.join('\n\n'));
+        }
     }
 
     const text = parts.join('\n\n') || ' ';

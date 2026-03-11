@@ -5,28 +5,12 @@ import type { WorkspaceService } from '../services/workspaceService';
 import type { ChatSessionService, ConversationHistoryEntry } from '../services/chatSessionService';
 import type { CdpBridge } from '../services/cdpBridgeManager';
 import { ensureWorkspaceRuntime } from '../services/cdpBridgeManager';
-import { escapeHtml } from '../platform/telegram/telegramFormatter';
+import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 import { logger } from '../utils/logger';
+import { formatRelativeTime } from '../utils/relativeTime';
 
 export const TG_JOIN_SELECT_ID = 'tg_join_select';
 const MAX_TELEGRAM_HISTORY_CHARS = 3800;
-
-/** Format a timestamp into a concise relative-time string (e.g. "3m ago", "2h ago"). */
-function formatRelativeTime(timestampMs: number): string {
-    if (!timestampMs) return '';
-    const diffMs = Date.now() - timestampMs;
-    if (diffMs < 0) return 'just now';
-    const seconds = Math.floor(diffMs / 1000);
-    if (seconds < 60) return 'just now';
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    if (days < 30) return `${days}d ago`;
-    const months = Math.floor(days / 30);
-    return `${months}mo ago`;
-}
 
 export class TelegramSessionStateStore {
     constructor(private readonly recentMessageRepo?: TelegramRecentMessageRepository) { }

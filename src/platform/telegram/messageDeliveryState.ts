@@ -29,12 +29,20 @@ function setRegister<T>(reg: LWWRegister<T>, value: T): LWWRegister<T> {
 // State
 // ---------------------------------------------------------------------------
 
+/** Raw step data from trajectory for native rendering. */
+export interface StepsData {
+    readonly steps: any[];
+    readonly runStatus: string | null;
+}
+
 /** Immutable message delivery state. */
 export interface MessageDeliveryState {
     /** Raw streaming text from onProgress. */
     readonly text: LWWRegister<string>;
     /** Rendered HTML from onRenderedTimeline. */
     readonly html: LWWRegister<string>;
+    /** Raw step data for native step-based rendering. */
+    readonly stepsData: LWWRegister<StepsData | null>;
     /** Monotonic: once true, stays true forever. */
     readonly completed: boolean;
     /** Set once on completion. */
@@ -45,6 +53,7 @@ export function initialDeliveryState(): MessageDeliveryState {
     return {
         text: { value: '', clock: 0 },
         html: { value: '', clock: 0 },
+        stepsData: { value: null, clock: 0 },
         completed: false,
         finalText: null,
     };
@@ -57,6 +66,7 @@ export function initialDeliveryState(): MessageDeliveryState {
 export type DeliveryAction =
     | { readonly type: 'TEXT_UPDATE'; readonly text: string }
     | { readonly type: 'HTML_UPDATE'; readonly html: string }
+    | { readonly type: 'STEPS_UPDATE'; readonly stepsData: StepsData }
     | { readonly type: 'COMPLETE'; readonly finalText: string };
 
 // ---------------------------------------------------------------------------
@@ -85,6 +95,11 @@ export function deliveryReducer(
                 ...state,
                 html: setRegister(state.html, action.html),
             };
+        case 'STEPS_UPDATE':
+            return {
+                ...state,
+                stepsData: setRegister(state.stepsData, action.stepsData),
+            };
         case 'COMPLETE':
             if (state.completed) return state; // monotonic guard
             return {
@@ -102,15 +117,15 @@ export function deliveryReducer(
 /**
  * Determine the preferred content format based on register clocks.
  *
- * HTML wins when:
- *   1. The html register has been written to at least once (clock > 0)
- *   2. The html value has non-empty content
+ * Steps wins when the stepsData register has been written to (native rendering).
+ * Falls back to text otherwise.
  *
  * This is the CRDT merge function — commutative and idempotent.
  */
-export function resolvePreferredFormat(state: MessageDeliveryState): 'text' | 'html' {
-    if (state.html.clock > 0 && state.html.value.trim().length > 0) {
-        return 'html';
+export function resolvePreferredFormat(state: MessageDeliveryState): 'steps' | 'text' {
+    if (state.stepsData.clock > 0 && state.stepsData.value !== null
+        && Array.isArray(state.stepsData.value.steps) && state.stepsData.value.steps.length > 0) {
+        return 'steps';
     }
     return 'text';
 }
@@ -123,10 +138,12 @@ export function resolvePreferredFormat(state: MessageDeliveryState): 'text' | 'h
 export interface DeliverySnapshot {
     readonly text: string;
     readonly html: string;
-    readonly preferredFormat: 'text' | 'html';
+    readonly stepsData: StepsData | null;
+    readonly preferredFormat: 'steps' | 'text';
     readonly finalText: string;
     readonly textClock: number;
     readonly htmlClock: number;
+    readonly stepsClock: number;
 }
 
 /**
@@ -139,9 +156,11 @@ export function createDeliverySnapshot(state: MessageDeliveryState): DeliverySna
     return {
         text: state.text.value,
         html: state.html.value,
+        stepsData: state.stepsData.value,
         preferredFormat: resolvePreferredFormat(state),
         finalText: state.finalText ?? '',
         textClock: state.text.clock,
         htmlClock: state.html.clock,
+        stepsClock: state.stepsData.clock,
     };
 }

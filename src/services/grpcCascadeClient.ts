@@ -27,6 +27,7 @@ import https from 'https';
 import http from 'http';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { randomUUID } from 'crypto';
 
 const execAsync = promisify(exec);
 
@@ -254,6 +255,12 @@ export class GrpcCascadeClient extends EventEmitter {
      * Open a streaming connection to receive real-time cascade updates.
      * Used by GrpcResponseMonitor for event-driven listening.
      *
+     * Uses the StreamAgentStateUpdates RPC (the same endpoint the IDE
+     * workbench uses). This endpoint is NOT gated by the experiment flag
+     * that disables StreamCascadeReactiveUpdates ("reactive state is
+     * disabled"). It returns full state updates including trajectory
+     * steps, status changes, and planner responses.
+     *
      * Emits events:
      *   - 'data' (CascadeStreamEvent): each response chunk
      *   - 'complete': when the stream ends
@@ -271,14 +278,18 @@ export class GrpcCascadeClient extends EventEmitter {
         const conn = this.connection;
         const httpModule = conn.useTls ? https : http;
         const proto = conn.useTls ? 'https' : 'http';
-        const url = `${proto}://127.0.0.1:${conn.port}/exa.language_server_pb.LanguageServerService/StreamCascadeReactiveUpdates`;
+        const url = `${proto}://127.0.0.1:${conn.port}/exa.language_server_pb.LanguageServerService/StreamAgentStateUpdates`;
 
-        // StreamCascadeReactiveUpdates is a server-streaming RPC using ConnectRPC.
-        // Proto: StreamReactiveUpdatesRequest { protocol_version=1 (uint32), id (string) }
+        // StreamAgentStateUpdates is a server-streaming RPC using ConnectRPC.
+        // Proto: StreamAgentStateUpdatesRequest { conversationId (string), subscriberId (string) }
         // Must use:
         //   - Content-Type: application/connect+json (NOT application/json)
         //   - Body: Connect streaming envelope (5-byte header: 0x00 flag + 4-byte BE length + JSON)
-        const payload = { protocolVersion: 1, id: cascadeId };
+        const subscriberId = randomUUID();
+        const payload = {
+            conversationId: cascadeId,
+            subscriberId,
+        };
         const jsonStr = JSON.stringify(payload);
         const msgBuf = Buffer.from(jsonStr, 'utf8');
 
@@ -295,7 +306,7 @@ export class GrpcCascadeClient extends EventEmitter {
         );
 
         const req = httpModule.request(url, reqOptions, (res) => {
-            logger.info(`[GrpcStream] HTTP ${res.statusCode} for cascade=${cascadeId.slice(0, 12)}... (reactive stream)`);
+            logger.info(`[GrpcStream] HTTP ${res.statusCode} for cascade=${cascadeId.slice(0, 12)}... (agent state stream)`);
             if (res.statusCode && res.statusCode !== 200) {
                 let errBody = '';
                 res.on('data', (chunk: Buffer) => { errBody += chunk.toString(); });
@@ -316,7 +327,7 @@ export class GrpcCascadeClient extends EventEmitter {
                 totalBytesReceived += chunk.length;
 
                 if (totalBytesReceived === chunk.length) {
-                    logger.info(`[GrpcStream] First chunk: ${chunk.length} bytes (reactive stream connected)`);
+                    logger.info(`[GrpcStream] First chunk: ${chunk.length} bytes (agent state stream connected)`);
                 }
 
                 // Accumulate raw binary buffer for parsing Connect streaming envelopes
@@ -348,16 +359,14 @@ export class GrpcCascadeClient extends EventEmitter {
                         continue;
                     }
 
-                    // Data frame — reactive diff update
-                    // Format: { version: "N", diff: { fieldDiffs: [...] } }
+                    // Data frame — agent state update
+                    // Format: { update: { conversationId, status, mainTrajectoryUpdate, ... } }
                     try {
                         const text = messageData.toString('utf8');
                         const parsed = JSON.parse(text);
 
-                        // Parse the reactive diff into multiple events.
-                        // Each event carries actual content (text, tool calls)
-                        // extracted directly from the diff — no polling needed.
-                        const events = this.parseReactiveDiffEvents(parsed);
+                        // Parse the agent state update into CascadeStreamEvents
+                        const events = this.parseAgentStateUpdate(parsed);
                         for (const event of events) {
                             this.emit('data', event);
                         }
@@ -369,7 +378,7 @@ export class GrpcCascadeClient extends EventEmitter {
 
             res.on('end', () => {
                 if (controller.signal.aborted) return;
-                logger.info(`[GrpcStream] Reactive stream ended, total bytes=${totalBytesReceived}, frames=${frameCount}`);
+                logger.info(`[GrpcStream] Agent state stream ended, total bytes=${totalBytesReceived}, frames=${frameCount}`);
                 this.emit('complete');
             });
 
@@ -393,80 +402,46 @@ export class GrpcCascadeClient extends EventEmitter {
     }
 
     /**
-     * Parse a reactive diff update into CascadeStreamEvents.
+     * Parse a StreamAgentStateUpdates response into CascadeStreamEvents.
      *
-     * The reactive stream returns incremental protobuf diffs in the format:
-     * { version: "N", diff: { fieldDiffs: [...] } }
+     * The agent state stream returns full state updates:
+     * { update: { conversationId, status, mainTrajectoryUpdate: { stepsUpdate: { ... } }, ... } }
      *
-     * We use diffs ONLY as a notification channel:
-     *   - Detect status transitions (IDLE, RUNNING, QUOTA) via string matching
-     *   - Everything else emits a generic 'status' event (= "something changed")
-     *
-     * Actual content (response text, tool calls, thinking) is fetched on
-     * demand via GetCascadeTrajectory — Antigravity already parses that
-     * into structured data. Trying to extract text from diffs is fragile
-     * and error-prone (UUIDs, tool args, enum values leak through).
+     * We extract:
+     *   - Status transitions (IDLE, RUNNING) from update.status
+     *   - A generic 'status' event so GrpcResponseMonitor knows something changed
+     *     and can schedule a trajectory fetch for the rendered content.
      */
-    parseReactiveDiffEvents(raw: any): CascadeStreamEvent[] {
-        const diff = raw?.diff;
-
-        if (!diff || !diff.fieldDiffs) {
-            // Non-diff message (version-only heartbeat)
-            return [];
-        }
+    parseAgentStateUpdate(raw: any): CascadeStreamEvent[] {
+        const update = raw?.update;
+        if (!update) return [];
 
         const events: CascadeStreamEvent[] = [];
+        const status = update.status || '';
 
-        // Check for status transitions (IDLE, RUNNING, QUOTA)
-        const statusStrings = this.extractStatusFromDiff(diff);
-        for (const status of statusStrings) {
-            if (status.includes('IDLE') || status.includes('idle')) {
-                events.push({ type: 'status', text: 'CASCADE_RUN_STATUS_IDLE', raw });
-            } else if (status.includes('RUNNING') || status.includes('running')) {
-                events.push({ type: 'status', text: 'CASCADE_RUN_STATUS_RUNNING', raw });
-            } else if (status.includes('QUOTA') || status.includes('quota')) {
-                events.push({ type: 'error', text: 'Quota reached', raw });
-            }
+        if (status === 'CASCADE_RUN_STATUS_IDLE') {
+            events.push({ type: 'status', text: 'CASCADE_RUN_STATUS_IDLE', raw });
+        } else if (status === 'CASCADE_RUN_STATUS_RUNNING') {
+            events.push({ type: 'status', text: 'CASCADE_RUN_STATUS_RUNNING', raw });
+        } else if (status.includes('QUOTA')) {
+            events.push({ type: 'error', text: 'Quota reached', raw });
         }
 
-        // Always emit a generic notification so the monitor knows the cascade state has changed.
-        // Even if a status change was detected in this diff, there could also be content updates!
-        events.push({ type: 'status', raw });
+        // Only emit a generic "something changed" notification when the frame
+        // carries actual trajectory step updates. The agent state stream is
+        // very chatty — many frames are pure status heartbeats without new
+        // content. Avoiding redundant notifications prevents excessive
+        // GetCascadeTrajectory RPCs that hammer the LS.
+        const hasStepUpdates = update.mainTrajectoryUpdate?.stepsUpdate?.indices?.length > 0
+            || update.mainTrajectoryUpdate?.stepsUpdate?.steps?.length > 0
+            || update.artifactSnapshotsUpdate
+            || update.executorMetadata?.terminationReason;
+
+        if (hasStepUpdates) {
+            events.push({ type: 'status', raw });
+        }
 
         return events;
-    }
-
-    /**
-     * Recursively extract string values from a protobuf diff that look like
-     * status indicators (e.g. CASCADE_RUN_STATUS_IDLE).
-     */
-    private extractStatusFromDiff(diff: any): string[] {
-        const results: string[] = [];
-        if (!diff) return results;
-
-        const fieldDiffs = diff.fieldDiffs || [];
-        for (const fd of fieldDiffs) {
-            const sv = fd?.updateSingular?.stringValue;
-            if (typeof sv === 'string' && sv.includes('CASCADE_RUN_STATUS')) {
-                results.push(sv);
-            }
-            const msgValue = fd?.updateSingular?.messageValue;
-            if (msgValue) {
-                results.push(...this.extractStatusFromDiff(msgValue));
-            }
-            const repeatedDiff = fd?.updateRepeated;
-            if (repeatedDiff?.pushBack) {
-                for (const item of repeatedDiff.pushBack) {
-                    if (item?.messageValue) {
-                        results.push(...this.extractStatusFromDiff(item.messageValue));
-                    }
-                    if (typeof item?.stringValue === 'string' && item.stringValue.includes('CASCADE_RUN_STATUS')) {
-                        results.push(item.stringValue);
-                    }
-                }
-            }
-        }
-        return results;
     }
 
     /**

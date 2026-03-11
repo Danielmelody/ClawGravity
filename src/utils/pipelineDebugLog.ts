@@ -55,6 +55,25 @@ export class PipelineSession {
         private readonly enabled: boolean = isEnabled(),
     ) { }
 
+    private recordStep(
+        stepName: string,
+        input: Record<string, unknown>,
+        result: unknown,
+        startedAtMs: number,
+        meta?: Record<string, unknown>,
+    ): void {
+        this.records.push({
+            sessionId: this.sessionId,
+            stepIndex: this.stepIndex++,
+            stepName,
+            timestamp: new Date(startedAtMs).toISOString(),
+            durationMs: Date.now() - startedAtMs,
+            input: truncateValues(input),
+            output: truncateValues({ result }),
+            meta,
+        });
+    }
+
     /**
      * Run a pure function as a named pipeline step.
      * Logs the input, output, and duration to the session log.
@@ -74,19 +93,7 @@ export class PipelineSession {
 
         const t0 = Date.now();
         const result = fn();
-        const durationMs = Date.now() - t0;
-
-        const record: PipelineStepRecord = {
-            sessionId: this.sessionId,
-            stepIndex: this.stepIndex++,
-            stepName,
-            timestamp: new Date(t0).toISOString(),
-            durationMs,
-            input: truncateValues(input),
-            output: truncateValues({ result }),
-            meta,
-        };
-        this.records.push(record);
+        this.recordStep(stepName, input, result, t0, meta);
         return result;
     }
 
@@ -103,19 +110,7 @@ export class PipelineSession {
 
         const t0 = Date.now();
         const result = await fn();
-        const durationMs = Date.now() - t0;
-
-        const record: PipelineStepRecord = {
-            sessionId: this.sessionId,
-            stepIndex: this.stepIndex++,
-            stepName,
-            timestamp: new Date(t0).toISOString(),
-            durationMs,
-            input: truncateValues(input),
-            output: truncateValues({ result }),
-            meta,
-        };
-        this.records.push(record);
+        this.recordStep(stepName, input, result, t0, meta);
         return result;
     }
 

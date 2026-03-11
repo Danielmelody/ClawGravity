@@ -1632,7 +1632,19 @@ export class CdpService extends EventEmitter {
             }
         }
 
-        if (!found || found.model === 'unknown') return null;
+        if (!found || found.model === 'unknown') {
+            // Fallback: use the first available model from GetUserStatus.
+            // After a restart, cachedModelLabel is null and readModelFromUI may fail,
+            // but the server now requires a model to be specified in the payload.
+            const fallback = this.cachedModelConfigs.find(c => c.model !== 'unknown');
+            if (fallback) {
+                logger.info(`[CdpService] resolveSelectedModelId: no cached/UI model, falling back to '${fallback.label}' (${fallback.model})`);
+                this.cachedModelLabel = fallback.label;
+                const num = parseInt(fallback.model, 10);
+                return isNaN(num) ? fallback.model : num;
+            }
+            return null;
+        }
         this.cachedModelLabel = found.label;
 
         const num = parseInt(found.model, 10);

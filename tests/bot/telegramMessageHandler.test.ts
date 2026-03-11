@@ -294,23 +294,6 @@ describe('createTelegramMessageHandler', () => {
         expect(monitorOptions.expectedUserMessage).toBe('test prompt');
     });
 
-    it('passes a detached trajectory renderer to the active Telegram monitor', async () => {
-        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
-        const mockCdp = createMockCdp();
-        const pool = createMockPool(mockCdp);
-        const bridge = createBridge(pool);
-        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
-        const telegramBindingRepo = createTelegramBindingRepo(binding);
-        const { message } = createMockMessage({ content: 'test prompt' });
-
-        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
-        await handler(message as any);
-
-        const monitorOptions = GrpcResponseMonitor.mock.calls[0][0];
-        expect(monitorOptions.trajectoryRenderer).toBeDefined();
-        expect(typeof monitorOptions.trajectoryRenderer.renderTrajectory).toBe('function');
-    });
-
     it('sets previously joined cascade ID before sending prompt', async () => {
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
@@ -587,28 +570,6 @@ describe('createTelegramMessageHandler', () => {
         expect(channel.send).not.toHaveBeenCalledWith({ text: 'Analyzed\n\nCreating\n\nFinal answer' });
     });
 
-    it('passes a detached trajectory renderer to the passive Telegram monitor', async () => {
-        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
-        const channel = createMockChannel();
-        const runtime = createMockRuntime();
-        const sessionStateStore = new TelegramSessionStateStore();
-        sessionStateStore.setCurrentCascadeId('chat-123', 'cascade-a');
-
-        await handlePassiveUserMessage(
-            channel as any,
-            runtime as any,
-            { text: 'Mirror this renderer', cascadeId: 'cascade-a' },
-            undefined,
-            undefined,
-            sessionStateStore,
-        );
-        await new Promise((resolve) => setImmediate(resolve));
-
-        const monitorOptions = GrpcResponseMonitor.mock.calls[0][0];
-        expect(monitorOptions.trajectoryRenderer).toBeDefined();
-        expect(typeof monitorOptions.trajectoryRenderer.renderTrajectory).toBe('function');
-    });
-
     it('sets lastActiveWorkspace and lastActiveChannel on bridge', async () => {
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
@@ -629,8 +590,11 @@ describe('createTelegramMessageHandler', () => {
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 // HTML-only delivery: must provide rendered HTML before completion
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({ content: '<b>Response text</b>', format: 'html' });
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<b>Response text</b>' } }],
+                        runStatus: null
+                    });
                 }
                 if (opts.onComplete) await opts.onComplete('Response text');
             }),
@@ -659,8 +623,11 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({ content: '<b>Response text</b>', format: 'html' });
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<b>Response text</b>' } }],
+                        runStatus: null
+                    });
                 }
                 if (opts.onComplete) await opts.onComplete('Response text');
             }),
@@ -724,8 +691,11 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({ content: longHtml, format: 'html' });
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: longHtml } }],
+                        runStatus: null
+                    });
                 }
                 if (opts.onComplete) await opts.onComplete('A'.repeat(5000));
             }),
@@ -878,10 +848,10 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({
-                        content: '<blockquote>Reading file.ts</blockquote>',
-                        format: 'html',
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<blockquote>Reading file.ts</blockquote>' } }],
+                        runStatus: null
                     });
                 }
                 if (opts.onComplete) await opts.onComplete('Done response');
@@ -913,10 +883,10 @@ describe('createTelegramMessageHandler', () => {
         ).join('<br>')}</blockquote>`;
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({
-                        content: longTimelineHtml,
-                        format: 'html',
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: longTimelineHtml } }],
+                        runStatus: null
                     });
                 }
                 // text-to-html path: finalText must also contain the content
@@ -962,10 +932,10 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({
-                        content: '<blockquote>Partial streamed answer</blockquote>',
-                        format: 'html',
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<blockquote>Partial streamed answer</blockquote>' } }],
+                        runStatus: null
                     });
                 }
                 if (opts.onComplete) await opts.onComplete('Final answer');
@@ -993,14 +963,14 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({
-                        content: '<blockquote>Partial streamed answer</blockquote>',
-                        format: 'html',
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<blockquote>Partial streamed answer</blockquote>' } }],
+                        runStatus: null
                     });
-                    opts.onRenderedTimeline({
-                        content: '<blockquote>Now let me look at the listAllSessions function<br><br>Partial streamed answer</blockquote>',
-                        format: 'html',
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<blockquote>Now let me look at the listAllSessions function<br><br>Partial streamed answer</blockquote>' } }],
+                        runStatus: null
                     });
                 }
                 // text-to-html path: finalText must contain the content we check for
@@ -1028,10 +998,10 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({
-                        content: '<blockquote><b>Reviewing</b><br>next step</blockquote>',
-                        format: 'html',
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<blockquote><b>Reviewing</b><br>next step</blockquote>' } }],
+                        runStatus: null
                     });
                 }
                 if (opts.onComplete) await opts.onComplete('Final answer');
@@ -1058,10 +1028,10 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({
-                        content: '<blockquote>Partial streamed answer</blockquote>',
-                        format: 'html',
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<blockquote>Partial streamed answer</blockquote>' } }],
+                        runStatus: null
                     });
                 }
                 if (opts.onComplete) await opts.onComplete('Final answer');
@@ -1096,10 +1066,10 @@ describe('createTelegramMessageHandler', () => {
         const repeatedText = 'Let me first run ESLint to see all the warnings.';
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({
-                        content: `<blockquote>${repeatedText}</blockquote>`,
-                        format: 'html',
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: `<blockquote>${repeatedText}</blockquote>` } }],
+                        runStatus: null
                     });
                 }
                 if (opts.onComplete) await opts.onComplete('Final answer');
@@ -1131,13 +1101,13 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         const startMarker = 'START-MARKER';
         const endMarker = 'END-MARKER';
-        const longPreview = `<blockquote>${startMarker}<br>${'P'.repeat(5000)}<br>${endMarker}</blockquote>`;
+        const longPreview = `${startMarker}\n${'P'.repeat(5000)}\n${endMarker}`;
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({
-                        content: longPreview,
-                        format: 'html',
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: longPreview } }],
+                        runStatus: null
                     });
                 }
                 if (opts.onComplete) await opts.onComplete('Done');
@@ -1177,13 +1147,13 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         const prefixMarker = 'The __claw__ workspace is your agent workspace';
         const tailMarker = 'Ran command: npx eslint .';
-        const longPreview = `<blockquote>${prefixMarker}<br>${'A'.repeat(3000)}<br>${tailMarker}</blockquote>`;
+        const longPreview = `${prefixMarker}\n${'A'.repeat(3000)}\n${tailMarker}`;
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({
-                        content: longPreview,
-                        format: 'html',
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: longPreview } }],
+                        runStatus: null
                     });
                 }
                 if (opts.onComplete) await opts.onComplete('Done');
@@ -1219,10 +1189,19 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({ content: '<blockquote>Step 1</blockquote>', format: 'html' });
-                    opts.onRenderedTimeline({ content: '<blockquote>Step 2</blockquote>', format: 'html' });
-                    opts.onRenderedTimeline({ content: '<blockquote>Step 3</blockquote>', format: 'html' });
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<blockquote>Step 1</blockquote>' } }],
+                        runStatus: null
+                    });
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<blockquote>Step 2</blockquote>' } }],
+                        runStatus: null
+                    });
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<blockquote>Step 3</blockquote>' } }],
+                        runStatus: null
+                    });
                 }
                 await new Promise((resolve) => setTimeout(resolve, 30));
                 if (opts.onComplete) await opts.onComplete('Done response');
@@ -1260,8 +1239,11 @@ describe('createTelegramMessageHandler', () => {
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
                 // HTML-only delivery: provide rendered HTML before completion
-                if (opts.onRenderedTimeline) {
-                    opts.onRenderedTimeline({ content: '<b>Final output</b>', format: 'html' });
+                if (opts.onStepsUpdate) {
+                    opts.onStepsUpdate({
+                        steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE', plannerResponse: { response: '<b>Final output</b>' } }],
+                        runStatus: null
+                    });
                 }
                 if (opts.onComplete) await opts.onComplete('Final output');
             }),
@@ -1518,12 +1500,12 @@ describe('createCoalescedStatusRenderer', () => {
         );
 
         renderer.request('Let me first run ESLint to see all the current warnings.', true);
-        renderer.request('<b>Running background command</b>\n<code>npx eslint . 2&gt;&amp;1 | head -200</code>', true);
+        renderer.request('<b>Running background command</b>\n<code>npx eslint . 2>&1 | head -200</code>', true);
         await renderer.flush();
 
         const editPayloads = statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
         expect(editPayloads).toContain('Let me first run ESLint to see all the current warnings.');
-        expect(editPayloads).toContain('<b>Running background command</b>\n<code>npx eslint . 2&gt;&amp;1 | head -200</code>');
+        expect(editPayloads).toContain('<b>Running background command</b>\n<code>npx eslint . 2>&1 | head -200</code>');
     });
 
     it('promotes the first sent status message to the latest pending html frame', async () => {
@@ -1539,12 +1521,12 @@ describe('createCoalescedStatusRenderer', () => {
         );
 
         renderer.request('Thinking...', true);
-        renderer.request('<b>Running background command</b>\n<code>npx eslint . 2&gt;&amp;1 | head -200</code>', true);
+        renderer.request('<b>Running background command</b>\n<code>npx eslint . 2>&1 | head -200</code>', true);
         await renderer.flush();
 
         const sendPayloads = channel.send.mock.calls.map(([payload]: any[]) => payload.text);
         expect(sendPayloads).toContain('Thinking...');
         const editPayloads = channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
-        expect(editPayloads).toContain('<b>Running background command</b>\n<code>npx eslint . 2&gt;&amp;1 | head -200</code>');
+        expect(editPayloads).toContain('<b>Running background command</b>\n<code>npx eslint . 2>&1 | head -200</code>');
     });
 });

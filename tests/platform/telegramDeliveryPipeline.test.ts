@@ -6,12 +6,6 @@ import {
 } from '../../src/platform/telegram/telegramDeliveryPipeline';
 import type { DeliverySnapshot } from '../../src/platform/telegram/messageDeliveryState';
 
-// Mock the trajectory renderer (HTML conversion) to pass through content
-jest.mock('../../src/platform/telegram/trajectoryRenderer', () => ({
-    markdownToTelegramHtmlViaUnified: (text: string) => text,
-    rawHtmlToTelegramHtml: (html: string) => html,
-}));
-
 function testPipeline(): PipelineSession {
     return new PipelineSession('test-' + Date.now(), true);
 }
@@ -28,69 +22,60 @@ function makeSnapshot(overrides: Partial<DeliverySnapshot> = {}): DeliverySnapsh
     };
 }
 
+/** Helper: create a steps snapshot with assistant response steps */
+function makeStepsSnapshot(responseTexts: string[], runStatus: string | null = null): DeliverySnapshot {
+    const steps = responseTexts.map(text => ({
+        type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+        plannerResponse: { response: text },
+    }));
+    return makeSnapshot({
+        stepsData: { steps, runStatus },
+        stepsClock: 1,
+        preferredFormat: 'steps',
+    });
+}
+
 describe('planDelivery', () => {
-    it('returns empty mode when finalText is empty', () => {
+    it('returns empty mode when no step data available', () => {
         const plan = planDelivery(testPipeline(), makeSnapshot(), { renderOnlyOnComplete: true });
         expect(plan.mode).toBe('empty');
         expect(plan.chunks).toHaveLength(0);
     });
 
-    it('returns text-to-html fallback when finalText exists but no rendered HTML is available', () => {
-        const snapshot = makeSnapshot({ finalText: 'Hello world' });
-        const plan = planDelivery(testPipeline(), snapshot, { renderOnlyOnComplete: false });
-        // text-to-html fallback: converts finalText to HTML when renderer fails
-        expect(plan.mode).toBe('text-to-html');
-        expect(plan.chunks.length).toBeGreaterThan(0);
+    it('returns step-rendered when step data is available', () => {
+        const snapshot = makeStepsSnapshot(['Hello **world**']);
+        const plan = planDelivery(testPipeline(), snapshot, { renderOnlyOnComplete: true });
+        expect(plan.mode).toBe('step-rendered');
+        expect(plan.telegramHtml).toContain('Hello');
         expect(plan.deliveredText).toBeTruthy();
     });
 
-    it('prefers text-to-html when both finalText and html are available', () => {
-        const snapshot = makeSnapshot({
-            finalText: 'Hello world',
-            html: '<b>Hello world</b>',
-            htmlClock: 1,
-            preferredFormat: 'html',
-        });
+    it('splits long step-rendered content into chunks', () => {
+        const longText = 'A'.repeat(5000);
+        const snapshot = makeStepsSnapshot([longText]);
         const plan = planDelivery(testPipeline(), snapshot, { renderOnlyOnComplete: true });
-        // text-to-html is now the primary path; rendered-html is the fallback
-        expect(plan.mode).toBe('text-to-html');
-        expect(plan.chunks.length).toBeGreaterThan(0);
-    });
-
-    it('returns text-to-html fallback when renderOnlyOnComplete=true but html is empty', () => {
-        const snapshot = makeSnapshot({
-            finalText: 'Some output text',
-            html: '',
-            htmlClock: 0,
-            preferredFormat: 'text',
-        });
-        const plan = planDelivery(testPipeline(), snapshot, { renderOnlyOnComplete: true });
-        // text-to-html fallback when renderer fails
-        expect(plan.mode).toBe('text-to-html');
-        expect(plan.chunks.length).toBeGreaterThan(0);
-    });
-
-    it('falls back to rendered-html when only HTML is available (no finalText)', () => {
-        const longHtml = '<b>' + 'A'.repeat(5000) + '</b>';
-        const snapshot = makeSnapshot({
-            html: longHtml,
-            htmlClock: 1,
-            preferredFormat: 'html',
-        });
-        const plan = planDelivery(testPipeline(), snapshot, { renderOnlyOnComplete: true });
-        // rendered-html is used as fallback when finalText is empty
-        expect(plan.mode).toBe('rendered-html');
+        expect(plan.mode).toBe('step-rendered');
         expect(plan.chunks.length).toBeGreaterThan(1);
         for (const chunk of plan.chunks) {
             expect(chunk.length).toBeLessThanOrEqual(4096);
         }
+        expect(plan.deliveredText).toBeTruthy();
     });
 
-    it('returns deliveredText as null when finalText is whitespace-only', () => {
-        const snapshot = makeSnapshot({ finalText: '   \n  ' });
+    it('returns deliveredText as null when no steps available', () => {
+        const snapshot = makeSnapshot({ html: '   \n  ' });
         const plan = planDelivery(testPipeline(), snapshot, { renderOnlyOnComplete: false });
         expect(plan.mode).toBe('empty');
         expect(plan.deliveredText).toBeNull();
+    });
+
+    it('returns empty mode when stepsData has empty steps array', () => {
+        const snapshot = makeSnapshot({
+            stepsData: { steps: [], runStatus: null },
+            stepsClock: 1,
+        });
+        const plan = planDelivery(testPipeline(), snapshot, { renderOnlyOnComplete: true });
+        expect(plan.mode).toBe('empty');
     });
 });
 

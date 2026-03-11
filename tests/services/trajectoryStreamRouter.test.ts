@@ -26,7 +26,7 @@ describe('TrajectoryStreamRouter', () => {
         jest.useRealTimers();
     });
 
-    it('retries idly without failure backoff when no active cascade exists', async () => {
+    it('start() does not poll or log when no cascade exists', async () => {
         const client = new FakeGrpcClient();
         const cdpService = {
             getGrpcClient: jest.fn().mockResolvedValue(client),
@@ -38,18 +38,76 @@ describe('TrajectoryStreamRouter', () => {
             projectName: '__claw__',
         });
 
-        await router.start();
+        router.start();
 
-        expect((router as any).reconnectFailures).toBe(0);
-        expect(cdpService.getActiveCascadeId).toHaveBeenCalledTimes(1);
+        // start() is synchronous and does NOT call connectStream
+        expect(router.isActive()).toBe(true);
+        expect(cdpService.getActiveCascadeId).not.toHaveBeenCalled();
+        expect(cdpService.getGrpcClient).not.toHaveBeenCalled();
 
-        await jest.advanceTimersByTimeAsync(3000);
+        // Wait plenty of time — nothing should happen
+        await jest.advanceTimersByTimeAsync(30000);
+        expect(cdpService.getActiveCascadeId).not.toHaveBeenCalled();
+        expect(logger.debug).not.toHaveBeenCalledWith(
+            expect.stringContaining('No active cascade'),
+        );
 
-        expect((router as any).reconnectFailures).toBe(0);
-        expect(cdpService.getActiveCascadeId).toHaveBeenCalledTimes(2);
-        expect(client.streamCascadeUpdates).not.toHaveBeenCalled();
-        expect(logger.debug).toHaveBeenCalledWith('[StreamRouter:__claw__] No active cascade, retrying in 3000ms');
-        expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('Reconnecting in'));
+        await router.stop();
+    });
+
+    it('connectToCascade() activates streaming for a specific cascade', async () => {
+        const client = new FakeGrpcClient();
+        const cdpService = {
+            getGrpcClient: jest.fn().mockResolvedValue(client),
+            getActiveCascadeId: jest.fn().mockResolvedValue(null),
+        };
+
+        const router = new TrajectoryStreamRouter({
+            cdpService: cdpService as any,
+            projectName: '__claw__',
+        });
+
+        router.start();
+
+        const cascadeId = 'test-cascade-id-12345';
+        router.connectToCascade(cascadeId);
+
+        // Let the async connectStream resolve
+        await jest.advanceTimersByTimeAsync(100);
+
+        expect(client.streamCascadeUpdates).toHaveBeenCalledWith(cascadeId);
+        expect(logger.info).toHaveBeenCalledWith(
+            expect.stringContaining('Stream connected for cascade=test-cascad'),
+        );
+
+        await router.stop();
+    });
+
+    it('connectToCascade() is a no-op if already streaming the same cascade', async () => {
+        const client = new FakeGrpcClient();
+        const cdpService = {
+            getGrpcClient: jest.fn().mockResolvedValue(client),
+            getActiveCascadeId: jest.fn().mockResolvedValue(null),
+        };
+
+        const router = new TrajectoryStreamRouter({
+            cdpService: cdpService as any,
+            projectName: '__claw__',
+        });
+
+        router.start();
+
+        const cascadeId = 'test-cascade-id-12345';
+        router.connectToCascade(cascadeId);
+        await jest.advanceTimersByTimeAsync(100);
+
+        expect(client.streamCascadeUpdates).toHaveBeenCalledTimes(1);
+
+        // Calling again with the same ID — should be a no-op
+        router.connectToCascade(cascadeId);
+        await jest.advanceTimersByTimeAsync(100);
+
+        expect(client.streamCascadeUpdates).toHaveBeenCalledTimes(1);
 
         await router.stop();
     });

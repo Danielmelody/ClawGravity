@@ -65,10 +65,13 @@ describe('MessageDeliveryState CRDT', () => {
             expect(resolvePreferredFormat(state)).toBe('text');
         });
 
-        it('returns html when html has content and clock > 0', () => {
+        it('returns steps when stepsData has content and clock > 0', () => {
             let state = initialDeliveryState();
-            state = deliveryReducer(state, { type: 'HTML_UPDATE', html: '<b>hello</b>' });
-            expect(resolvePreferredFormat(state)).toBe('html');
+            state = deliveryReducer(state, {
+                type: 'STEPS_UPDATE',
+                stepsData: { steps: [{ type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' }], runStatus: null },
+            });
+            expect(resolvePreferredFormat(state)).toBe('steps');
         });
 
         it('returns text when html clock > 0 but value is whitespace', () => {
@@ -88,7 +91,7 @@ describe('MessageDeliveryState CRDT', () => {
             const snap = createDeliverySnapshot(state);
             expect(snap.text).toBe('hello');
             expect(snap.html).toBe('<b>hi</b>');
-            expect(snap.preferredFormat).toBe('html');
+            expect(snap.preferredFormat).toBe('text');
             expect(snap.finalText).toBe('final');
             expect(snap.textClock).toBe(1);
             expect(snap.htmlClock).toBe(1);

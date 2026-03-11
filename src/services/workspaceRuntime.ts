@@ -471,6 +471,10 @@ export class WorkspaceRuntime {
         if (!cascadeId || this.activeSessionInfo?.id !== cascadeId) {
             this.activeSessionInfo = null;
         }
+        // Activate the stream router now that we have a real cascade
+        if (cascadeId && this.streamRouter?.isActive()) {
+            this.streamRouter.connectToCascade(cascadeId);
+        }
     }
 
     private rememberActiveSessionInfo(info: WorkspaceActiveSessionInfo | null): void {

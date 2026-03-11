@@ -1,20 +1,17 @@
 /**
- * GrpcResponseMonitor — LS-based response monitoring with reactive stream
- * notifications and on-demand trajectory fetches.
+ * GrpcResponseMonitor — LS-based response monitoring with agent state
+ * stream notifications and on-demand trajectory fetches.
  *
- * The reactive diff stream acts as a notification channel: it tells us
- * WHEN something changes (status transitions, generic diffs). Actual
- * content (response text, tool calls) is fetched from GetCascadeTrajectory
- * on-demand with debouncing.
+ * The agent state stream (StreamAgentStateUpdates) acts as a notification
+ * channel: it tells us WHEN something changes (status transitions, step
+ * updates). Actual content (response text, tool calls) is fetched from
+ * GetCascadeTrajectory on-demand with debouncing.
  *
  * Completely headless — no DOM, no CDP.
  */
 
 import { logger } from '../utils/logger';
 import { GrpcCascadeClient, CascadeStreamEvent } from './grpcCascadeClient';
-import type { AntigravityTrajectoryRenderer } from './antigravityTrajectoryRenderer';
-import { createHash } from 'crypto';
-import { TimelineRenderPipeline } from './timelineRenderPipeline';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,17 +41,15 @@ export interface GrpcResponseMonitorOptions {
     onComplete?: (finalText: string) => void;
     onTimeout?: (lastText: string) => void;
     onPhaseChange?: (phase: GrpcResponsePhase, text: string | null) => void;
-    onRenderedTimeline?: (timeline: {
-        content: string;
-        format: 'text' | 'html';
-        strategy?: string;
-        contextId?: number;
-    }) => void;
-    trajectoryRenderer?: AntigravityTrajectoryRenderer;
+    /** Callback for raw step data (for native rendering without CDP). */
+    onStepsUpdate?: (data: { steps: any[]; runStatus: string | null }) => void;
 }
 
-/** Debounce delay for trajectory fetches triggered by reactive diffs */
-const REACTIVE_SNAPSHOT_DEBOUNCE_MS = 8;
+/** Debounce delay for trajectory fetches triggered by agent state updates.
+ *  The agent state stream is much more chatty than the old reactive diff
+ *  stream — it emits a frame for every incremental change. 150ms coalesces
+ *  rapid bursts without adding perceptible latency. */
+const REACTIVE_SNAPSHOT_DEBOUNCE_MS = 150;
 /** Initial retry delay for recovery (doubles each attempt) */
 const RECOVERY_INITIAL_DELAY_MS = 500;
 /** Max retry delay cap */
@@ -109,26 +104,11 @@ function extractAssistantStepText(step: any): string {
  * text-delivery fallback path shows what was executed, even when the
  * rendered-html path isn't available.
  */
-function extractToolCallSummary(step: any): string {
-    const toolCalls = step?.plannerResponse?.toolCalls;
-    if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
-    const names = toolCalls
-        .map((tc: any) => tc.name || tc.toolName || tc.function?.name || '')
-        .filter(Boolean);
-    if (names.length === 0) return '';
-    return names.map((n: string) => `🔧 ${n}`).join('\n');
-}
 
 function buildAssistantSignature(step: any, stepIndex: number): string {
     const text = normalizeComparableText(extractAssistantStepText(step));
     const toolCalls = Array.isArray(step?.plannerResponse?.toolCalls) ? step.plannerResponse.toolCalls.length : 0;
     return `${stepIndex}:${step?.type || 'assistant'}:${toolCalls}:${text}`;
-}
-
-function buildRenderInputSignature(snapshot: TrajectoryRecoverySnapshot): string {
-    const payload = snapshot.renderTrajectory ?? snapshot.renderSteps;
-    const serialized = JSON.stringify(payload) ?? '';
-    return createHash('sha1').update(serialized).digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -145,19 +125,15 @@ export class GrpcResponseMonitor {
     private readonly onComplete?: (finalText: string) => void;
     private readonly onTimeout?: (lastText: string) => void;
     private readonly onPhaseChange?: (phase: GrpcResponsePhase, text: string | null) => void;
-    private readonly onRenderedTimeline?: (timeline: {
-        content: string;
-        format: 'text' | 'html';
-        strategy?: string;
-        contextId?: number;
-    }) => void;
-    private readonly trajectoryRenderer?: AntigravityTrajectoryRenderer;
+    /** Callback for raw step data (for native rendering without CDP). */
+    private readonly onStepsUpdate?: (data: { steps: any[]; runStatus: string | null }) => void;
 
     private isRunning = false;
     private currentPhase: GrpcResponsePhase = 'waiting';
     private lastResponseText: string | null = null;
     private lastThinkingText: string | null = null;
     private hasSeenActivity = false;
+    private hasSeenRunning = false;
     private startTime = 0;
     private pendingTerminalAssistantSignature: string | null = null;
 
@@ -172,7 +148,6 @@ export class GrpcResponseMonitor {
     private reactiveSnapshotTimer: NodeJS.Timeout | null = null;
     private activeTrajectoryRPC: Promise<TrajectoryRecoverySnapshot | null> | null = null;
     private recoveryPromise: Promise<void> | null = null;
-    private renderPipeline: TimelineRenderPipeline | null = null;
 
     constructor(options: GrpcResponseMonitorOptions) {
         this.client = options.grpcClient;
@@ -184,9 +159,7 @@ export class GrpcResponseMonitor {
         this.onComplete = options.onComplete;
         this.onTimeout = options.onTimeout;
         this.onPhaseChange = options.onPhaseChange;
-        this.onRenderedTimeline = options.onRenderedTimeline;
-        this.trajectoryRenderer = options.trajectoryRenderer;
-    }
+        this.onStepsUpdate = options.onStepsUpdate;    }
 
     /** Start monitoring the cascade for AI response */
     async start(): Promise<void> {
@@ -196,22 +169,10 @@ export class GrpcResponseMonitor {
         this.lastResponseText = null;
         this.lastThinkingText = null;
         this.hasSeenActivity = false;
+        this.hasSeenRunning = false;
         this.pendingTerminalAssistantSignature = null;
         this.recoveryPromise = null;
 
-        // (Re)initialize the timeline render pipeline
-        if (this.trajectoryRenderer && this.onRenderedTimeline) {
-            this.renderPipeline = new TimelineRenderPipeline(
-                this.trajectoryRenderer,
-                this.onRenderedTimeline,
-                (snap) => [
-                    snap.runStatus ?? '',
-                    buildRenderInputSignature(snap as any),
-                ].join('|'),
-            );
-        } else {
-            this.renderPipeline = null;
-        }
 
         this.setPhase('waiting', null);
 
@@ -247,8 +208,7 @@ export class GrpcResponseMonitor {
             this.reactiveSnapshotTimer = null;
         }
 
-        this.renderPipeline?.dispose();
-        this.renderPipeline = null;
+
         this.teardownStream();
     }
 
@@ -336,14 +296,17 @@ export class GrpcResponseMonitor {
                 if (this.currentPhase === 'waiting') {
                     this.setPhase('thinking', null);
                 }
-                // Stream payloads tell us the run is alive, but the HTML timeline
-                // has to be rendered from a trajectory snapshot while the run is ongoing.
-                this.scheduleReactiveSnapshotFetch();
+                // Only schedule a trajectory fetch on the FIRST RUNNING event.
+                // Subsequent RUNNING status-only frames are heartbeats —
+                // actual content changes come as generic events (evt.text='')
+                // which are only emitted when step updates are present.
+                if (!this.hasSeenRunning) {
+                    this.hasSeenRunning = true;
+                    this.scheduleReactiveSnapshotFetch();
+                }
             } else {
-                // Generic diff notification — something changed in the cascade.
-                // Schedule a debounced trajectory fetch to get the actual content.
-                // The reactive stream only tells us WHEN things change;
-                // GetCascadeTrajectory tells us WHAT changed.
+                // Generic notification — actual content changed in the cascade.
+                // Schedule a debounced trajectory fetch to get the content.
                 this.hasSeenActivity = true;
                 this.scheduleReactiveSnapshotFetch();
             }
@@ -481,7 +444,8 @@ export class GrpcResponseMonitor {
     private async readTrajectorySnapshot(): Promise<TrajectoryRecoverySnapshot | null> {
         try {
             const trajectoryResp = await this.client.rawRPC('GetCascadeTrajectory', { cascadeId: this.cascadeId });
-            logger.warn(`[GrpcMonitor] FULL TRAJECTORY PAYLOAD: ${JSON.stringify(trajectoryResp).slice(0, 3000)}`);
+            const stepCount = Array.isArray(trajectoryResp?.trajectory?.steps) ? trajectoryResp.trajectory.steps.length : '?';
+            logger.debug(`[GrpcMonitor] Trajectory fetched: ${stepCount} steps, status=${trajectoryResp?.trajectory?.status ?? trajectoryResp?.status ?? 'unknown'}`);
             const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
             const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
 
@@ -560,30 +524,16 @@ export class GrpcResponseMonitor {
                 if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
                     latestRole = 'assistant';
 
-                    const parts: string[] = [];
-
                     const thinking = step?.plannerResponse?.thinking;
                     if (typeof thinking === 'string' && thinking.trim().length > 0) {
                         this.emitThinkingDetails(thinking);
-                        const blockquote = thinking.trim().split('\n').map(line => `> ${line}`).join('\n');
-                        parts.push(`> 🤔 **Thinking**\n${blockquote}`);
-                    }
-
-                    const toolSummary = extractToolCallSummary(step);
-                    if (toolSummary) {
-                        parts.push(toolSummary);
                     }
 
                     const stepText = extractAssistantStepText(step);
                     if (stepText) {
-                        parts.push(stepText);
-                    }
-
-                    const fullStepText = parts.join('\n\n');
-                    if (fullStepText) {
                         latestResponseText = latestResponseText
-                            ? latestResponseText + '\n\n' + fullStepText
-                            : fullStepText;
+                            ? latestResponseText + '\n\n' + stepText
+                            : stepText;
                     }
 
                     // Only count PENDING tool calls (no result yet) as "still working".
@@ -644,7 +594,15 @@ export class GrpcResponseMonitor {
             return false;
         }
 
-        this.renderPipeline?.schedule(snapshot);
+
+
+        // Emit raw step data for native rendering (no CDP required)
+        if (this.onStepsUpdate && snapshot.steps && snapshot.steps.length > 0) {
+            this.onStepsUpdate({
+                steps: snapshot.steps,
+                runStatus: snapshot.runStatus ?? null,
+            });
+        }
 
         const latestText = snapshot.latestRole === 'assistant'
             ? (snapshot.latestResponseText ?? '')
@@ -711,10 +669,7 @@ export class GrpcResponseMonitor {
         const text = this.lastResponseText ?? '';
 
         // Drain any in-flight timeline render before stopping.
-        // stop() disposes the pipeline which aborts pending renders,
-        // so we must drain first to ensure onRenderedTimeline fires
-        // for the final content.
-        await this.renderPipeline?.drain();
+
 
         this.stop().catch(() => { });
         this.onComplete?.(text);
@@ -769,11 +724,12 @@ export class GrpcResponseMonitor {
         if (verifiedText.length > (this.lastResponseText?.length ?? 0)) {
             this.lastResponseText = verifiedText;
         }
-        // Schedule a final timeline render with the verified snapshot so the
-        // rendered HTML is up-to-date when onComplete fires.
-        // finishSuccessfully() calls drain() internally, so the render will
-        // complete before onComplete fires.
-        this.renderPipeline?.schedule(snapshot);
+        if (this.onStepsUpdate && snapshot.steps && snapshot.steps.length > 0) {
+            this.onStepsUpdate({
+                steps: snapshot.steps,
+                runStatus: snapshot.runStatus,
+            });
+        }
         logger.info(`[GrpcMonitor] IDLE verified via trajectory — completing (${this.lastResponseText?.length ?? 0} chars)`);
         await this.finishSuccessfully();
     }

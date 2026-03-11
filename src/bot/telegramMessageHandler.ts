@@ -46,8 +46,7 @@ import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor'
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
 import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
-import { AntigravityTrajectoryRenderer } from '../services/antigravityTrajectoryRenderer';
-import { markdownToTelegramHtmlViaUnified, rawHtmlToTelegramHtml } from '../platform/telegram/trajectoryRenderer';
+import { renderStepsToTelegramHtml } from '../services/trajectoryStepRenderer';
 
 const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
 
@@ -345,7 +344,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             const channel = trackedChannel;
             const startTime = Date.now();
             const mirror = await createTelegramMirrorSession(channel, 'Processing...');
-            const trajectoryRenderer = new AntigravityTrajectoryRenderer(cdp);
 
             const TIMEOUT_MS = 600_000;
             const monitorDeferred = createDeferred<void>();
@@ -451,7 +449,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 cascadeId,
                 maxDurationMs: TIMEOUT_MS,
                 expectedUserMessage: effectivePrompt,
-                trajectoryRenderer,
                 ...monitorConfig
             });
 
@@ -530,8 +527,7 @@ async function sendTextChunked(
     channel: PlatformChannel,
     text: string,
 ): Promise<void> {
-    const telegramHtml = markdownToTelegramHtmlViaUnified(text) || text;
-    const chunks = splitTelegramText(telegramHtml);
+    const chunks = splitTelegramText(text);
     for (const chunk of chunks) {
         await channel.send({ text: chunk }).catch(logger.error);
     }
@@ -844,14 +840,14 @@ async function createTelegramMirrorSession(
     );
     let state: MessageDeliveryState = initialDeliveryState();
 
-    // Prefer Markdown → Telegram HTML (pure, no CDP dependency).
-    // Falls back to CDP-rendered HTML if text state hasn't arrived yet.
+    // Step-rendered content only — no CDP fallback
     const renderCurrent = (): string => {
-        if (state.text.clock > 0 && state.text.value.trim()) {
-            return markdownToTelegramHtmlViaUnified(state.text.value).trim();
-        }
-        if (state.html.clock > 0 && state.html.value.trim()) {
-            return rawHtmlToTelegramHtml(state.html.value).trim();
+        if (state.stepsData.clock > 0 && state.stepsData.value !== null
+            && Array.isArray(state.stepsData.value.steps) && state.stepsData.value.steps.length > 0) {
+            return renderStepsToTelegramHtml(
+                state.stepsData.value.steps,
+                state.stepsData.value.runStatus,
+            ).trim();
         }
         return '';
     };
@@ -953,14 +949,10 @@ function buildMonitorCallbacks(options: MonitorCallbackOptions) {
             mirror.dispatch({ type: 'TEXT_UPDATE', text });
         },
 
-        onRenderedTimeline: (timeline: { content: string; format: 'text' | 'html' }) => {
+        onStepsUpdate: (data: { steps: any[]; runStatus: string | null }) => {
             if (!shouldForward()) return;
-            if (!timeline.content?.trim()) return;
-            if (timeline.format === 'html') {
-                mirror.dispatch({ type: 'HTML_UPDATE', html: timeline.content });
-            } else {
-                mirror.dispatch({ type: 'TEXT_UPDATE', text: timeline.content });
-            }
+            if (!data.steps || data.steps.length === 0) return;
+            mirror.dispatch({ type: 'STEPS_UPDATE', stepsData: data });
         },
 
         onComplete: async (finalText: string) => {
@@ -1192,9 +1184,6 @@ async function startPassiveResponseMonitor(
 
     const startTime = Date.now();
     const mirror = await createTelegramMirrorSession(channel);
-    const trajectoryRenderer = new AntigravityTrajectoryRenderer(
-        runtime.getConnectedCdp() || runtime.getCdpUnsafe(),
-    );
 
     const initialMonitoringTarget = await runtime.getMonitoringTarget(info.cascadeId || null);
     let monitor: GrpcResponseMonitor | null = null;
@@ -1272,7 +1261,6 @@ async function startPassiveResponseMonitor(
         cascadeId: initialMonitoringTarget.cascadeId,
         maxDurationMs: 600_000,
         expectedUserMessage: info.text,
-        trajectoryRenderer,
         ...monitorConfig
     });
 

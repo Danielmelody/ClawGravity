@@ -13,7 +13,7 @@
  */
 
 import { logger } from '../../utils/logger';
-import { rawHtmlToTelegramHtml, markdownToTelegramHtmlViaUnified } from './trajectoryRenderer';
+import { renderStepsToTelegramHtml } from '../../services/trajectoryStepRenderer';
 import type { DeliverySnapshot } from './messageDeliveryState';
 import type { PipelineSession } from '../../utils/pipelineDebugLog';
 import type { PlatformChannel, PlatformSentMessage } from '../types';
@@ -22,7 +22,16 @@ import type { PlatformChannel, PlatformSentMessage } from '../types';
 // Types
 // ---------------------------------------------------------------------------
 
-export type DeliveryMode = 'rendered-html' | 'text-to-html' | 'empty';
+/**
+ * Delivery mode for Telegram messages.
+ *
+ * Only two modes:
+ *   - 'step-rendered' — native step rendering from trajectory data
+ *   - 'empty' — no content available
+ *
+ * No CDP/Preact fallback. All rendering is done natively.
+ */
+export type DeliveryMode = 'step-rendered' | 'empty';
 
 /** Immutable plan produced by the pure pipeline. */
 export interface DeliveryPlan {
@@ -59,28 +68,19 @@ export function planDelivery(
     options: DeliveryOptions,
 ): DeliveryPlan {
     // ── Step 1: Choose delivery mode ─────────────────────────────────────
-    // Prefer Markdown → Telegram HTML (pure function, no CDP dependency).
-    // Fall back to CDP-rendered HTML only if no finalText is available.
     const mode = pipeline.step(
         'chooseDeliveryMode',
         {
             renderOnlyOnComplete: options.renderOnlyOnComplete,
             preferredFormat: snapshot.preferredFormat,
-            htmlClock: snapshot.htmlClock,
-            htmlLength: snapshot.html.length,
+            stepsClock: snapshot.stepsClock,
+            stepsCount: snapshot.stepsData?.steps?.length ?? 0,
             finalTextLength: snapshot.finalText.length,
         },
         (): DeliveryMode => {
-            if (snapshot.finalText.trim()) {
-                return 'text-to-html';
-            }
-            if (snapshot.html.trim()) {
-                logger.debug(
-                    `[DeliveryPipeline] No finalText but rendered HTML exists `
-                    + `(${snapshot.html.length} chars, htmlClock=${snapshot.htmlClock}). `
-                    + `Using rendered-html fallback.`,
-                );
-                return 'rendered-html';
+            if (snapshot.stepsData && Array.isArray(snapshot.stepsData.steps)
+                && snapshot.stepsData.steps.length > 0) {
+                return 'step-rendered';
             }
             return 'empty';
         },
@@ -89,13 +89,13 @@ export function planDelivery(
     // ── Step 2: Convert to Telegram HTML ───────────────────────────────────
     const telegramHtml = pipeline.step(
         'convertToTelegramHtml',
-        { mode, inputLength: mode === 'rendered-html' ? snapshot.html.length : snapshot.finalText.length },
+        { mode, stepsCount: snapshot.stepsData?.steps?.length ?? 0 },
         (): string => {
-            if (mode === 'rendered-html') {
-                return rawHtmlToTelegramHtml(snapshot.html).trim();
-            }
-            if (mode === 'text-to-html') {
-                return markdownToTelegramHtmlViaUnified(snapshot.finalText).trim();
+            if (mode === 'step-rendered' && snapshot.stepsData) {
+                return renderStepsToTelegramHtml(
+                    snapshot.stepsData.steps,
+                    snapshot.stepsData.runStatus,
+                ).trim();
             }
             return '';
         },
@@ -114,7 +114,7 @@ export function planDelivery(
         'resolveDeliveredText',
         { mode, telegramHtmlLength: telegramHtml.length },
         (): string | null => {
-            if ((mode === 'rendered-html' || mode === 'text-to-html') && telegramHtml.trim()) {
+            if (mode === 'step-rendered' && telegramHtml.trim()) {
                 return stripHtmlTags(telegramHtml).trim() || null;
             }
             return null;
@@ -122,11 +122,9 @@ export function planDelivery(
     );
 
     // ── Build reason string for debugging ──────────────────────────────────
-    const reason = mode === 'rendered-html'
-        ? `Rendered HTML (htmlClock=${snapshot.htmlClock}, content=${snapshot.html.length} chars)`
-        : mode === 'text-to-html'
-            ? `Text-to-HTML fallback (finalText=${snapshot.finalText.length} chars, htmlClock=${snapshot.htmlClock})`
-            : `Empty — no rendered HTML available (htmlClock=${snapshot.htmlClock})`;
+    const reason = mode === 'step-rendered'
+        ? `Step-rendered (stepsClock=${snapshot.stepsClock}, steps=${snapshot.stepsData?.steps?.length ?? 0})`
+        : `Empty — no step data available (stepsClock=${snapshot.stepsClock})`;
 
     return { mode, reason, telegramHtml, chunks, deliveredText };
 }

@@ -49,7 +49,7 @@ import { getAntigravityCdpHint } from '../utils/pathUtils';
 import { AutoAcceptService } from '../services/autoAcceptService';
 import { PromptDispatcher } from '../services/promptDispatcher';
 import { ScheduleService } from '../services/scheduleService';
-import { AntigravityTrajectoryRenderer } from '../services/antigravityTrajectoryRenderer';
+import { renderStepsToDiscordMarkdown } from '../services/trajectoryStepRenderer';
 import {
     CdpBridge,
     ensureWorkspaceRuntime,
@@ -819,7 +819,7 @@ async function sendPromptToAntigravity(
             cascadeId,
             maxDurationMs: 300000,
             expectedUserMessage: prompt,
-            trajectoryRenderer: new AntigravityTrajectoryRenderer(cdp),
+
 
             onPhaseChange: () => {
                 // Phase transitions are already logged inside GrpcResponseMonitor.setPhase()
@@ -843,12 +843,10 @@ async function sendPromptToAntigravity(
                 }
             },
 
-            onRenderedTimeline: (timeline) => {
-                if (isFinalized || !timeline.content || timeline.content.trim().length === 0) return;
-
-                const activityText = timeline.format === 'html'
-                    ? htmlToDiscordMarkdown(timeline.content)
-                    : timeline.content;
+            onStepsUpdate: (data) => {
+                if (isFinalized) return;
+                
+                const activityText = renderStepsToDiscordMarkdown(data.steps, data.runStatus);
                 const normalized = activityText.trim();
                 if (!normalized || normalized === latestRenderedActivityText) return;
 

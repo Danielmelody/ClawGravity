@@ -110,7 +110,7 @@ describe('toTelegramPayload', () => {
         const result = toTelegramPayload(payload);
 
         expect(result.text).toContain('<b>Status</b>');
-        expect(result.text).toContain('<b>good</b>');
+        expect(result.text).toContain('All **good**');
     });
 
     it('combines text and richContent', () => {
