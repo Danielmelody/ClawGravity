@@ -99,6 +99,10 @@ function renderStep(step: any, opts: Required<StepRenderOptions>): string | null
         return renderAssistantStep(step, opts);
     }
 
+    // Catch error-only steps that aren't planner/response type
+    const errorOnly = renderStepError(step, 'telegram');
+    if (errorOnly) return errorOnly;
+
     // Skip user input — already visible in the Telegram chat
     return null;
 }
@@ -127,8 +131,40 @@ function renderAssistantStep(step: any, opts: Required<StepRenderOptions>): stri
         parts.push(markdownToTelegramHtml(responseText));
     }
 
+    // 4. Error information
+    const errorHtml = renderStepError(step, 'telegram');
+    if (errorHtml) parts.push(errorHtml);
+
     if (parts.length === 0) return null;
     return parts.join('\n\n');
+}
+
+// ---------------------------------------------------------------------------
+// Error rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract and render error information from a trajectory step.
+ * Checks step.error, step.plannerResponse.error, and step.response.error.
+ * Returns null if no error is found.
+ */
+function renderStepError(step: any, mode: 'telegram' | 'discord'): string | null {
+    const errorField = step?.error || step?.plannerResponse?.error || step?.response?.error;
+    if (!errorField) return null;
+
+    const errorMessage = typeof errorField === 'string'
+        ? errorField
+        : errorField?.message || JSON.stringify(errorField);
+
+    if (!errorMessage || !errorMessage.trim()) return null;
+
+    const truncated = errorMessage.length > 1000 ? errorMessage.slice(0, 1000) + '…' : errorMessage;
+
+    if (mode === 'telegram') {
+        return `❌ <b>Error</b>\n<blockquote expandable>${escapeHtml(truncated)}</blockquote>`;
+    }
+    // Discord markdown
+    return `❌ **Error**\n> ${truncated.split('\n').join('\n> ')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -841,9 +877,17 @@ function renderDiscordStep(step: any, opts: Required<StepRenderOptions>): string
             parts.push(responseText);
         }
 
+        // Error information
+        const errorMd = renderStepError(step, 'discord');
+        if (errorMd) parts.push(errorMd);
+
         if (parts.length === 0) return null;
         return parts.join('\n\n');
     }
+
+    // Catch error-only steps that aren't planner/response type
+    const errorOnly = renderStepError(step, 'discord');
+    if (errorOnly) return errorOnly;
 
     return null;
 }

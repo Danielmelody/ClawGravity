@@ -67,3 +67,6 @@ report/
 # npm pack artifacts
 *.tgz
 nul
+
+# Third-party analysis (cloned repos for evaluation)
+analysis/
