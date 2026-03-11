@@ -5,7 +5,7 @@ import * as http from 'http';
 import { spawn } from 'child_process';
 import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
 import WebSocket from 'ws';
-import { GrpcCascadeClient, ModelId, discoverAllLSConnections, decodeWorkspaceId } from './grpcCascadeClient';
+import { GrpcCascadeClient, ModelId, LSConnection } from './grpcCascadeClient';
 
 
 export interface CdpServiceOptions {
@@ -81,9 +81,10 @@ export class CdpService extends EventEmitter {
 
     /** Lazy-initialized gRPC client for direct API communication */
     private grpcClient: GrpcCascadeClient | null = null;
-    private grpcAuthAttempted: boolean = false;
     private grpcInitPromise: Promise<GrpcCascadeClient | null> | null = null;
     private lastGrpcUnavailableReason: string | null = null;
+    /** LS credentials sniffed from CDP Network events */
+    private sniffedLSCredentials: LSConnection | null = null;
     /** Cached cascade ID for gRPC calls */
     private cachedCascadeId: string | null = null;
     /** Newly created cascade ID awaiting visibility in listCascades() */
@@ -250,12 +251,35 @@ export class CdpService extends EventEmitter {
         // Initialize Runtime to get execution contexts
         await this.call('Runtime.enable', {});
 
-        // Enable Network domain for event-based completion detection
+        // Enable Network domain for LS credential sniffing
         try {
             await this.call('Network.enable', {});
         } catch {
-            logger.warn('[CdpService] Network.enable failed — network event detection disabled');
+            logger.warn('[CdpService] Network.enable failed — LS credential sniffing disabled');
         }
+
+        // Passive credential sniffing — extract port + CSRF token from the first LS request
+        this.on('Network.requestWillBeSent', (params: any) => {
+            if (this.sniffedLSCredentials) return; // Already captured
+            const url = params?.request?.url || '';
+            if (!url.includes('language_server_pb')) return;
+            const portMatch = url.match(/127\.0\.0\.1:(\d+)/);
+            const headers = params?.request?.headers || {};
+            const csrfToken = headers['x-codeium-csrf-token']
+                || headers['X-Codeium-Csrf-Token']
+                || headers['x-Codeium-Csrf-Token'];
+            if (portMatch && csrfToken) {
+                this.sniffedLSCredentials = {
+                    port: parseInt(portMatch[1], 10),
+                    csrfToken,
+                    useTls: url.startsWith('https'),
+                };
+                logger.info(`[CdpService] Sniffed LS credentials: port=${this.sniffedLSCredentials.port}`);
+                // Re-init gRPC client with the new credentials
+                this.grpcClient = null;
+                this.grpcInitPromise = null;
+            }
+        });
     }
 
     async call(method: string, params: any = {}): Promise<any> {
@@ -312,8 +336,8 @@ export class CdpService extends EventEmitter {
         this.targetFrameId = null;
         // Reset gRPC state so next connection re-probes auth
         this.grpcClient = null;
-        this.grpcAuthAttempted = false;
         this.grpcInitPromise = null;
+        this.sniffedLSCredentials = null;
         this.cachedCascadeId = null;
         this.recentCreatedCascadeId = null;
         this.recentCreatedCascadeAt = 0;
@@ -494,11 +518,12 @@ export class CdpService extends EventEmitter {
 
         this.disconnectQuietly();
 
-        // Reset gRPC state so ensureGrpcClient() re-discovers the correct LS
-        // process for the NEW workspace page. Without this, the old gRPC client
+        // Reset gRPC + sniffed state so ensureGrpcClient() re-discovers the correct LS
+        // for the NEW workspace page. Without this, the old gRPC client
         // continues pointing to the previous workspace's LS process (cross-talk bug).
         this.grpcClient = null;
-        this.grpcAuthAttempted = false;
+        this.grpcInitPromise = null;
+        this.sniffedLSCredentials = null;
         this.cachedCascadeId = null;
         this.recentCreatedCascadeId = null;
         this.recentCreatedCascadeAt = 0;
@@ -1088,10 +1113,7 @@ export class CdpService extends EventEmitter {
 
     /**
      * Lazy-initialize the gRPC client by discovering the LS process.
-     *
-     * When multiple LS processes exist (multi-workspace), uses CDP to detect
-     * which LS port the currently connected workbench page is talking to
-     * via `performance.getEntriesByType('resource')`.
+     * Uses the passive CDP Network sniffing mechanism (listening for x-codeium-csrf-token).
      */
     private async ensureGrpcClient(): Promise<GrpcCascadeClient | null> {
         if (this.grpcClient?.isReady()) {
@@ -1103,78 +1125,37 @@ export class CdpService extends EventEmitter {
             return this.grpcInitPromise;
         }
 
-        if (this.grpcAuthAttempted) {
-            return this.grpcClient;
-        }
-        this.grpcAuthAttempted = true;
-
         this.grpcInitPromise = (async () => {
             try {
-                const allConnections = await discoverAllLSConnections();
-                if (allConnections.length === 0) {
-                    logger.debug('[CdpService] No LS processes found');
-                    this.lastGrpcUnavailableReason = 'gRPC unavailable: no Antigravity Language Server process found.';
-                    // Allow retry — LS process may not have started yet
-                    this.grpcAuthAttempted = false;
+                if (!this.sniffedLSCredentials) {
+                    // Try to trigger an LS request if we haven't sniffed one naturally
+                    await this.triggerLSCredentialProbe();
+                }
+
+                if (!this.sniffedLSCredentials) {
+                    this.lastGrpcUnavailableReason = 'gRPC unavailable: No LS credentials sniffed from CDP.';
+                    logger.debug(`[CdpService] ${this.lastGrpcUnavailableReason}`);
                     return null;
                 }
 
-                let conn = allConnections[0];
-
-                if (allConnections.length > 1) {
-                    // Strategy 1: Match via --workspace_id from LS process args (reliable, no CDP needed)
-                    const matchedByWorkspaceId = this.matchConnectionByWorkspaceId(allConnections);
-                    if (matchedByWorkspaceId) {
-                        conn = matchedByWorkspaceId;
-                        logger.info(
-                            `[CdpService] gRPC: matched LS via workspace_id for ` +
-                            `"${this.currentWorkspaceName}" (${allConnections.length} candidates)`
-                        );
-                    } else {
-                        // Strategy 2: Fallback to CDP port detection (for older LS versions without --workspace_id)
-                        let detectedPort = await this.detectLSPortViaCDP();
-
-                        if (!detectedPort) {
-                            await new Promise(r => setTimeout(r, 2000));
-                            detectedPort = await this.detectLSPortViaCDP();
-                        }
-
-                        const matched = detectedPort
-                            ? allConnections.find(c => c.port === detectedPort)
-                            : null;
-
-                        if (matched) {
-                            conn = matched;
-                            logger.info(
-                                `[CdpService] gRPC: matched LS port=${detectedPort} via CDP ` +
-                                `for workspace "${this.currentWorkspaceName}" (${allConnections.length} candidates)`
-                            );
-                        } else {
-                            // Both strategies failed
-                            logger.error(
-                                `[CdpService] gRPC: CDP port detection returned ${detectedPort} — ` +
-                                `CANNOT determine which of ${allConnections.length} LS processes belongs to ` +
-                                `workspace "${this.currentWorkspaceName}". Will retry on next attempt.`
-                            );
-                            this.lastGrpcUnavailableReason =
-                                `gRPC unavailable: could not match workspace "${this.currentWorkspaceName || 'unknown'}" ` +
-                                'to a Language Server process.';
-                            this.grpcAuthAttempted = false;
-                            return null;
-                        }
-                    }
-                }
-
                 this.grpcClient = new GrpcCascadeClient();
-                this.grpcClient.setConnection(conn);
+                // Inject the CDP evaluation callback so GrpcCascadeClient can run fetch() inside the renderer
+                this.grpcClient.setCdpEvaluate(async (expression: string) => {
+                    return this.call('Runtime.evaluate', {
+                        expression,
+                        returnByValue: true,
+                        awaitPromise: true,
+                        timeout: 10000,
+                    });
+                });
+                this.grpcClient.setConnection(this.sniffedLSCredentials);
+                
                 this.lastGrpcUnavailableReason = null;
-                logger.info(`[CdpService] gRPC client initialized: port=${conn.port}, tls=${conn.useTls}`);
+                logger.info(`[CdpService] gRPC client initialized: port=${this.sniffedLSCredentials.port}, tls=${this.sniffedLSCredentials.useTls}`);
                 return this.grpcClient;
             } catch (err: any) {
-                logger.debug(`[CdpService] LS process discovery failed: ${err.message}`);
                 this.lastGrpcUnavailableReason = `gRPC unavailable: ${err?.message || String(err)}`;
-                // Allow retry on next call
-                this.grpcAuthAttempted = false;
+                logger.error(`[CdpService] gRPC init failed: ${this.lastGrpcUnavailableReason}`);
                 return null;
             } finally {
                 this.grpcInitPromise = null;
@@ -1185,56 +1166,16 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Match an LS connection to this workspace using the --workspace_id CLI arg.
-     *
-     * Each LS process is launched with `--workspace_id <encoded_path>`. We decode
-     * the encoded path and compare it against `currentWorkspacePath` using
-     * normalized, case-insensitive comparison (Windows paths are case-insensitive).
-     *
-     * @returns Matching LSConnection, or null if no match found
+     * Triggers a fast GET request to the Status API from within the renderer
+     * to force a Network.requestWillBeSent event, allowing us to sniff the
+     * CSRF token and port if we missed the initial load traffic.
      */
-    private matchConnectionByWorkspaceId(
-        connections: import('./grpcCascadeClient').LSConnection[],
-    ): import('./grpcCascadeClient').LSConnection | null {
-        if (!this.currentWorkspacePath) return null;
-
-        const normalize = (p: string) =>
-            p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-
-        const targetPath = normalize(this.currentWorkspacePath);
-
-        for (const conn of connections) {
-            if (!conn.workspaceId) continue;
-            const decodedPath = normalize(decodeWorkspaceId(conn.workspaceId));
-            if (decodedPath === targetPath) {
-                return conn;
-            }
-        }
-
-        // Log available workspace IDs for diagnostics
-        const ids = connections
-            .map(c => c.workspaceId || '(none)')
-            .join(', ');
-        logger.debug(
-            `[CdpService] matchConnectionByWorkspaceId: no match for ` +
-            `"${this.currentWorkspacePath}" in [${ids}]`,
-        );
-        return null;
-    }
-
-    /**
-     * Detect which LS port the currently connected workbench page is using.
-     *
-     * Each Antigravity workbench page makes HTTP requests to its own LS process
-     * (e.g. `https://127.0.0.1:55692/exa.language_server_pb.LanguageServerService/...`).
-     * The browser's Performance Resource Timing API records these requests,
-     * so we can extract the port from the most recent LS request URL.
-     */
-    private async detectLSPortViaCDP(): Promise<number | null> {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            return null;
-        }
-
+    private async triggerLSCredentialProbe(): Promise<void> {
+        if (!this.contexts.length) return;
+        
+        // Use any available context, preferably one that looks like the cascade panel
+        const ctxId = this.getPrimaryContextId() || this.contexts[0].id;
+        
         const script = `(() => {
             try {
                 const entries = performance.getEntriesByType('resource');
@@ -1243,68 +1184,30 @@ export class CdpService extends EventEmitter {
                     e.name.includes('language_server_pb')
                 );
                 if (lsEntries.length === 0) return null;
-                const match = lsEntries[lsEntries.length - 1].name.match(/127\\.0\\.0\\.1:(\\d+)/);
-                return match ? parseInt(match[1], 10) : null;
+                
+                const lastUrl = lsEntries[lsEntries.length - 1].name;
+                
+                // Fire a dummy fetch to capture the headers in the Network domain
+                // (We don't care about the response, just the outgoing request)
+                fetch(lastUrl, { method: 'OPTIONS' }).catch(() => {});
+                
+                return true;
             } catch (e) {
-                return null;
+                return false;
             }
         })()`;
 
-        // Sort contexts by priority to avoid cross-workspace contamination.
-        // Extension host contexts are shared across all VS Code windows and
-        // their performance timeline contains LS requests from whichever
-        // workspace was most recently active — which may not be this one.
-        // Webview/cascade-panel contexts are workspace-specific and reliable.
-        const prioritized = [...this.contexts].sort((a, b) => {
-            return this.contextPriority(a) - this.contextPriority(b);
-        });
-
-        for (const ctx of prioritized) {
-            try {
-                const result = await this.call('Runtime.evaluate', {
-                    expression: script,
-                    returnByValue: true,
-                    contextId: ctx.id,
-                });
-
-                const port = result?.result?.value;
-                if (typeof port === 'number' && port > 0) {
-                    logger.debug(
-                        `[CdpService] detectLSPortViaCDP returned ${port} ` +
-                        `from context: ${ctx.name || ctx.id} (type: ${ctx.auxData?.type}, ` +
-                        `priority: ${this.contextPriority(ctx)})`,
-                    );
-                    return port;
-                }
-            } catch {
-                // Try next context
-            }
+        try {
+            await this.call('Runtime.evaluate', {
+                expression: script,
+                returnByValue: true,
+                contextId: ctxId,
+            });
+            // Give the Network listener a moment to fire and catch the request
+            await new Promise(resolve => setTimeout(resolve, 250));
+        } catch (err) {
+            logger.debug(`[CdpService] Credential probe via CDP failed: ${err}`);
         }
-
-        return null;
-    }
-
-    /**
-     * Assign a priority score to a CDP execution context for LS port detection.
-     * Lower = higher priority. Webview contexts are workspace-specific (most
-     * reliable). Extension host contexts are shared across windows (least
-     * reliable — they contain LS resource entries from any workspace).
-     */
-    private contextPriority(ctx: CdpContext): number {
-        const name = (ctx.name || '').toLowerCase();
-        const url = ((ctx as any).url || '').toLowerCase();
-        const type = (ctx.auxData?.type || '').toLowerCase();
-
-        // Cascade-panel webview — always workspace-specific
-        if (url.includes('cascade-panel') || name.includes('cascade-panel')) return 0;
-        // Other webview contexts
-        if (url.includes('webview') || name.includes('webview')) return 1;
-        // Main page / default frame
-        if (type === 'default' || type === '') return 2;
-        // Extension host — shared across windows, least reliable
-        if (name.includes('extension') || type === 'isolated') return 4;
-        // Everything else
-        return 3;
     }
 
     /**
@@ -1890,7 +1793,8 @@ export class CdpService extends EventEmitter {
 
             // Step 2: Tear down gRPC client
             this.grpcClient = null;
-            this.grpcAuthAttempted = false;
+            this.grpcInitPromise = null;
+            this.sniffedLSCredentials = null;
             steps.push('gRPC client reset');
 
             // Step 3: Clear cached state

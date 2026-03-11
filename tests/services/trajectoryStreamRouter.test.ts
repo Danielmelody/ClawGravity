@@ -12,7 +12,6 @@ jest.mock('../../src/utils/logger', () => ({
 }));
 
 class FakeGrpcClient extends EventEmitter {
-    streamCascadeUpdates = jest.fn(() => new AbortController());
     rawRPC = jest.fn();
 }
 
@@ -55,7 +54,7 @@ describe('TrajectoryStreamRouter', () => {
         await router.stop();
     });
 
-    it('connectToCascade() activates streaming for a specific cascade', async () => {
+    it('connectToCascade() activates polling for a specific cascade', async () => {
         const client = new FakeGrpcClient();
         const cdpService = {
             getGrpcClient: jest.fn().mockResolvedValue(client),
@@ -72,18 +71,19 @@ describe('TrajectoryStreamRouter', () => {
         const cascadeId = 'test-cascade-id-12345';
         router.connectToCascade(cascadeId);
 
-        // Let the async connectStream resolve
-        await jest.advanceTimersByTimeAsync(100);
+        // Advance by next tick for the promise to resolve
+        await Promise.resolve();
+        await Promise.resolve();
 
-        expect(client.streamCascadeUpdates).toHaveBeenCalledWith(cascadeId);
+        expect(client.rawRPC).toHaveBeenCalledWith('GetCascadeTrajectory', { cascadeId });
         expect(logger.info).toHaveBeenCalledWith(
-            expect.stringContaining('Stream connected for cascade=test-cascad'),
+            expect.stringContaining('Polling started for cascade=test-cascad'),
         );
 
         await router.stop();
     });
 
-    it('connectToCascade() is a no-op if already streaming the same cascade', async () => {
+    it('connectToCascade() is a no-op if already polling the same cascade', async () => {
         const client = new FakeGrpcClient();
         const cdpService = {
             getGrpcClient: jest.fn().mockResolvedValue(client),
@@ -99,15 +99,17 @@ describe('TrajectoryStreamRouter', () => {
 
         const cascadeId = 'test-cascade-id-12345';
         router.connectToCascade(cascadeId);
-        await jest.advanceTimersByTimeAsync(100);
+        await Promise.resolve();
+        await Promise.resolve();
 
-        expect(client.streamCascadeUpdates).toHaveBeenCalledTimes(1);
+        expect(client.rawRPC).toHaveBeenCalledTimes(1);
 
-        // Calling again with the same ID — should be a no-op
+        // Calling again with the same ID — should be a no-op (no secondary immediate poll)
         router.connectToCascade(cascadeId);
-        await jest.advanceTimersByTimeAsync(100);
+        await Promise.resolve();
+        await Promise.resolve();
 
-        expect(client.streamCascadeUpdates).toHaveBeenCalledTimes(1);
+        expect(client.rawRPC).toHaveBeenCalledTimes(1);
 
         await router.stop();
     });

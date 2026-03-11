@@ -1,37 +1,29 @@
 /**
  * TrajectoryStreamRouter — event-driven trajectory dispatcher.
  *
- * Subscribes to the existing StreamCascadeReactiveUpdates stream
- * and dispatches trajectory data to registered passive detectors.
+ * Polls the trajectory API at regular intervals and dispatches
+ * trajectory data to registered passive detectors.
  *
  * Architecture:
  *   Lazy-connect: does NOT poll on startup. The router stays idle until
  *   `connectToCascade(id)` is called (typically after a user sends a
  *   message and a cascade is created or selected).
  *
- *   Stream event (diff) arrives
- *     → debounce (300ms)
+ *   Polling tick arrives
  *     → fetch trajectory + summaries ONCE
  *     → fan out to all registered detectors via evaluate()
  */
 
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
-import { GrpcCascadeClient, CascadeStreamEvent } from './grpcCascadeClient';
 import { ApprovalDetector } from './approvalDetector';
 import { ErrorPopupDetector } from './errorPopupDetector';
 import { PlanningDetector } from './planningDetector';
 import { RunCommandDetector } from './runCommandDetector';
 import { UserMessageDetector } from './userMessageDetector';
 
-/** Debounce delay for trajectory fetches triggered by reactive diffs */
-const STREAM_DEBOUNCE_MS = 300;
-
-/** Delay before reconnecting the stream after a closed/error */
-const RECONNECT_DELAY_MS = 3000;
-
-/** Maximum consecutive reconnect failures before giving up */
-const MAX_RECONNECT_FAILURES = 10;
+/** Polling interval for trajectory fetches (ms) */
+const POLLING_INTERVAL_MS = 300;
 
 export interface TrajectoryStreamRouterOptions {
     cdpService: CdpService;
@@ -49,20 +41,12 @@ export class TrajectoryStreamRouter {
     private runCommandDetector: RunCommandDetector | null = null;
     private userMessageDetector: UserMessageDetector | null = null;
 
-    // Stream state
-    private abortController: AbortController | null = null;
-    /** Reference to the client we attached listeners to (for cleanup) */
-    private boundClient: GrpcCascadeClient | null = null;
-    private dataListener: ((evt: CascadeStreamEvent) => void) | null = null;
-    private completeListener: (() => void) | null = null;
-    private errorListener: ((err: any) => void) | null = null;
+    // Polling state
+    private pollingTimer: NodeJS.Timeout | null = null;
     private isRunning: boolean = false;
-    private debounceTimer: NodeJS.Timeout | null = null;
-    private reconnectTimer: NodeJS.Timeout | null = null;
     private isFetching: boolean = false;
-    private reconnectFailures: number = 0;
 
-    /** The cascade ID currently being streamed (may change when user switches conversations) */
+    /** The cascade ID currently being polled (may change when user switches conversations) */
     private currentCascadeId: string | null = null;
 
     constructor(options: TrajectoryStreamRouterOptions) {
@@ -96,7 +80,7 @@ export class TrajectoryStreamRouter {
 
     /**
      * Mark the router as ready. Does NOT start polling.
-     * Call `connectToCascade(id)` to actually begin streaming.
+     * Call `connectToCascade(id)` to actually begin polling.
      */
     start(): void {
         this.isRunning = true;
@@ -104,15 +88,7 @@ export class TrajectoryStreamRouter {
 
     async stop(): Promise<void> {
         this.isRunning = false;
-        this.teardownStream();
-        if (this.debounceTimer) {
-            clearTimeout(this.debounceTimer);
-            this.debounceTimer = null;
-        }
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-        }
+        this.stopPolling();
     }
 
     isActive(): boolean {
@@ -120,146 +96,47 @@ export class TrajectoryStreamRouter {
     }
 
     /**
-     * Connect (or reconnect) the stream to a specific cascade.
+     * Connect (or reconnect) polling to a specific cascade.
      * Called on-demand when a cascade is created, selected, or discovered.
-     * If already streaming the same cascade, this is a no-op.
+     * If already polling the same cascade, this is a no-op.
      */
     connectToCascade(cascadeId: string): void {
         if (!this.isRunning) {
             this.isRunning = true;
         }
-        if (this.currentCascadeId === cascadeId && this.abortController) {
-            return; // Already streaming this cascade
+        if (this.currentCascadeId === cascadeId && this.pollingTimer) {
+            return; // Already polling this cascade
         }
         if (this.currentCascadeId && this.currentCascadeId !== cascadeId) {
-            logger.info(`[StreamRouter:${this.projectName}] Cascade changed from ${this.currentCascadeId.slice(0, 12)} to ${cascadeId.slice(0, 12)}, reconnecting`);
-            this.teardownStream();
+            logger.info(`[StreamRouter:${this.projectName}] Cascade changed from ${this.currentCascadeId.slice(0, 12)} to ${cascadeId.slice(0, 12)}, restarting poll`);
+            this.stopPolling();
         }
-        void this.connectStream(cascadeId);
+        this.startPolling(cascadeId);
     }
 
-    // ─── Stream Connection ──────────────────────────────────────────
+    // ─── Polling ────────────────────────────────────────────────────
 
-    private async connectStream(cascadeId?: string): Promise<void> {
-        if (!this.isRunning) return;
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-        }
+    private startPolling(cascadeId: string): void {
+        this.currentCascadeId = cascadeId;
 
-        // If no cascade ID provided, try to discover one. If none exists, just stop
-        // — the router sits idle until connectToCascade() is called explicitly.
-        const targetCascadeId = cascadeId ?? await this.cdpService.getActiveCascadeId();
-        if (!targetCascadeId) return;
+        logger.info(`[StreamRouter:${this.projectName}] Polling started for cascade=${cascadeId.slice(0, 12)}...`);
 
-        try {
-            const client = await this.cdpService.getGrpcClient();
-            if (!client) {
-                logger.warn(`[StreamRouter:${this.projectName}] gRPC client not ready`);
-                this.scheduleReconnect();
-                return;
-            }
+        // Immediate first fetch
+        void this.fetchAndDispatch();
 
-            this.currentCascadeId = targetCascadeId;
-            this.boundClient = client;
-
-            // Wire up event listeners
-            this.dataListener = (evt) => this.handleStreamData(evt);
-            this.completeListener = () => this.handleStreamClose();
-            this.errorListener = (err) => this.handleStreamError(err);
-
-            client.on('data', this.dataListener);
-            client.on('complete', this.completeListener);
-            client.on('error', this.errorListener);
-
-            // Open the reactive stream
-            this.abortController = client.streamCascadeUpdates(targetCascadeId);
-            this.reconnectFailures = 0;
-
-            logger.info(`[StreamRouter:${this.projectName}] Stream connected for cascade=${targetCascadeId.slice(0, 12)}...`);
-
-            // Do an initial evaluation immediately so we don't miss already-pending states
+        // Regular polling interval
+        this.pollingTimer = setInterval(() => {
+            if (!this.isRunning) return;
             void this.fetchAndDispatch();
-        } catch (error) {
-            logger.error(`[StreamRouter:${this.projectName}] Failed to connect stream:`, error);
-            this.scheduleReconnect();
-        }
+        }, POLLING_INTERVAL_MS);
     }
 
-    private teardownStream(): void {
-        if (this.abortController) {
-            this.abortController.abort();
-            this.abortController = null;
+    private stopPolling(): void {
+        if (this.pollingTimer) {
+            clearInterval(this.pollingTimer);
+            this.pollingTimer = null;
         }
-        this.removeStreamListeners();
         this.currentCascadeId = null;
-        this.boundClient = null;
-    }
-
-    private removeStreamListeners(): void {
-        const client = this.boundClient;
-        if (!client) return;
-
-        if (this.dataListener) {
-            client.off('data', this.dataListener);
-            this.dataListener = null;
-        }
-        if (this.completeListener) {
-            client.off('complete', this.completeListener);
-            this.completeListener = null;
-        }
-        if (this.errorListener) {
-            client.off('error', this.errorListener);
-            this.errorListener = null;
-        }
-    }
-
-    private scheduleReconnect(): void {
-        if (!this.isRunning) return;
-        if (this.reconnectTimer) return;
-
-        this.reconnectFailures++;
-        if (this.reconnectFailures > MAX_RECONNECT_FAILURES) {
-            logger.error(`[StreamRouter:${this.projectName}] Max reconnect failures reached (${MAX_RECONNECT_FAILURES}), giving up`);
-            this.isRunning = false;
-            return;
-        }
-
-        const delay = RECONNECT_DELAY_MS * Math.min(this.reconnectFailures, 3);
-        logger.debug(`[StreamRouter:${this.projectName}] Reconnecting in ${delay}ms (attempt ${this.reconnectFailures})`);
-        this.reconnectTimer = setTimeout(() => {
-            this.reconnectTimer = null;
-            void this.connectStream();
-        }, delay);
-    }
-
-
-
-    // ─── Stream Event Handlers ──────────────────────────────────────
-
-    private handleStreamData(_evt: CascadeStreamEvent): void {
-        // The stream fires on every diff. Debounce to avoid hammering
-        // the trajectory API when changes arrive in bursts.
-        if (this.debounceTimer) {
-            clearTimeout(this.debounceTimer);
-        }
-        this.debounceTimer = setTimeout(() => {
-            this.debounceTimer = null;
-            void this.fetchAndDispatch();
-        }, STREAM_DEBOUNCE_MS);
-    }
-
-    private handleStreamClose(): void {
-        logger.info(`[StreamRouter:${this.projectName}] Stream closed`);
-        this.teardownStream();
-        this.scheduleReconnect();
-    }
-
-    private handleStreamError(err: any): void {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn(`[StreamRouter:${this.projectName}] Stream error: ${msg.slice(0, 200)}`);
-        this.teardownStream();
-        this.scheduleReconnect();
     }
 
     // ─── Trajectory Fetch & Dispatch ────────────────────────────────
@@ -281,7 +158,7 @@ export class TrajectoryStreamRouter {
                 ?? await this.cdpService.getActiveCascadeId();
             if (!cascadeId) return;
 
-            // If the cascade changed (user switched conversations), reconnect the stream
+            // If the cascade changed (user switched conversations), reconnect polling
             if (this.currentCascadeId && cascadeId !== this.currentCascadeId) {
                 this.connectToCascade(cascadeId);
                 return;

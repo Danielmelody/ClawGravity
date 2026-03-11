@@ -257,7 +257,7 @@ export function initCdpBridge(autoApproveDefault: boolean): CdpBridge {
     const quota = new QuotaService();
     const autoAccept = new AutoAcceptService(autoApproveDefault);
 
-    return {
+    const bridge: CdpBridge = {
         pool,
         quota,
         autoAccept,
@@ -266,6 +266,16 @@ export function initCdpBridge(autoApproveDefault: boolean): CdpBridge {
         approvalChannelByWorkspace: new Map(),
         approvalChannelBySession: new Map(),
     };
+
+    // Wire QuotaService to lazily resolve rawRPC from the current active CDP
+    quota.setRPCResolver(async () => {
+        const cdp = getCurrentCdp(bridge);
+        if (!cdp) return null;
+        const client = await cdp.getGrpcClient();
+        return client ? (method: string, payload: any) => client.rawRPC(method, payload) : null;
+    });
+
+    return bridge;
 }
 
 /**

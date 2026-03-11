@@ -1,17 +1,15 @@
 /**
- * GrpcResponseMonitor — LS-based response monitoring with agent state
- * stream notifications and on-demand trajectory fetches.
+ * GrpcResponseMonitor — LS-based response monitoring with polling.
  *
- * The agent state stream (StreamAgentStateUpdates) acts as a notification
- * channel: it tells us WHEN something changes (status transitions, step
- * updates). Actual content (response text, tool calls) is fetched from
- * GetCascadeTrajectory on-demand with debouncing.
+ * Polls GetCascadeTrajectory at regular intervals to detect status
+ * transitions and content updates. All RPC calls go through the
+ * CDP proxy (GrpcCascadeClient.rawRPC → Runtime.evaluate + fetch).
  *
- * Completely headless — no DOM, no CDP.
+ * Completely headless — no DOM, no direct HTTP.
  */
 
 import { logger } from '../utils/logger';
-import { GrpcCascadeClient, CascadeStreamEvent } from './grpcCascadeClient';
+import { GrpcCascadeClient } from './grpcCascadeClient';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,17 +43,8 @@ export interface GrpcResponseMonitorOptions {
     onStepsUpdate?: (data: { steps: any[]; runStatus: string | null }) => void;
 }
 
-/** Debounce delay for trajectory fetches triggered by agent state updates.
- *  The agent state stream is much more chatty than the old reactive diff
- *  stream — it emits a frame for every incremental change. 150ms coalesces
- *  rapid bursts without adding perceptible latency. */
-const REACTIVE_SNAPSHOT_DEBOUNCE_MS = 150;
-/** Initial retry delay for recovery (doubles each attempt) */
-const RECOVERY_INITIAL_DELAY_MS = 500;
-/** Max retry delay cap */
-const RECOVERY_MAX_DELAY_MS = 4000;
-/** Max retries before giving up recovery */
-const RECOVERY_MAX_RETRIES = 8;
+/** Polling interval for trajectory fetches (ms). */
+const POLLING_INTERVAL_MS = 500;
 
 interface TrajectoryRecoverySnapshot {
     steps: any[];
@@ -98,13 +87,6 @@ function extractAssistantStepText(step: any): string {
     return '';
 }
 
-/**
- * Extract a concise summary of tool calls from a planner response step.
- * Returns tool names as activity lines (e.g. "🔧 view_file") so the
- * text-delivery fallback path shows what was executed, even when the
- * rendered-html path isn't available.
- */
-
 function buildAssistantSignature(step: any, stepIndex: number): string {
     const text = normalizeComparableText(extractAssistantStepText(step));
     const toolCalls = Array.isArray(step?.plannerResponse?.toolCalls) ? step.plannerResponse.toolCalls.length : 0;
@@ -133,21 +115,15 @@ export class GrpcResponseMonitor {
     private lastResponseText: string | null = null;
     private lastThinkingText: string | null = null;
     private hasSeenActivity = false;
-    private hasSeenRunning = false;
     private startTime = 0;
     private pendingTerminalAssistantSignature: string | null = null;
 
-    // Stream state
-    private abortController: AbortController | null = null;
-    private streamDataListener: ((evt: CascadeStreamEvent) => void) | null = null;
-    private streamCompleteListener: (() => void) | null = null;
-    private streamErrorListener: ((err: any) => void) | null = null;
+    // Polling state
+    private pollingTimer: NodeJS.Timeout | null = null;
+    private activeTrajectoryRPC: Promise<TrajectoryRecoverySnapshot | null> | null = null;
 
     // Global timers
     private safetyTimer: NodeJS.Timeout | null = null;
-    private reactiveSnapshotTimer: NodeJS.Timeout | null = null;
-    private activeTrajectoryRPC: Promise<TrajectoryRecoverySnapshot | null> | null = null;
-    private recoveryPromise: Promise<void> | null = null;
 
     constructor(options: GrpcResponseMonitorOptions) {
         this.client = options.grpcClient;
@@ -159,7 +135,8 @@ export class GrpcResponseMonitor {
         this.onComplete = options.onComplete;
         this.onTimeout = options.onTimeout;
         this.onPhaseChange = options.onPhaseChange;
-        this.onStepsUpdate = options.onStepsUpdate;    }
+        this.onStepsUpdate = options.onStepsUpdate;
+    }
 
     /** Start monitoring the cascade for AI response */
     async start(): Promise<void> {
@@ -169,10 +146,7 @@ export class GrpcResponseMonitor {
         this.lastResponseText = null;
         this.lastThinkingText = null;
         this.hasSeenActivity = false;
-        this.hasSeenRunning = false;
         this.pendingTerminalAssistantSignature = null;
-        this.recoveryPromise = null;
-
 
         this.setPhase('waiting', null);
 
@@ -186,8 +160,8 @@ export class GrpcResponseMonitor {
             }
         }, this.maxDurationMs);
 
-        // Try streaming first
-        this.initStream();
+        // Start polling
+        this.initPolling();
     }
 
     /** Start in passive mode (same logic as start) */
@@ -203,13 +177,10 @@ export class GrpcResponseMonitor {
             clearTimeout(this.safetyTimer);
             this.safetyTimer = null;
         }
-        if (this.reactiveSnapshotTimer) {
-            clearTimeout(this.reactiveSnapshotTimer);
-            this.reactiveSnapshotTimer = null;
+        if (this.pollingTimer) {
+            clearInterval(this.pollingTimer);
+            this.pollingTimer = null;
         }
-
-
-        this.teardownStream();
     }
 
     /** Whether monitoring is active */
@@ -227,219 +198,68 @@ export class GrpcResponseMonitor {
         return this.lastResponseText;
     }
 
-    // ─── Stream Implementation ──────────────────────────────────────
+    // ─── Polling Implementation ─────────────────────────────────────
 
-    private initStream(): void {
-        // Bind listeners
-        this.streamDataListener = (evt) => this.handleStreamData(evt);
-        this.streamCompleteListener = () => this.handleStreamComplete();
-        this.streamErrorListener = (err) => this.handleStreamError(err);
-
-        this.client.on('data', this.streamDataListener);
-        this.client.on('complete', this.streamCompleteListener);
-        this.client.on('error', this.streamErrorListener);
-
-        logger.info(`[GrpcMonitor] Attempting stream | cascade=${this.cascadeId.slice(0, 12)}...`);
-
-        try {
-            this.abortController = this.client.streamCascadeUpdates(this.cascadeId);
-        } catch (err: any) {
-            this.failStream(err?.message || 'Failed to open stream');
-        }
-    }
-
-    private teardownStream(): void {
-        if (this.abortController) {
-            this.abortController.abort();
-            this.abortController = null;
-        }
-
-        this.removeStreamListeners();
-    }
-
-    private removeStreamListeners(): void {
-        if (this.streamDataListener) {
-            this.client.off('data', this.streamDataListener);
-            this.streamDataListener = null;
-        }
-        if (this.streamCompleteListener) {
-            this.client.off('complete', this.streamCompleteListener);
-            this.streamCompleteListener = null;
-        }
-        if (this.streamErrorListener) {
-            this.client.off('error', this.streamErrorListener);
-            this.streamErrorListener = null;
-        }
-    }
-
-    private handleStreamData(evt: CascadeStreamEvent): void {
+    private initPolling(): void {
         if (!this.isRunning) return;
 
-        this.emitThinkingDetailsFromPayload(evt.raw?.result ?? evt.raw);
+        logger.info(`[GrpcMonitor] Starting polling | cascade=${this.cascadeId.slice(0, 12)}... interval=${POLLING_INTERVAL_MS}ms`);
 
-        if (evt.type === 'error') {
-            const msg = evt.text || 'Unknown stream payload error';
-            if (this.handleQuotaReached(msg)) return;
-            this.failStream(`Stream payload error: ${msg.slice(0, 100)}`);
-            return;
-        }
+        // Immediate first fetch
+        void this.pollOnce();
 
-        if (evt.type === 'status') {
-            const status = evt.text || '';
-            if (status === 'CASCADE_RUN_STATUS_IDLE') {
-                if (this.hasSeenActivity) {
-                    // Cascade finished — fetch trajectory for final text.
-                    void this.verifyIdleAndComplete();
-                }
-            } else if (status === 'CASCADE_RUN_STATUS_RUNNING') {
-                this.hasSeenActivity = true;
-                if (this.currentPhase === 'waiting') {
-                    this.setPhase('thinking', null);
-                }
-                // Only schedule a trajectory fetch on the FIRST RUNNING event.
-                // Subsequent RUNNING status-only frames are heartbeats —
-                // actual content changes come as generic events (evt.text='')
-                // which are only emitted when step updates are present.
-                if (!this.hasSeenRunning) {
-                    this.hasSeenRunning = true;
-                    this.scheduleReactiveSnapshotFetch();
-                }
-            } else {
-                // Generic notification — actual content changed in the cascade.
-                // Schedule a debounced trajectory fetch to get the content.
-                this.hasSeenActivity = true;
-                this.scheduleReactiveSnapshotFetch();
-            }
-        }
+        // Regular polling interval
+        this.pollingTimer = setInterval(() => {
+            void this.pollOnce();
+        }, POLLING_INTERVAL_MS);
     }
 
-    /**
-     * Schedule a debounced trajectory snapshot fetch.
-     * Called when the reactive stream signals a change (non-status diff).
-     * Coalesces rapid diff notifications into a single trajectory fetch.
-     */
-    private scheduleReactiveSnapshotFetch(): void {
-        if (this.reactiveSnapshotTimer) return; // Already scheduled
-        this.reactiveSnapshotTimer = setTimeout(async () => {
-            this.reactiveSnapshotTimer = null;
+    private async pollOnce(): Promise<void> {
+        if (!this.isRunning) return;
+
+        // Prevent overlapping/parallel trajectory fetches
+        if (this.activeTrajectoryRPC) return;
+
+        try {
+            this.activeTrajectoryRPC = this.readTrajectorySnapshot();
+            const snapshot = await this.activeTrajectoryRPC;
             if (!this.isRunning) return;
 
-            // Prevent overlapping/parallel trajectory fetches which can exhaust HTTP/2 stream limits
-            // and cause severe streaming latency (stuck in thinking or multi-second delays).
-            if (this.activeTrajectoryRPC) {
-                // We're already fetching, so re-schedule for after another debounce tick
-                this.scheduleReactiveSnapshotFetch();
-                return;
-            }
+            if (snapshot) {
+                // Update activity tracking from run status
+                if (snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+                    this.hasSeenActivity = true;
+                    if (this.currentPhase === 'waiting') {
+                        this.setPhase('thinking', null);
+                    }
+                }
 
-            try {
-                this.activeTrajectoryRPC = this.readTrajectorySnapshot();
-                const snapshot = await this.activeTrajectoryRPC;
-                if (!this.isRunning) return;
+                // Check for quota errors
+                if (snapshot.runStatus && snapshot.runStatus.includes('QUOTA')) {
+                    this.setPhase('quotaReached', this.lastResponseText);
+                    this.stop().catch(() => { });
+                    this.onTimeout?.(this.lastResponseText ?? '');
+                    return;
+                }
+
+                // Apply snapshot (handles text updates + completion detection)
                 this.applyTrajectorySnapshot(snapshot);
-            } finally {
-                this.activeTrajectoryRPC = null;
             }
-        }, REACTIVE_SNAPSHOT_DEBOUNCE_MS);
-    }
-
-    private handleStreamComplete(): void {
-        if (!this.isRunning) return;
-
-        if (!this.hasSeenActivity) {
-            void this.recoverFromSilentStreamClosure('Stream closed before any activity was received');
-            return;
-        }
-
-        // If we saw activity (RUNNING / diffs) but never captured any response
-        // text, the stream likely reconnected to a stale/completed cascade
-        // (e.g. after /restart). Attempt recovery from trajectory instead of
-        // completing with empty text — avoids "(Empty response)" false alarms.
-        if (!this.lastResponseText?.trim()) {
-            void this.recoverFromSilentStreamClosure(
-                'Stream closed with activity but no response text — likely stale reconnection',
-            );
-            return;
-        }
-
-        this.finishSuccessfully();
-    }
-
-    private handleStreamError(err: any): void {
-        if (!this.isRunning) return;
-
-        const msg = err?.message || String(err);
-        if (this.handleQuotaReached(msg)) return;
-        void this.recoverFromSilentStreamClosure(`Stream error: ${msg.slice(0, 100)}`);
-    }
-
-    /** Check if msg indicates a quota error; if so, handle it and return true. */
-    private handleQuotaReached(msg: string): boolean {
-        if (!msg.toLowerCase().includes('quota')) return false;
-        this.setPhase('quotaReached', this.lastResponseText);
-        this.stop().catch(() => { });
-        this.onTimeout?.(this.lastResponseText ?? '');
-        return true;
-    }
-
-
-    // ─── Common Logic ──────────────────────────────────────────────
-
-    private failStream(message: string): void {
-        logger.warn(`[GrpcMonitor] ${message}`);
-        this.setPhase('error', message);
-        const text = this.lastResponseText ?? '';
-        this.stop().catch(() => { });
-        this.onTimeout?.(text);
-    }
-
-    private async recoverFromSilentStreamClosure(failureMessage: string): Promise<void> {
-        if (!this.isRunning) return;
-        if (this.recoveryPromise) {
-            await this.recoveryPromise;
-            return;
-        }
-
-        this.teardownStream();
-        this.recoveryPromise = this.tryRecoverCompletedResponse(failureMessage);
-        try {
-            await this.recoveryPromise;
-        } finally {
-            this.recoveryPromise = null;
-        }
-    }
-
-    private async tryRecoverCompletedResponse(failureMessage: string): Promise<void> {
-        logger.warn(`[GrpcMonitor] ${failureMessage}; attempting trajectory recovery with exponential backoff`);
-
-        let delay = RECOVERY_INITIAL_DELAY_MS;
-        let retries = 0;
-
-        while (this.isRunning && retries < RECOVERY_MAX_RETRIES) {
-            const snapshot = await this.readTrajectorySnapshot();
+        } catch (err: any) {
             if (!this.isRunning) return;
-
-            if (this.applyTrajectorySnapshot(snapshot)) {
+            const msg = err?.message || String(err);
+            // Silently retry on transient connection errors
+            if (msg.includes('WebSocket is not connected') || msg.includes('Not connected') || msg.includes('ECONNREFUSED')) {
+                logger.debug(`[GrpcMonitor] Polling transient error: ${msg.slice(0, 100)}`);
                 return;
             }
-
-            const remainingMs = this.maxDurationMs - (Date.now() - this.startTime);
-            if (remainingMs <= 0) {
-                return;
-            }
-
-            retries++;
-            const waitMs = Math.min(delay, remainingMs, RECOVERY_MAX_DELAY_MS);
-            logger.debug(`[GrpcMonitor] Recovery attempt ${retries}/${RECOVERY_MAX_RETRIES}, next in ${waitMs}ms`);
-            await new Promise((resolve) => setTimeout(resolve, waitMs));
-            delay = Math.min(delay * 2, RECOVERY_MAX_DELAY_MS);
-        }
-
-        if (this.isRunning) {
-            logger.warn(`[GrpcMonitor] Recovery exhausted after ${retries} attempts — re-opening stream`);
-            this.initStream();
+            logger.warn(`[GrpcMonitor] Polling error: ${msg.slice(0, 200)}`);
+        } finally {
+            this.activeTrajectoryRPC = null;
         }
     }
+
+    // ─── Trajectory Fetch & Apply ───────────────────────────────────
 
     private async readTrajectorySnapshot(): Promise<TrajectoryRecoverySnapshot | null> {
         try {
@@ -658,7 +478,7 @@ export class GrpcResponseMonitor {
 
         this.lastResponseText = latestText ?? this.lastResponseText ?? '';
         this.hasSeenActivity = true;
-        logger.info(`[GrpcMonitor] Recovered completed response from trajectory (${this.lastResponseText.length} chars)`);
+        logger.info(`[GrpcMonitor] Completed response from trajectory (${this.lastResponseText.length} chars)`);
         this.finishSuccessfully();
         return true;
     }
@@ -668,78 +488,8 @@ export class GrpcResponseMonitor {
         this.setPhase('complete', this.lastResponseText);
         const text = this.lastResponseText ?? '';
 
-        // Drain any in-flight timeline render before stopping.
-
-
         this.stop().catch(() => { });
         this.onComplete?.(text);
-    }
-
-    /**
-     * When IDLE arrives during a session with tool calls, verify via trajectory
-     * that the model isn't mid-turn before completing. LS often transitions
-     * RUNNING→IDLE→RUNNING between tool-call rounds within a single agentic turn.
-     * Direct completion on IDLE truncates the response.
-     */
-    private async verifyIdleAndComplete(): Promise<void> {
-        if (!this.isRunning) return;
-
-        const snapshot = await this.readTrajectorySnapshot();
-        if (!this.isRunning) return;
-
-        if (!snapshot) {
-            // Can't verify — finish optimistically to avoid hanging
-            logger.warn('[GrpcMonitor] IDLE verification failed (no trajectory) — completing anyway');
-            this.finishSuccessfully();
-            return;
-        }
-
-        if (snapshot.latestAssistantHasToolCalls || snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
-            logger.debug(
-                `[GrpcMonitor] IDLE received but model still working ` +
-                `(toolCalls=${snapshot.latestAssistantHasToolCalls}, status=${snapshot.runStatus}) — continuing to monitor`,
-            );
-            // Update response text from trajectory in case stream missed some
-            if (snapshot.latestResponseText && snapshot.latestResponseText !== this.lastResponseText) {
-                this.lastResponseText = snapshot.latestResponseText;
-                this.onProgress?.(snapshot.latestResponseText);
-            }
-            return;
-        }
-
-        if (!snapshot.anchorMatched) {
-            logger.debug('[GrpcMonitor] IDLE verification waiting for anchored user turn');
-            return;
-        }
-
-        const verifiedText = snapshot.latestRole === 'assistant'
-            ? (snapshot.latestResponseText ?? '')
-            : '';
-        if (!verifiedText.trim()) {
-            logger.debug('[GrpcMonitor] IDLE verification saw empty assistant placeholder — continuing to monitor');
-            return;
-        }
-
-        // Truly idle — update with latest text from trajectory and finish
-        if (verifiedText.length > (this.lastResponseText?.length ?? 0)) {
-            this.lastResponseText = verifiedText;
-        }
-        if (this.onStepsUpdate && snapshot.steps && snapshot.steps.length > 0) {
-            this.onStepsUpdate({
-                steps: snapshot.steps,
-                runStatus: snapshot.runStatus,
-            });
-        }
-        logger.info(`[GrpcMonitor] IDLE verified via trajectory — completing (${this.lastResponseText?.length ?? 0} chars)`);
-        await this.finishSuccessfully();
-    }
-
-    private emitThinkingDetailsFromPayload(payload: any): void {
-        this.emitThinkingDetails(
-            payload?.plannerResponse?.thinking
-            || payload?.step?.plannerResponse?.thinking
-            || null,
-        );
     }
 
     private emitThinkingDetails(thinking: unknown): void {
@@ -785,6 +535,4 @@ export class GrpcResponseMonitor {
             this.onPhaseChange?.(phase, text);
         }
     }
-
-
 }
