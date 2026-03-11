@@ -1166,26 +1166,26 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Triggers a real POST request to the LS from within the renderer
-     * to force a Network.requestWillBeSent event with the CSRF token header.
+     * Probes the renderer to discover LS credentials (port + CSRF token).
      *
-     * The renderer's fetch interceptor auto-injects `x-codeium-csrf-token`
-     * on POST requests to 127.0.0.1 with ConnectRPC headers. A bare
-     * OPTIONS request does NOT carry custom headers (CORS preflight strips
-     * them), which is why the previous probe never worked after restart.
+     * Three strategies are attempted in order:
+     *   1. Performance entries: find existing LS URLs and issue a POST
+     *      to trigger the renderer's fetch interceptor (which injects CSRF).
+     *   2. Direct extraction: monkey-patch fetch temporarily to capture
+     *      outgoing CSRF headers from the next LS request, then restore.
+     *   3. Port scan: fire POST requests at common LS ports.
      *
-     * Fallback: if no performance entries exist, attempts to extract
-     * the CSRF token directly from the renderer's global state.
+     * Strategy 2 is the most reliable because it directly extracts the
+     * CSRF token from the interceptor without relying on CDP Network events.
      */
     private async triggerLSCredentialProbe(): Promise<void> {
         if (!this.contexts.length) return;
         
-        // Use any available context, preferably one that looks like the cascade panel
         const ctxId = this.getPrimaryContextId() || this.contexts[0].id;
         
-        const script = `(async () => {
+        // ─── Strategy 1: Performance entries + POST ─────────────────────
+        const strategy1Script = `(async () => {
             try {
-                // Strategy 1: Find an LS URL from performance entries and issue a real POST
                 const entries = performance.getEntriesByType('resource');
                 const lsEntries = entries.filter(e =>
                     e.name.includes('127.0.0.1') &&
@@ -1193,11 +1193,6 @@ export class CdpService extends EventEmitter {
                 );
                 if (lsEntries.length > 0) {
                     const lastUrl = lsEntries[lsEntries.length - 1].name;
-                    // POST with ConnectRPC headers triggers the renderer's
-                    // fetch interceptor to inject x-codeium-csrf-token.
-                    // We call a lightweight endpoint (GetUserStatus) with
-                    // an empty body — the response doesn't matter, only
-                    // the outgoing request headers do.
                     const baseUrl = lastUrl.replace(/\\/[^\\/]+$/, '/GetUserStatus');
                     fetch(baseUrl, {
                         method: 'POST',
@@ -1209,38 +1204,142 @@ export class CdpService extends EventEmitter {
                     }).catch(() => {});
                     return { strategy: 'post', url: baseUrl };
                 }
-                
-                // Strategy 2: No performance entries — probe common LS ports
-                for (const port of [13337, 13338, 13339, 42100, 42101, 42102]) {
-                    try {
-                        fetch('https://127.0.0.1:' + port + '/exa.language_server_pb.LanguageServerService/GetUserStatus', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'connect-protocol-version': '1',
-                            },
-                            body: '{}',
-                        }).catch(() => {});
-                    } catch {}
-                }
-                return { strategy: 'port-scan' };
-            } catch (e) {
-                return { strategy: 'error', message: e.message || String(e) };
-            }
+                return null;
+            } catch { return null; }
         })()`;
 
         try {
-            const result = await this.call('Runtime.evaluate', {
-                expression: script,
+            const r1 = await this.call('Runtime.evaluate', {
+                expression: strategy1Script,
                 returnByValue: true,
                 awaitPromise: true,
                 contextId: ctxId,
             });
-            logger.debug(`[CdpService] Credential probe result: ${JSON.stringify(result?.result?.value)}`);
-            // Give the Network listener a moment to fire and catch the request
+            if (r1?.result?.value) {
+                logger.debug(`[CdpService] Credential probe strategy 1: ${JSON.stringify(r1.result.value)}`);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                if (this.sniffedLSCredentials) return; // Success!
+            }
+        } catch (err) {
+            logger.debug(`[CdpService] Credential probe strategy 1 failed: ${err}`);
+        }
+
+        // ─── Strategy 2: Monkey-patch fetch to extract CSRF directly ────
+        // This bypasses CDP Network sniffing entirely by intercepting
+        // the outgoing headers inside the renderer process.
+        const strategy2Script = `(async () => {
+            try {
+                const entries = performance.getEntriesByType('resource');
+                const lsEntries = entries.filter(e =>
+                    e.name.includes('127.0.0.1') &&
+                    e.name.includes('language_server_pb')
+                );
+                if (lsEntries.length === 0) return null;
+
+                const lastUrl = lsEntries[lsEntries.length - 1].name;
+                const portMatch = lastUrl.match(/127\\.0\\.0\\.1:(\\d+)/);
+                if (!portMatch) return null;
+                
+                const port = parseInt(portMatch[1], 10);
+                const useTls = lastUrl.startsWith('https');
+                const baseUrl = lastUrl.replace(/\\/[^\\/]+$/, '/GetUserStatus');
+
+                // Monkey-patch fetch to capture the CSRF header
+                const origFetch = window.fetch;
+                let capturedCsrf = null;
+                window.fetch = function(input, init) {
+                    try {
+                        const hdrs = init?.headers;
+                        if (hdrs) {
+                            const csrf = hdrs['x-codeium-csrf-token']
+                                || hdrs['X-Codeium-Csrf-Token']
+                                || (hdrs instanceof Headers ? hdrs.get('x-codeium-csrf-token') : null);
+                            if (csrf) capturedCsrf = csrf;
+                        }
+                    } catch {}
+                    return origFetch.apply(this, arguments);
+                };
+
+                try {
+                    await fetch(baseUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'connect-protocol-version': '1',
+                        },
+                        body: '{}',
+                    }).catch(() => {});
+                } finally {
+                    window.fetch = origFetch;
+                }
+
+                if (capturedCsrf) {
+                    return { strategy: 'monkey-patch', port, csrfToken: capturedCsrf, useTls };
+                }
+                return { strategy: 'monkey-patch', port, csrfToken: null, useTls };
+            } catch (e) {
+                return { strategy: 'monkey-patch-error', message: e.message || String(e) };
+            }
+        })()`;
+
+        try {
+            const r2 = await this.call('Runtime.evaluate', {
+                expression: strategy2Script,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctxId,
+            });
+            const val = r2?.result?.value;
+            logger.debug(`[CdpService] Credential probe strategy 2: ${JSON.stringify(val)}`);
+            
+            if (val?.csrfToken && val?.port) {
+                // Directly set credentials without waiting for Network events
+                this.sniffedLSCredentials = {
+                    port: val.port,
+                    csrfToken: val.csrfToken,
+                    useTls: val.useTls ?? true,
+                };
+                logger.info(`[CdpService] Credentials extracted directly: port=${val.port}`);
+                return;
+            }
+            
+            // Strategy 2 found port but not CSRF — wait for Network sniffing
+            if (val?.port && !this.sniffedLSCredentials) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                if (this.sniffedLSCredentials) return;
+            }
+        } catch (err) {
+            logger.debug(`[CdpService] Credential probe strategy 2 failed: ${err}`);
+        }
+
+        // ─── Strategy 3: Port scan ──────────────────────────────────────
+        const strategy3Script = `(async () => {
+            for (const port of [13337, 13338, 13339, 42100, 42101, 42102]) {
+                try {
+                    fetch('https://127.0.0.1:' + port + '/exa.language_server_pb.LanguageServerService/GetUserStatus', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'connect-protocol-version': '1',
+                        },
+                        body: '{}',
+                    }).catch(() => {});
+                } catch {}
+            }
+            return { strategy: 'port-scan' };
+        })()`;
+
+        try {
+            await this.call('Runtime.evaluate', {
+                expression: strategy3Script,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctxId,
+            });
+            logger.debug(`[CdpService] Credential probe strategy 3: port-scan`);
             await new Promise(resolve => setTimeout(resolve, 500));
         } catch (err) {
-            logger.debug(`[CdpService] Credential probe via CDP failed: ${err}`);
+            logger.debug(`[CdpService] Credential probe strategy 3 failed: ${err}`);
         }
     }
 

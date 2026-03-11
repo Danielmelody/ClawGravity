@@ -30,7 +30,7 @@ export interface ConversationHistoryEntry {
 }
 
 /**
- * Service for managing chat sessions on Antigravity via gRPC Backend.
+ * Service for managing chat sessions on Antigravity via LS API Backend.
  * Completely bypasses DOM to decouple the PC UI state from Telegram state.
  */
 export class ChatSessionService {
@@ -40,7 +40,7 @@ export class ChatSessionService {
      */
     async listAllSessions(cdpService: CdpService): Promise<SessionListItem[]> {
         try {
-            const client = await cdpService.getGrpcClient();
+            const client = await cdpService.getLSClient();
             if (!client) return [];
 
             const activeId = await cdpService.getActiveCascadeId();
@@ -82,7 +82,7 @@ export class ChatSessionService {
         },
     ): Promise<{ messages: ConversationHistoryEntry[]; truncated: boolean }> {
         try {
-            const client = await cdpService.getGrpcClient();
+            const client = await cdpService.getLSClient();
             if (!client) return { messages: [], truncated: false };
 
             const targetId = options?.cascadeId || await cdpService.getActiveCascadeId();
@@ -122,10 +122,10 @@ export class ChatSessionService {
      */
     async startNewChat(cdpService: CdpService): Promise<{ ok: boolean; error?: string }> {
         try {
-            const client = await cdpService.getGrpcClient();
-            if (!client) return { ok: false, error: 'gRPC client unavailable' };
+            const client = await cdpService.getLSClient();
+            if (!client) return { ok: false, error: 'LS client unavailable' };
             const newId = await client.createCascade();
-            if (!newId) return { ok: false, error: 'Failed to create cascade via gRPC' };
+            if (!newId) return { ok: false, error: 'Failed to create cascade via LS API' };
             cdpService.rememberCreatedCascade(newId);
             try {
                 await client.focusCascade?.(newId);
@@ -145,7 +145,7 @@ export class ChatSessionService {
      */
     async getCurrentSessionInfo(cdpService: CdpService): Promise<ChatSessionInfo> {
         try {
-            const client = await cdpService.getGrpcClient();
+            const client = await cdpService.getLSClient();
             if (!client) return { title: '', hasActiveChat: false };
 
             const activeId = await cdpService.getActiveCascadeId();
@@ -173,8 +173,8 @@ export class ChatSessionService {
         title: string,
     ): Promise<{ ok: boolean; error?: string }> {
         try {
-            const client = await cdpService.getGrpcClient();
-            if (!client) return { ok: false, error: 'gRPC client unavailable' };
+            const client = await cdpService.getLSClient();
+            if (!client) return { ok: false, error: 'LS client unavailable' };
 
             const sessions = await this.listAllSessions(cdpService);
             const selectedSession = sessions.find((session) => session.title === title);

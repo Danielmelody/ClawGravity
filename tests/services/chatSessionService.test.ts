@@ -20,7 +20,7 @@ describe('ChatSessionService', () => {
             createCascade: jest.fn(),
             focusCascade: jest.fn(),
         };
-        (mockCdpService as any).getGrpcClient = jest.fn().mockResolvedValue(mockGrpcClient);
+        (mockCdpService as any).getLSClient = jest.fn().mockResolvedValue(mockGrpcClient);
         (mockCdpService as any).getActiveCascadeId = jest.fn().mockResolvedValue('cascade-123');
         (mockCdpService as any).isCascadeInWorkspace = jest.fn().mockReturnValue(true);
         (mockCdpService as any).setCachedCascadeId = jest.fn();
@@ -45,12 +45,12 @@ describe('ChatSessionService', () => {
         });
 
         it('returns ok:false when gRPC client is unavailable', async () => {
-            (mockCdpService as any).getGrpcClient.mockResolvedValue(null);
+            (mockCdpService as any).getLSClient.mockResolvedValue(null);
 
             const result = await service.startNewChat(mockCdpService);
 
             expect(result.ok).toBe(false);
-            expect(result.error).toContain('gRPC client unavailable');
+            expect(result.error).toContain('LS client unavailable');
         });
 
         it('returns ok:false when createCascade returns null', async () => {
@@ -63,7 +63,7 @@ describe('ChatSessionService', () => {
         });
 
         it('returns ok: false when a CDP call throws an exception', async () => {
-            (mockCdpService as any).getGrpcClient.mockRejectedValue(new Error('WebSocket切断'));
+            (mockCdpService as any).getLSClient.mockRejectedValue(new Error('WebSocket切断'));
 
             const result = await service.startNewChat(mockCdpService);
 
@@ -92,7 +92,7 @@ describe('ChatSessionService', () => {
         });
 
         it('returns hasActiveChat: false when gRPC client is unavailable', async () => {
-            (mockCdpService as any).getGrpcClient.mockResolvedValue(null);
+            (mockCdpService as any).getLSClient.mockResolvedValue(null);
 
             const info = await service.getCurrentSessionInfo(mockCdpService);
 
@@ -162,7 +162,7 @@ describe('ChatSessionService', () => {
         });
 
         it('returns ok:false when gRPC is unavailable', async () => {
-            (mockCdpService as any).getGrpcClient.mockResolvedValue(null);
+            (mockCdpService as any).getLSClient.mockResolvedValue(null);
             const result = await service.activateSessionByTitle(
                 mockCdpService,
                 'target-session',
@@ -207,7 +207,7 @@ describe('ChatSessionService', () => {
         });
 
         it('returns empty array when gRPC client is unavailable', async () => {
-            (mockCdpService as any).getGrpcClient.mockResolvedValue(null);
+            (mockCdpService as any).getLSClient.mockResolvedValue(null);
 
             const sessions = await service.listAllSessions(mockCdpService);
 
@@ -284,7 +284,7 @@ describe('ChatSessionService', () => {
         });
 
         it('returns empty messages when gRPC client is unavailable', async () => {
-            (mockCdpService as any).getGrpcClient.mockResolvedValue(null);
+            (mockCdpService as any).getLSClient.mockResolvedValue(null);
 
             const history = await service.getConversationHistory(mockCdpService);
 

@@ -8,7 +8,7 @@ describe('ChatSessionService gRPC session management', () => {
     it('updates the cached cascade id when starting a new chat', async () => {
         const service = new ChatSessionService();
         const mockCdp = {
-            getGrpcClient: jest.fn().mockResolvedValue({
+            getLSClient: jest.fn().mockResolvedValue({
                 createCascade: jest.fn().mockResolvedValue('cascade-new'),
                 focusCascade: jest.fn().mockResolvedValue(undefined),
             }),

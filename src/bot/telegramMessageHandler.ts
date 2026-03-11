@@ -360,7 +360,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             const monitoringTarget = initialMonitoringTarget
                 ?? await runtime.getMonitoringTarget(injectResult.cascadeId || currentCascadeId || null);
             if (!monitoringTarget) {
-                await channel.send({ text: '❌ gRPC client unavailable — cannot monitor response.' }).catch(logger.error);
+                await channel.send({ text: '❌ LS client unavailable — cannot monitor response.' }).catch(logger.error);
                 settle();
                 return;
             }
