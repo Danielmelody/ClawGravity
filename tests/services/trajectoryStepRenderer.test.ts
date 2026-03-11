@@ -1,3 +1,4 @@
+import { describe, it, expect } from 'vitest';
 import {
     renderStepsToTelegramHtml,
     markdownToTelegramHtml,
@@ -217,22 +218,94 @@ describe('renderStepsToTelegramHtml', () => {
         expect(result).toContain('test.txt #L1-26');
     });
 
-    it('renders run_command with expandable code preview', () => {
+    it('renders short run_command inline as subject', () => {
         const steps = [{
             type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
             plannerResponse: {
                 toolCalls: [{
                     name: 'run_command',
-                    arguments: { CommandLine: 'npx jscpd src/ 2>&1' },
+                    arguments: { CommandLine: 'git status' },
                     status: 'completed',
-                    result: 'Found 0 clones.',
+                    result: 'On branch main\nnothing to commit, working tree clean',
+                }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null);
+        expect(result).toContain('<b>Ran command</b>');
+        expect(result).toContain('<code>git status</code>');
+        // Short commands should NOT use expandable blockquote
+        expect(result).not.toContain('<blockquote expandable>');
+        // Should extract result brief
+        expect(result).toContain('clean');
+    });
+
+    it('renders long run_command in expandable code preview', () => {
+        const longCmd = 'npx vitest run tests/services/trajectoryStepRenderer.test.ts --reporter=verbose 2>&1';
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{
+                    name: 'run_command',
+                    arguments: { CommandLine: longCmd },
+                    status: 'completed',
+                    result: 'Tests: 5 passed',
                 }],
             },
         }];
         const result = renderStepsToTelegramHtml(steps, null);
         expect(result).toContain('<b>Ran command</b>');
         expect(result).toContain('<blockquote expandable>');
-        expect(result).toContain('npx jscpd src/');
+        // Subject should be empty for long commands
+        expect(result).not.toContain(`<code>${longCmd}</code>`);
+    });
+
+    it('extracts git diff --stat result brief', () => {
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{
+                    name: 'run_command',
+                    arguments: { CommandLine: 'git diff --stat' },
+                    status: 'completed',
+                    result: ' 3 files changed, 386 insertions(+), 35 deletions(-)',
+                }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null);
+        expect(result).toContain('3 files changed');
+        expect(result).toContain('+386/-35');
+    });
+
+    it('extracts git commit result brief', () => {
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{
+                    name: 'run_command',
+                    arguments: { CommandLine: 'git commit -m "fix: something"' },
+                    status: 'completed',
+                    result: '[main a9fce3e] fix: something\n 3 files changed',
+                }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null);
+        expect(result).toContain('a9fce3e');
+    });
+
+    it('extracts git status modified count', () => {
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{
+                    name: 'run_command',
+                    arguments: { CommandLine: 'git status' },
+                    status: 'completed',
+                    result: 'Changes not staged:\n\tmodified:   a.ts\n\tmodified:   b.ts\n',
+                }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null);
+        expect(result).toContain('2 modified');
     });
 
     it('renders unknown tool names as-is in compact label', () => {

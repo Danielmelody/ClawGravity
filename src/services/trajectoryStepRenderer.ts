@@ -182,6 +182,9 @@ function renderToolCalls(toolCalls: any[], showArgs: boolean, showResults: boole
         if (showArgs && summary.codePreview) {
             lines.push(`<blockquote expandable><pre>${escapeHtml(summary.codePreview)}</pre></blockquote>`);
         }
+        if (showResults && summary.resultPreview) {
+            lines.push(`<blockquote expandable><pre>${escapeHtml(summary.resultPreview)}</pre></blockquote>`);
+        }
     }
 
     return lines.length > 0 ? lines.join('\n') : null;
@@ -213,6 +216,8 @@ interface CompactToolSummary {
     resultBrief: string;
     /** Code preview for commands — shown in a separate expandable block */
     codePreview?: string;
+    /** Brief result output excerpt — shown in a separate expandable block after the line */
+    resultPreview?: string;
 }
 
 /** Parse tool arguments into a raw object for compact summary extraction. */
@@ -260,6 +265,73 @@ function shortenPath(filePath: string, segments = 2): string {
     const parts = filePath.split(/[/\\]/).filter(Boolean);
     if (parts.length <= segments) return parts.join('/');
     return '…/' + parts.slice(-segments).join('/');
+}
+
+/**
+ * Produce a human-readable result brief for `run_command` by examining
+ * the command line and its output. Falls back to generic exit status.
+ */
+function extractCommandResultBrief(cmdLine: string, result: string | null, exitBrief: string): string {
+    if (!result) {
+        return exitBrief === '0' ? 'success' : exitBrief || '';
+    }
+
+    const cmd = cmdLine.toLowerCase();
+
+    // git commit → extract short commit hash + message (check BEFORE diff-stat since
+    // commit output often includes "N files changed" on subsequent lines)
+    const commitMatch = result.match(/\[[\w/.-]+\s+([a-f0-9]{7,})\]\s+(.{1,60})/);
+    if (commitMatch) {
+        return `${commitMatch[1]} ${commitMatch[2]}`;
+    }
+
+    // git diff --stat → "3 files changed, +10/-5"
+    // Capture insertions and deletions separately with non-greedy patterns
+    const diffStatMatch = result.match(/(\d+)\s+files?\s+changed/i);
+    if (diffStatMatch) {
+        const files = diffStatMatch[1];
+        const insMatch = result.match(/(\d+)\s+insertions?\(\+\)/i);
+        const delMatch = result.match(/(\d+)\s+deletions?\(-\)/i);
+        const ins = insMatch?.[1];
+        const del = delMatch?.[1];
+        let brief = `${files} files changed`;
+        if (ins || del) brief += `, +${ins || 0}/-${del || 0}`;
+        return brief;
+    }
+
+    // git status → summarize file states
+    if (cmd.includes('git') && cmd.includes('status')) {
+        const modifiedCount = (result.match(/^\s*modified:/gm) || []).length;
+        const newFileCount = (result.match(/^\s*new file:/gm) || []).length;
+        const deletedCount = (result.match(/^\s*deleted:/gm) || []).length;
+        const untrackedCount = (result.match(/^\s*Untracked files:/gm) || []).length;
+        const parts: string[] = [];
+        if (modifiedCount) parts.push(`${modifiedCount} modified`);
+        if (newFileCount) parts.push(`${newFileCount} new`);
+        if (deletedCount) parts.push(`${deletedCount} deleted`);
+        if (untrackedCount) parts.push('untracked');
+        if (/nothing to commit.*working tree clean/i.test(result)) return 'clean';
+        if (parts.length > 0) return parts.join(', ');
+    }
+
+    // git log → count commits shown
+    const logCommits = (result.match(/^commit [a-f0-9]{40}/gm) || []).length;
+    if (logCommits > 0) return `${logCommits} commits`;
+
+    // npm/pnpm test → pass/fail summary
+    const testMatch = result.match(/(\d+)\s+(?:tests?\s+)?passed.*?(\d+)\s+(?:tests?\s+)?failed/i)
+        || result.match(/Tests:\s*(\d+)\s+passed/i);
+    if (testMatch) return testMatch[0].slice(0, 50);
+
+    // npm run build / tsc → errors
+    const tscErrors = result.match(/Found\s+(\d+)\s+errors?/i);
+    if (tscErrors) return `${tscErrors[1]} errors`;
+    if (cmd.includes('build') && /compiled successfully/i.test(result)) return 'compiled';
+
+    // Generic fallback
+    if (exitBrief === 'completed successfully' || exitBrief === '0') return 'success';
+    if (exitBrief) return exitBrief;
+    return '';
 }
 
 /**
@@ -351,16 +423,19 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
         // ── Terminal / command tools ─────────────────────────────────────
         case 'run_command':
         case 'runcommand': {
+            const cmdLine = args?.CommandLine || args?.command || '';
+            const isShort = cmdLine.length <= 60 && !cmdLine.includes('\n');
             const exitBrief = extractBriefStatus(result, [
                 /exit code[:\s]+(\d+)/i,
                 /completed successfully/i,
                 /command failed/i,
             ]);
+            const resultSummary = extractCommandResultBrief(cmdLine, result, exitBrief);
             return {
                 label: 'Ran command',
-                subject: '',
-                resultBrief: exitBrief === '0' ? 'success' : exitBrief ? exitBrief : '',
-                codePreview: args?.CommandLine || args?.command || undefined,
+                subject: isShort ? cmdLine : '',
+                resultBrief: resultSummary,
+                codePreview: isShort ? undefined : (cmdLine || undefined),
             };
         }
         case 'shell_exec':
@@ -703,6 +778,9 @@ function renderDiscordStep(step: any, opts: Required<StepRenderOptions>): string
                 cards.push(card);
                 if (opts.showToolArgs && summary.codePreview) {
                     cards.push(`\`\`\`\n${summary.codePreview}\n\`\`\``);
+                }
+                if (opts.showToolResults && summary.resultPreview) {
+                    cards.push(`\`\`\`\n${summary.resultPreview}\n\`\`\``);
                 }
             }
             if (cards.length > 0) parts.push(cards.join('\n'));
