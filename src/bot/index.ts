@@ -64,7 +64,6 @@ import {
 } from '../services/cdpBridgeManager';
 import { buildModeModelLines, buildSessionLines, fitForSingleEmbedDescription, splitForEmbedDescription } from '../utils/streamMessageFormatter';
 import { formatForDiscord, splitOutputAndLogs } from '../utils/discordFormatter';
-import { htmlToDiscordMarkdown } from '../utils/htmlToDiscordMarkdown';
 import {
     InboundImageAttachment,
     toDiscordAttachment,

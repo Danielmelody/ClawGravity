@@ -153,19 +153,20 @@ describe('renderStepsToTelegramHtml', () => {
             type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
             plannerResponse: {
                 toolCalls: [
-                    { name: 'read_file', status: 'completed' },
-                    { name: 'list_dir', status: 'error' },
+                    { name: 'view_file', status: 'completed', arguments: { AbsolutePath: '/tmp/test.ts' } },
+                    { name: 'list_dir', status: 'error', arguments: { DirectoryPath: '/src' } },
                     { name: 'run_command' },
                 ],
             },
         }];
-        const result = renderStepsToTelegramHtml(steps, null);
+        const result = renderStepsToTelegramHtml(steps, null, { showToolArgs: false, showToolResults: false });
         expect(result).toContain('✅');
         expect(result).toContain('❌');
         expect(result).toContain('⏳');
-        expect(result).toContain('<code>read_file</code>');
-        expect(result).toContain('<code>list_dir</code>');
-        expect(result).toContain('<code>run_command</code>');
+        // Compact labels instead of raw tool names
+        expect(result).toContain('<b>Analyzed</b>');
+        expect(result).toContain('<b>Listed</b>');
+        expect(result).toContain('<b>Ran command</b>');
     });
 
     it('hides tool calls when disabled', () => {
@@ -179,6 +180,85 @@ describe('renderStepsToTelegramHtml', () => {
         const result = renderStepsToTelegramHtml(steps, null, { showToolCalls: false });
         expect(result).not.toContain('read_file');
         expect(result).toContain('read the file');
+    });
+
+    it('renders compact tool call with result summary', () => {
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{
+                    name: 'grep_search',
+                    arguments: { Query: 'jscpd' },
+                    status: 'completed',
+                    result: 'Found 12 results',
+                }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null);
+        expect(result).toContain('<b>Searched</b>');
+        expect(result).toContain('<code>jscpd</code>');
+        expect(result).toContain('<i>12 results</i>');
+    });
+
+    it('renders view_file as Analyzed with filename', () => {
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{
+                    name: 'view_file',
+                    arguments: { AbsolutePath: '/tmp/test.txt', StartLine: 1, EndLine: 26 },
+                    status: 'completed',
+                    result: 'content',
+                }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null);
+        expect(result).toContain('<b>Analyzed</b>');
+        expect(result).toContain('test.txt #L1-26');
+    });
+
+    it('renders run_command with expandable code preview', () => {
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{
+                    name: 'run_command',
+                    arguments: { CommandLine: 'npx jscpd src/ 2>&1' },
+                    status: 'completed',
+                    result: 'Found 0 clones.',
+                }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null);
+        expect(result).toContain('<b>Ran command</b>');
+        expect(result).toContain('<blockquote expandable>');
+        expect(result).toContain('npx jscpd src/');
+    });
+
+    it('renders unknown tool names as-is in compact label', () => {
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{ name: 'custom_tool', status: 'completed', result: 'done' }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null, { showToolArgs: false });
+        expect(result).toContain('<b>custom_tool</b>');
+    });
+
+    it('hides subject when showToolArgs is false', () => {
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{
+                    name: 'view_file',
+                    arguments: { AbsolutePath: '/secret/path.txt' },
+                    status: 'completed',
+                }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null, { showToolArgs: false });
+        expect(result).not.toContain('path.txt');
     });
 
     it('renders response text with markdown', () => {
@@ -249,9 +329,10 @@ describe('renderStepsToTelegramHtml', () => {
                 },
             },
         ];
-        const result = renderStepsToTelegramHtml(steps, null);
+        const result = renderStepsToTelegramHtml(steps, null, { showToolArgs: false });
         expect(result).toContain('💭');
-        expect(result).toContain('<code>search</code>');
+        // Compact format: unknown tool 'search' renders label as-is
+        expect(result).toContain('<b>search</b>');
         expect(result).toContain('Here is what I found.');
     });
 });

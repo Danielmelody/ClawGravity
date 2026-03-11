@@ -20,7 +20,9 @@ export interface StepRenderOptions {
     showThinking?: boolean;
     /** Show tool call lines (default: true) */
     showToolCalls?: boolean;
-    /** Show tool call results (default: false — too verbose) */
+    /** Show tool call input arguments (default: true) */
+    showToolArgs?: boolean;
+    /** Show tool call results (default: true) */
     showToolResults?: boolean;
     /** Truncate thinking text beyond this length (default: 800) */
     maxThinkingChars?: number;
@@ -29,7 +31,8 @@ export interface StepRenderOptions {
 const DEFAULT_OPTIONS: Required<StepRenderOptions> = {
     showThinking: true,
     showToolCalls: true,
-    showToolResults: false,
+    showToolArgs: true,
+    showToolResults: true,
     maxThinkingChars: 800,
 };
 const PRE_BLOCK_PLACEHOLDER = '@@PRE_BLOCK_';
@@ -112,7 +115,7 @@ function renderAssistantStep(step: any, opts: Required<StepRenderOptions>): stri
 
     // 2. Tool calls
     if (opts.showToolCalls && Array.isArray(planner?.toolCalls) && planner.toolCalls.length > 0) {
-        const toolLines = renderToolCalls(planner.toolCalls, opts.showToolResults);
+        const toolLines = renderToolCalls(planner.toolCalls, opts.showToolArgs, opts.showToolResults);
         if (toolLines) parts.push(toolLines);
     }
 
@@ -148,25 +151,37 @@ function renderThinking(thinking: string, maxChars: number): string | null {
 // Tool calls
 // ---------------------------------------------------------------------------
 
-function renderToolCalls(toolCalls: any[], showResults: boolean): string | null {
+/**
+ * Render tool calls in compact Antigravity-style format.
+ *
+ * Visual structure (Telegram HTML):
+ *   ✅ <b>Searched</b> <code>*jscpd*</code>  <i>12 results</i>
+ *   ✅ <b>Analyzed</b> <code>.jscpd.json #L1-26</code>
+ *   ✅ <b>Ran command</b>
+ *   <blockquote expandable><pre>npx jscpd src/ 2>&1</pre></blockquote>
+ */
+function renderToolCalls(toolCalls: any[], showArgs: boolean, showResults: boolean): string | null {
     const lines: string[] = [];
 
     for (const tc of toolCalls) {
-        const name = tc.name || tc.toolName || tc.function?.name || 'unknown_tool';
         const status = resolveToolStatus(tc);
         const statusIcon = status === 'pending' ? '⏳' : status === 'error' ? '❌' : '✅';
+        const summary = buildCompactToolSummary(tc);
 
-        let line = `${statusIcon} <code>${escapeHtml(name)}</code>`;
-
-        if (showResults && status !== 'pending') {
-            const result = extractToolResult(tc);
-            if (result) {
-                const truncated = result.length > 200 ? result.slice(0, 200) + '…' : result;
-                line += `\n<pre>${escapeHtml(truncated)}</pre>`;
-            }
+        let line = statusIcon;
+        if (showArgs && summary.subject) {
+            line += ` <b>${escapeHtml(summary.label)}</b> <code>${escapeHtml(summary.subject)}</code>`;
+        } else {
+            line += ` <b>${escapeHtml(summary.label)}</b>`;
+        }
+        if (showResults && summary.resultBrief) {
+            line += `  <i>${escapeHtml(summary.resultBrief)}</i>`;
         }
 
         lines.push(line);
+        if (showArgs && summary.codePreview) {
+            lines.push(`<blockquote expandable><pre>${escapeHtml(summary.codePreview)}</pre></blockquote>`);
+        }
     }
 
     return lines.length > 0 ? lines.join('\n') : null;
@@ -185,13 +200,266 @@ function resolveToolStatus(tc: any): 'pending' | 'success' | 'error' {
     return 'pending';
 }
 
+// ---------------------------------------------------------------------------
+// Compact tool call summary (Antigravity-style)
+// ---------------------------------------------------------------------------
+
+interface CompactToolSummary {
+    /** Human-readable action label (e.g. "Searched", "Analyzed", "Ran command") */
+    label: string;
+    /** Key subject (e.g. query text, filename) */
+    subject: string;
+    /** Brief result summary (e.g. "12 results") */
+    resultBrief: string;
+    /** Code preview for commands — shown in a separate expandable block */
+    codePreview?: string;
+}
+
+/** Parse tool arguments into a raw object for compact summary extraction. */
+function getToolArgsObject(tc: any): Record<string, any> | null {
+    const direct = tc?.arguments || tc?.function?.arguments || tc?.input;
+    if (direct && typeof direct === 'object') return direct;
+    if (typeof direct === 'string' && direct.trim()) {
+        try { return JSON.parse(direct); } catch { return null; }
+    }
+    const json = tc?.argumentsJson;
+    if (typeof json === 'string' && json.trim()) {
+        try { return JSON.parse(json); } catch { return null; }
+    }
+    return null;
+}
+
+/** Extract a human-readable result count from a tool result string. */
+function extractResultCount(result: string | null): string {
+    if (!result) return '';
+    const foundMatch = result.match(/Found\s+(\d+)\s+results?/i);
+    if (foundMatch) return `${foundMatch[1]} results`;
+    const countMatch = result.match(/(\d+)\s+results?/i);
+    if (countMatch) return `${countMatch[1]} results`;
+    if (/no results found/i.test(result)) return '0 results';
+    return '';
+}
+
+/** Extract a brief status indicator from a tool result, e.g. line count, exit code. */
+function extractBriefStatus(result: string | null, patterns: RegExp[]): string {
+    if (!result) return '';
+    for (const p of patterns) {
+        const m = result.match(p);
+        if (m) return m[1] ?? m[0];
+    }
+    return '';
+}
+
+/** Get the last component of a file path. */
+function fileBasename(filePath: string): string {
+    return filePath.split(/[/\\]/).pop() || filePath;
+}
+
+/** Shorten a path to the last N segments for readability. */
+function shortenPath(filePath: string, segments = 2): string {
+    const parts = filePath.split(/[/\\]/).filter(Boolean);
+    if (parts.length <= segments) return parts.join('/');
+    return '…/' + parts.slice(-segments).join('/');
+}
+
+/**
+ * Build a compact Antigravity-style summary for a tool call.
+ * Maps raw tool names to human-readable labels and extracts key details.
+ */
+function buildCompactToolSummary(tc: any): CompactToolSummary {
+    const name = (tc.name || tc.toolName || tc.function?.name || '').toLowerCase();
+    const args = getToolArgsObject(tc);
+    const result = extractToolResult(tc);
+
+    // ── Complete tool mapping from Antigravity SDK CortexStepType ──
+    // Handles both snake_case (gRPC/trajectory) and camelCase (SDK) variants.
+    switch (name) {
+
+        // ── Search tools ────────────────────────────────────────────────
+        case 'grep_search':
+        case 'grepsearch': {
+            const query = args?.Query || '';
+            // Show scope if searching a specific path (not project root)
+            const scope = args?.SearchPath && !args.SearchPath.endsWith('/')
+                ? ` in ${fileBasename(args.SearchPath)}`
+                : '';
+            return { label: 'Searched', subject: query + scope, resultBrief: extractResultCount(result) };
+        }
+        case 'find_by_name':
+        case 'findbyname': {
+            const pattern = args?.Pattern || '';
+            const dir = args?.SearchDirectory ? ` in ${fileBasename(args.SearchDirectory)}` : '';
+            return { label: 'Searched', subject: pattern + dir, resultBrief: extractResultCount(result) };
+        }
+        case 'codebase_search':
+        case 'codebasesearch':
+            return { label: 'Searched', subject: args?.query || args?.Query || '', resultBrief: extractResultCount(result) };
+        case 'search_web':
+        case 'searchweb':
+            return { label: 'Web searched', subject: args?.query || '', resultBrief: '' };
+
+        // ── File viewing tools ──────────────────────────────────────────
+        case 'view_file':
+        case 'viewfile': {
+            const fp = args?.AbsolutePath || args?.path || '';
+            const s = args?.StartLine;
+            const e = args?.EndLine;
+            const range = s && e ? `#L${s}-${e}` : s ? `#L${s}` : '';
+            // Extract total lines from result if available
+            const linesBrief = extractBriefStatus(result, [/Total Lines:\s*(\d+)/i]);
+            return {
+                label: 'Analyzed',
+                subject: `${fileBasename(fp)} ${range}`.trim(),
+                resultBrief: linesBrief ? `${linesBrief} lines` : '',
+            };
+        }
+        case 'view_file_outline':
+        case 'viewfileoutline':
+            return { label: 'Viewed outline', subject: fileBasename(args?.AbsolutePath || args?.path || ''), resultBrief: '' };
+        case 'view_code_item':
+        case 'viewcodeitem': {
+            const sym = args?.node_identifier || args?.symbol || '';
+            const file = args?.file ? fileBasename(args.file) : '';
+            const subj = file ? `${sym} in ${file}` : sym;
+            return { label: 'Viewed symbol', subject: subj, resultBrief: '' };
+        }
+        case 'view_content_chunk':
+            return { label: 'Read chunk', subject: `#${args?.position ?? '?'}`, resultBrief: '' };
+        case 'read_url_content':
+        case 'readurlcontent':
+            return { label: 'Read URL', subject: (args?.Url || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
+
+        // ── File modification tools ─────────────────────────────────────
+        case 'write_to_file':
+        case 'writetofile': {
+            const fn = fileBasename(args?.TargetFile || '');
+            const desc = args?.Description;
+            return { label: 'Created', subject: fn, resultBrief: typeof desc === 'string' ? desc.slice(0, 60) : '' };
+        }
+        case 'replace_file_content':
+        case 'multi_replace_file_content':
+        case 'writecascadeedit':
+        case 'write_cascade_edit': {
+            const fn = fileBasename(args?.TargetFile || args?.file || '');
+            const desc = args?.Description;
+            return { label: 'Edited', subject: fn, resultBrief: typeof desc === 'string' ? desc.slice(0, 60) : '' };
+        }
+        case 'propose_code':
+        case 'proposecode':
+            return { label: 'Proposed edit', subject: fileBasename(args?.TargetFile || args?.file || ''), resultBrief: '' };
+
+        // ── Terminal / command tools ─────────────────────────────────────
+        case 'run_command':
+        case 'runcommand': {
+            const exitBrief = extractBriefStatus(result, [
+                /exit code[:\s]+(\d+)/i,
+                /completed successfully/i,
+                /command failed/i,
+            ]);
+            return {
+                label: 'Ran command',
+                subject: '',
+                resultBrief: exitBrief === '0' ? 'success' : exitBrief ? exitBrief : '',
+                codePreview: args?.CommandLine || args?.command || undefined,
+            };
+        }
+        case 'shell_exec':
+        case 'shellexec':
+            return { label: 'Ran shell', subject: '', resultBrief: '', codePreview: args?.command || args?.CommandLine || undefined };
+        case 'command_status': {
+            const statusBrief = extractBriefStatus(result, [/status[:\s]+"?(running|done|completed)"?/i]);
+            return { label: 'Checked command', subject: args?.CommandId ? `#${args.CommandId}` : '', resultBrief: statusBrief };
+        }
+        case 'send_command_input':
+        case 'sendcommandinput': {
+            const inputPreview = args?.Input ? args.Input.trim().slice(0, 40) : '';
+            return { label: 'Sent input', subject: inputPreview, resultBrief: '' };
+        }
+        case 'read_terminal':
+        case 'readterminal':
+            return { label: 'Read terminal', subject: args?.Name || '', resultBrief: '' };
+
+        // ── Directory tools ─────────────────────────────────────────────
+        case 'list_dir':
+        case 'list_directory':
+        case 'listdirectory': {
+            const dirPath = args?.DirectoryPath || args?.path || '';
+            const dirSubject = shortenPath(dirPath);
+            // Try to extract entry count from result
+            const entryCount = extractBriefStatus(result, [/(\d+)\s+(?:children|entries|items|files)/i]);
+            return { label: 'Listed', subject: dirSubject, resultBrief: entryCount ? `${entryCount} entries` : '' };
+        }
+
+        // ── Browser tools ───────────────────────────────────────────────
+        case 'open_browser_url':
+        case 'openbrowserurl':
+            return { label: 'Opened browser', subject: (args?.url || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
+        case 'read_browser_page':
+        case 'readbrowserpage':
+            return { label: 'Read browser page', subject: args?.url ? args.url.replace(/^https?:\/\//, '').slice(0, 50) : '', resultBrief: '' };
+        case 'list_browser_pages':
+        case 'listbrowserpages': {
+            const pageCt = extractBriefStatus(result, [/(\d+)\s+pages?/i]);
+            return { label: 'Listed browser pages', subject: '', resultBrief: pageCt ? `${pageCt} pages` : '' };
+        }
+
+        // ── Agent / MCP tools ───────────────────────────────────────────
+        case 'mcp_tool':
+        case 'mcptool': {
+            const server = args?.server || args?.ServerName || '';
+            const tool = args?.tool || args?.toolName || args?.name || '';
+            const mcpSubj = server ? `${server}:${tool}` : tool;
+            return { label: 'MCP tool', subject: mcpSubj, resultBrief: '' };
+        }
+        case 'invoke_subagent':
+        case 'invokesubagent':
+            return { label: 'Invoked subagent', subject: args?.agent || args?.name || '', resultBrief: '' };
+
+        // ── Memory / Knowledge tools ────────────────────────────────────
+        case 'memory':
+            return { label: 'Memory', subject: args?.action || '', resultBrief: '' };
+        case 'knowledge_generation':
+        case 'knowledgegeneration':
+            return { label: 'Generated knowledge', subject: '', resultBrief: '' };
+
+        // ── Miscellaneous ───────────────────────────────────────────────
+        case 'generate_image':
+            return { label: 'Generated image', subject: args?.ImageName || args?.Prompt?.slice(0, 40) || '', resultBrief: '' };
+        case 'read_resource':
+            return { label: 'Read resource', subject: args?.Uri || '', resultBrief: '' };
+        case 'wait':
+            return { label: 'Waiting', subject: args?.duration ? `${args.duration}ms` : '', resultBrief: '' };
+        case 'task_boundary':
+        case 'taskboundary':
+            return { label: 'Task', subject: args?.TaskName || '', resultBrief: args?.TaskStatus || '' };
+        case 'notify_user':
+        case 'notifyuser':
+            return { label: 'Notified user', subject: '', resultBrief: '' };
+
+        default: {
+            // Handle MCP server tools: mcp_<server>_<tool> → "MCP: <tool>"
+            if (name.startsWith('mcp_')) {
+                const parts = name.split('_');
+                const serverPart = parts.length > 2 ? parts[1] : '';
+                const toolPart = parts.length > 2 ? parts.slice(2).join('_') : parts.slice(1).join('_');
+                return { label: 'MCP', subject: serverPart ? `${serverPart}:${toolPart}` : toolPart, resultBrief: '' };
+            }
+            return { label: name || 'unknown', subject: '', resultBrief: '' };
+        }
+    }
+}
+
+/**
+ * Extract tool call result/output. No truncation — the caller wraps
+ * long content in expandable blockquotes.
+ */
 function extractToolResult(tc: any): string | null {
     if (typeof tc?.result === 'string') return tc.result;
     if (typeof tc?.output === 'string') return tc.output;
     if (tc?.toolCallResult != null) {
         return typeof tc.toolCallResult === 'string'
             ? tc.toolCallResult
-            : JSON.stringify(tc.toolCallResult).slice(0, 500);
+            : JSON.stringify(tc.toolCallResult, null, 2);
     }
     return null;
 }
@@ -417,24 +685,27 @@ function renderDiscordStep(step: any, opts: Required<StepRenderOptions>): string
         }
 
         if (opts.showToolCalls && Array.isArray(planner?.toolCalls) && planner.toolCalls.length > 0) {
-            const lines: string[] = [];
+            const cards: string[] = [];
             for (const tc of planner.toolCalls) {
-                const name = tc.name || tc.toolName || tc.function?.name || 'unknown_tool';
                 const status = resolveToolStatus(tc);
                 const statusIcon = status === 'pending' ? '⏳' : status === 'error' ? '❌' : '✅';
+                const summary = buildCompactToolSummary(tc);
 
-                let line = `${statusIcon} \`${name}\``;
-
-                if (opts.showToolResults && status !== 'pending') {
-                    const result = extractToolResult(tc);
-                    if (result) {
-                        const truncated = result.length > 200 ? result.slice(0, 200) + '…' : result;
-                        line += `\n\`\`\`\n${truncated}\n\`\`\``;
-                    }
+                let card = statusIcon;
+                if (opts.showToolArgs && summary.subject) {
+                    card += ` **${summary.label}** \`${summary.subject}\``;
+                } else {
+                    card += ` **${summary.label}**`;
                 }
-                lines.push(line);
+                if (opts.showToolResults && summary.resultBrief) {
+                    card += `  *${summary.resultBrief}*`;
+                }
+                cards.push(card);
+                if (opts.showToolArgs && summary.codePreview) {
+                    cards.push(`\`\`\`\n${summary.codePreview}\n\`\`\``);
+                }
             }
-            if (lines.length > 0) parts.push(lines.join('\n'));
+            if (cards.length > 0) parts.push(cards.join('\n'));
         }
 
         const responseText = planner?.response ?? step?.assistantResponse?.text ?? '';
