@@ -308,6 +308,40 @@ describe('renderStepsToTelegramHtml', () => {
         expect(result).toContain('2 modified');
     });
 
+    it('renders edit tool with diff stats and preview', () => {
+        const diffResult = `The following changes were made:
+[diff_block_start]
+@@ -10,5 +10,8 @@
+ unchanged
++added line 1
++added line 2
++added line 3
+-removed line
+ unchanged
+[diff_block_end]`;
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: {
+                toolCalls: [{
+                    name: 'replace_file_content',
+                    arguments: { TargetFile: '/src/foo.ts', Description: 'Added new helper' },
+                    status: 'completed',
+                    result: diffResult,
+                }],
+            },
+        }];
+        const result = renderStepsToTelegramHtml(steps, null);
+        expect(result).toContain('<b>Edited</b>');
+        expect(result).toContain('foo.ts');
+        // Should show +/- stats
+        expect(result).toContain('+3/-1');
+        // Should show description
+        expect(result).toContain('Added new helper');
+        // Should show diff in expandable block
+        expect(result).toContain('<blockquote expandable>');
+        expect(result).toContain('+added line 1');
+    });
+
     it('renders unknown tool names as-is in compact label', () => {
         const steps = [{
             type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',

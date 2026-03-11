@@ -268,6 +268,47 @@ function shortenPath(filePath: string, segments = 2): string {
 }
 
 /**
+ * Extract the diff block and compute +/- stats from an edit tool result.
+ *
+ * The result typically contains:
+ *   [diff_block_start]
+ *   @@ -10,5 +10,8 @@
+ *   +added line
+ *   -removed line
+ *    context line
+ *   [diff_block_end]
+ */
+function extractDiffFromResult(result: string | null): { diffText: string | null; stats: string | null } {
+    if (!result) return { diffText: null, stats: null };
+
+    // Extract diff block content
+    const blockMatch = result.match(/\[diff_block_start\]\s*\n([\s\S]*?)\n\s*\[diff_block_end\]/);
+    const diffText = blockMatch?.[1]?.trim() || null;
+
+    // Count added/removed lines from the diff (lines starting with + or - but not @@ headers)
+    if (diffText) {
+        const lines = diffText.split('\n');
+        let added = 0;
+        let removed = 0;
+        for (const line of lines) {
+            if (line.startsWith('+') && !line.startsWith('+++')) added++;
+            else if (line.startsWith('-') && !line.startsWith('---')) removed++;
+        }
+        const stats = (added || removed) ? `+${added}/-${removed}` : null;
+        return { diffText, stats };
+    }
+
+    // Fallback: try to extract from @@ hunk headers
+    const hunkMatches = result.matchAll(/@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/g);
+    const hunks = [...hunkMatches];
+    if (hunks.length > 0) {
+        return { diffText: null, stats: `${hunks.length} hunks` };
+    }
+
+    return { diffText: null, stats: null };
+}
+
+/**
  * Produce a human-readable result brief for `run_command` by examining
  * the command line and its output. Falls back to generic exit status.
  */
@@ -414,7 +455,16 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
         case 'write_cascade_edit': {
             const fn = fileBasename(args?.TargetFile || args?.file || '');
             const desc = args?.Description;
-            return { label: 'Edited', subject: fn, resultBrief: typeof desc === 'string' ? desc.slice(0, 60) : '' };
+            const { diffText, stats } = extractDiffFromResult(result);
+            const briefParts: string[] = [];
+            if (stats) briefParts.push(stats);
+            if (typeof desc === 'string') briefParts.push(desc.slice(0, 60));
+            return {
+                label: 'Edited',
+                subject: fn,
+                resultBrief: briefParts.join(' · '),
+                resultPreview: diffText || undefined,
+            };
         }
         case 'propose_code':
         case 'proposecode':
