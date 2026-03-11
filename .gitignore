@@ -43,6 +43,15 @@ manual-tests/
 inspect_dom.js
 inspect_dom.ts
 scripts/
+tools/
+*.patch
+parse_eslint.js
+patch.js
+rewrite-tests.js
+rewrite-tests2.js
+tmp-diag.*
+ls_strings.txt
+eslint-unused*.json
 
 # Logs
 logs/
