@@ -1166,9 +1166,16 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Triggers a fast GET request to the Status API from within the renderer
-     * to force a Network.requestWillBeSent event, allowing us to sniff the
-     * CSRF token and port if we missed the initial load traffic.
+     * Triggers a real POST request to the LS from within the renderer
+     * to force a Network.requestWillBeSent event with the CSRF token header.
+     *
+     * The renderer's fetch interceptor auto-injects `x-codeium-csrf-token`
+     * on POST requests to 127.0.0.1 with ConnectRPC headers. A bare
+     * OPTIONS request does NOT carry custom headers (CORS preflight strips
+     * them), which is why the previous probe never worked after restart.
+     *
+     * Fallback: if no performance entries exist, attempts to extract
+     * the CSRF token directly from the renderer's global state.
      */
     private async triggerLSCredentialProbe(): Promise<void> {
         if (!this.contexts.length) return;
@@ -1176,35 +1183,62 @@ export class CdpService extends EventEmitter {
         // Use any available context, preferably one that looks like the cascade panel
         const ctxId = this.getPrimaryContextId() || this.contexts[0].id;
         
-        const script = `(() => {
+        const script = `(async () => {
             try {
+                // Strategy 1: Find an LS URL from performance entries and issue a real POST
                 const entries = performance.getEntriesByType('resource');
                 const lsEntries = entries.filter(e =>
                     e.name.includes('127.0.0.1') &&
                     e.name.includes('language_server_pb')
                 );
-                if (lsEntries.length === 0) return null;
+                if (lsEntries.length > 0) {
+                    const lastUrl = lsEntries[lsEntries.length - 1].name;
+                    // POST with ConnectRPC headers triggers the renderer's
+                    // fetch interceptor to inject x-codeium-csrf-token.
+                    // We call a lightweight endpoint (GetUserStatus) with
+                    // an empty body — the response doesn't matter, only
+                    // the outgoing request headers do.
+                    const baseUrl = lastUrl.replace(/\\/[^\\/]+$/, '/GetUserStatus');
+                    fetch(baseUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'connect-protocol-version': '1',
+                        },
+                        body: '{}',
+                    }).catch(() => {});
+                    return { strategy: 'post', url: baseUrl };
+                }
                 
-                const lastUrl = lsEntries[lsEntries.length - 1].name;
-                
-                // Fire a dummy fetch to capture the headers in the Network domain
-                // (We don't care about the response, just the outgoing request)
-                fetch(lastUrl, { method: 'OPTIONS' }).catch(() => {});
-                
-                return true;
+                // Strategy 2: No performance entries — probe common LS ports
+                for (const port of [13337, 13338, 13339, 42100, 42101, 42102]) {
+                    try {
+                        fetch('https://127.0.0.1:' + port + '/exa.language_server_pb.LanguageServerService/GetUserStatus', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'connect-protocol-version': '1',
+                            },
+                            body: '{}',
+                        }).catch(() => {});
+                    } catch {}
+                }
+                return { strategy: 'port-scan' };
             } catch (e) {
-                return false;
+                return { strategy: 'error', message: e.message || String(e) };
             }
         })()`;
 
         try {
-            await this.call('Runtime.evaluate', {
+            const result = await this.call('Runtime.evaluate', {
                 expression: script,
                 returnByValue: true,
+                awaitPromise: true,
                 contextId: ctxId,
             });
+            logger.debug(`[CdpService] Credential probe result: ${JSON.stringify(result?.result?.value)}`);
             // Give the Network listener a moment to fire and catch the request
-            await new Promise(resolve => setTimeout(resolve, 250));
+            await new Promise(resolve => setTimeout(resolve, 500));
         } catch (err) {
             logger.debug(`[CdpService] Credential probe via CDP failed: ${err}`);
         }
