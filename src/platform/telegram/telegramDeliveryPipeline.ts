@@ -13,7 +13,7 @@
  */
 
 import { logger } from '../../utils/logger';
-import { renderStepsToTelegramHtml } from '../../services/trajectoryStepRenderer';
+import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../../services/trajectoryStepRenderer';
 import type { DeliverySnapshot } from './messageDeliveryState';
 import type { PipelineSession } from '../../utils/pipelineDebugLog';
 import type { PlatformChannel, PlatformSentMessage } from '../types';
@@ -31,7 +31,7 @@ import type { PlatformChannel, PlatformSentMessage } from '../types';
  *
  * No CDP/Preact fallback. All rendering is done natively.
  */
-export type DeliveryMode = 'step-rendered' | 'empty';
+export type DeliveryMode = 'step-rendered' | 'text-delivery' | 'empty';
 
 /** Immutable plan produced by the pure pipeline. */
 export interface DeliveryPlan {
@@ -82,6 +82,9 @@ export function planDelivery(
                 && snapshot.stepsData.steps.length > 0) {
                 return 'step-rendered';
             }
+            if (snapshot.finalText.trim()) {
+                return 'text-delivery';
+            }
             return 'empty';
         },
     );
@@ -96,6 +99,9 @@ export function planDelivery(
                     snapshot.stepsData.steps,
                     snapshot.stepsData.runStatus,
                 ).trim();
+            }
+            if (mode === 'text-delivery') {
+                return markdownToTelegramHtml(snapshot.finalText).trim();
             }
             return '';
         },
@@ -114,7 +120,7 @@ export function planDelivery(
         'resolveDeliveredText',
         { mode, telegramHtmlLength: telegramHtml.length },
         (): string | null => {
-            if (mode === 'step-rendered' && telegramHtml.trim()) {
+            if ((mode === 'step-rendered' || mode === 'text-delivery') && telegramHtml.trim()) {
                 return stripHtmlTags(telegramHtml).trim() || null;
             }
             return null;
@@ -124,6 +130,8 @@ export function planDelivery(
     // ── Build reason string for debugging ──────────────────────────────────
     const reason = mode === 'step-rendered'
         ? `Step-rendered (stepsClock=${snapshot.stepsClock}, steps=${snapshot.stepsData?.steps?.length ?? 0})`
+        : mode === 'text-delivery'
+        ? `Fallback to text (finalText=${snapshot.finalText.length} chars)`
         : `Empty — no step data available (stepsClock=${snapshot.stepsClock})`;
 
     return { mode, reason, telegramHtml, chunks, deliveredText };

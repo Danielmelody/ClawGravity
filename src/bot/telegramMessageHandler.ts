@@ -46,7 +46,7 @@ import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor'
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
 import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
-import { renderStepsToTelegramHtml } from '../services/trajectoryStepRenderer';
+import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../services/trajectoryStepRenderer';
 
 const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
 
@@ -840,7 +840,7 @@ async function createTelegramMirrorSession(
     );
     let state: MessageDeliveryState = initialDeliveryState();
 
-    // Step-rendered content only — no CDP fallback
+    // Step-rendered content natively, falling back to basic text rendering
     const renderCurrent = (): string => {
         if (state.stepsData.clock > 0 && state.stepsData.value !== null
             && Array.isArray(state.stepsData.value.steps) && state.stepsData.value.steps.length > 0) {
@@ -848,6 +848,9 @@ async function createTelegramMirrorSession(
                 state.stepsData.value.steps,
                 state.stepsData.value.runStatus,
             ).trim();
+        }
+        if (state.text.clock > 0 && state.text.value.trim()) {
+            return markdownToTelegramHtml(state.text.value).trim();
         }
         return '';
     };
