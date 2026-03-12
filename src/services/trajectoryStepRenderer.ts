@@ -40,6 +40,46 @@ const CODE_SPAN_PLACEHOLDER = '@@CODE_SPAN_';
 const TAG_SLOT_PLACEHOLDER = '@@TAG_SLOT_';
 
 /**
+ * Pre-process the trajectory steps to enrich plannerResponse tool calls
+ * with their runtime execution results from subsequent tool steps.
+ */
+function enrichToolCallsWithResults(steps: any[]) {
+    for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && Array.isArray(step.plannerResponse?.toolCalls)) {
+            for (const tc of step.plannerResponse.toolCalls) {
+                if (!tc.id) continue;
+                // Find execution step for this tool call
+                const execStep = steps.find(s => s?.metadata?.toolCall?.id === tc.id && s !== step);
+                if (execStep) {
+                    // Enrich status
+                    const transitions = execStep.metadata?.internalMetadata?.statusTransitions || [];
+                    const lastStatus = transitions[transitions.length - 1]?.updatedStatus;
+                    if (lastStatus === 'CORTEX_STEP_STATUS_DONE') {
+                        tc.status = 'completed';
+                    } else if (lastStatus === 'CORTEX_STEP_STATUS_ERROR') {
+                        tc.status = 'error';
+                    } else if (lastStatus === 'CORTEX_STEP_STATUS_RUNNING') {
+                        tc.status = 'pending';
+                    } else if (execStep.status === 'CORTEX_STEP_STATUS_DONE') {
+                        tc.status = 'completed';
+                    }
+
+                    // Enrich result
+                    // The result payload is typically the key that isn't standard
+                    const payloadKey = Object.keys(execStep).find(k =>
+                        !['type', 'status', 'metadata', 'error', 'userInput', 'plannerResponse'].includes(k)
+                    );
+                    if (payloadKey) {
+                        tc.toolCallResult = execStep[payloadKey];
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
  * Render trajectory steps into Telegram-safe HTML.
  *
  * This is the primary entry point. It receives the raw steps array from
@@ -65,6 +105,8 @@ export function renderStepsToTelegramHtml(
             break;
         }
     }
+
+    enrichToolCallsWithResults(steps);
 
     // Render only steps after the anchor (the current turn's assistant response)
     const renderFrom = anchorIndex >= 0 ? anchorIndex + 1 : 0;
@@ -620,14 +662,17 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
  * long content in expandable blockquotes.
  */
 function extractToolResult(tc: any): string | null {
-    if (typeof tc?.result === 'string') return tc.result;
-    if (typeof tc?.output === 'string') return tc.output;
-    if (tc?.toolCallResult != null) {
-        return typeof tc.toolCallResult === 'string'
-            ? tc.toolCallResult
-            : JSON.stringify(tc.toolCallResult, null, 2);
+    const res = tc?.result ?? tc?.output ?? tc?.toolCallResult;
+    if (res == null) return null;
+    if (typeof res === 'string') return res;
+    if (typeof res === 'object') {
+        // Handle common payload keys from the new SDK structure
+        if (typeof res.summary === 'string') return res.summary;
+        if (typeof res.output === 'string') return res.output;
+        if (typeof res.result === 'string') return res.result;
+        return JSON.stringify(res, null, 2);
     }
-    return null;
+    return String(res);
 }
 
 // ---------------------------------------------------------------------------
