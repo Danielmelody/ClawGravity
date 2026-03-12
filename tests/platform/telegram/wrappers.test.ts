@@ -113,6 +113,17 @@ describe('toTelegramPayload', () => {
         expect(result.text).toContain('All **good**');
     });
 
+    it('preserves escaped code block text in RichContent descriptions', () => {
+        const payload: MessagePayload = {
+            richContent: {
+                description: '<pre><code>if (a &lt; b &amp;&amp; c &gt; d) {}</code></pre>',
+            },
+        };
+        const result = toTelegramPayload(payload);
+
+        expect(result.text).toContain('<pre><code>if (a &lt; b &amp;&amp; c &gt; d) {}</code></pre>');
+    });
+
     it('combines text and richContent', () => {
         const payload: MessagePayload = {
             text: 'Header',

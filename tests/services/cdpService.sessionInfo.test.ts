@@ -22,7 +22,7 @@ describe('CdpService session info', () => {
             }),
         };
 
-        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
+        jest.spyOn(service, 'getLSClient').mockResolvedValue(mockClient as any);
         service.setCachedCascadeId('cascade-old');
 
         await expect(service.getActiveSessionInfo()).resolves.toEqual({
@@ -49,7 +49,7 @@ describe('CdpService session info', () => {
             }),
         };
 
-        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
+        jest.spyOn(service, 'getLSClient').mockResolvedValue(mockClient as any);
         (service as any).cachedCascadeId = 'missing-cascade';
         (service as any).recentCreatedCascadeId = 'missing-cascade';
         (service as any).recentCreatedCascadeAt = Date.now();
@@ -78,7 +78,7 @@ describe('CdpService session info', () => {
             }),
         };
 
-        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
+        jest.spyOn(service, 'getLSClient').mockResolvedValue(mockClient as any);
         (service as any).cachedCascadeId = 'missing-cascade';
         (service as any).recentCreatedCascadeId = 'missing-cascade';
         (service as any).recentCreatedCascadeAt = Date.now() - 60_000;
@@ -106,7 +106,7 @@ describe('CdpService session info', () => {
             }),
         };
 
-        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
+        jest.spyOn(service, 'getLSClient').mockResolvedValue(mockClient as any);
         (service as any).currentWorkspacePath = 'C:\\Users\\Daniel\\Projects\\antigravity-tunnel';
 
         await expect(service.getActiveSessionInfo()).resolves.toBeNull();

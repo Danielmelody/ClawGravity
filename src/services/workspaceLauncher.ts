@@ -1,4 +1,3 @@
-import { spawn } from 'child_process';
 import { getAntigravityCliPath } from '../utils/pathUtils';
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
@@ -34,7 +33,7 @@ export class WorkspaceLauncher {
 
         logger.debug(`[WorkspaceLauncher] Launching Antigravity: ${antigravityCli} --new-window ${workspacePath}`);
         WorkspaceLauncher.recentLaunchTimestamps.set(projectName, now);
-        await WorkspaceLauncher.runCommand(antigravityCli, ['--new-window', workspacePath]);
+        await cdpService.runCommand(antigravityCli, ['--new-window', workspacePath]);
 
         // Poll until a new workbench page appears (max 30 seconds)
         const maxWaitMs = 30000;
@@ -101,23 +100,5 @@ export class WorkspaceLauncher {
         throw new Error(
             `Workbench page for workspace "${projectName}" not found within ${maxWaitMs / 1000} seconds`,
         );
-    }
-
-    private static async runCommand(command: string, args: string[]): Promise<void> {
-        await new Promise<void>((resolve, reject) => {
-            const child = spawn(command, args, { stdio: 'ignore', shell: process.platform === 'win32' });
-
-            child.once('error', (error) => {
-                reject(error);
-            });
-
-            child.once('close', (code) => {
-                if (code === 0) {
-                    resolve();
-                    return;
-                }
-                reject(new Error(`${command} exited with code ${code ?? 'unknown'}`));
-            });
-        });
     }
 }

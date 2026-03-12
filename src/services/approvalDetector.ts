@@ -126,7 +126,15 @@ export class ApprovalDetector {
 
             // Check planner response for tool calls
             if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
-                const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
+                let pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
+
+                // Exclude terminal commands - they are handled exclusively by RunCommandDetector
+                pendingToolCalls = pendingToolCalls.filter((tc: any) => {
+                    const tName = tc?.name || tc?.toolName || tc?.function?.name;
+                    return tName !== 'antigravity.terminalCommand.run' &&
+                           tName !== 'run_terminal_command' &&
+                           tName !== 'run_command';
+                });
 
                 if (pendingToolCalls.length === 0) return null;
 

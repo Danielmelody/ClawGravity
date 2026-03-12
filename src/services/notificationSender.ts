@@ -35,6 +35,7 @@ import {
     RUN_COMMAND_RUN_ACTION_PREFIX,
     RUN_COMMAND_REJECT_ACTION_PREFIX,
 } from './actionPrefixes';
+import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 
 // ---------------------------------------------------------------------------
 // Notification colours
@@ -218,15 +219,15 @@ export function buildRunCommandNotification(opts: NotificationBaseOpts & {
     readonly workingDirectory: string;
 }): MessagePayload {
     const { title, commandText, workingDirectory, projectName, channelId, extraFields } = opts;
-    const safeCommandText = (commandText || '')
+    const safeCommandText = escapeHtml((commandText || '')
         .replace(/```/g, '`\u200b``')
-        .slice(0, 3800);
+        .slice(0, 3800));
     const safeWorkingDirectory = (workingDirectory || '(unknown)').slice(0, 1024);
 
     const richContent = pipe(
         createRichContent(),
         (rc) => withTitle(rc, title),
-        (rc) => withDescription(rc, `\`\`\`\n${safeCommandText}\n\`\`\``),
+        (rc) => withDescription(rc, `<pre><code>${safeCommandText}</code></pre>`),
         (rc) => withColor(rc, COLOR_APPROVAL),
         (rc) => addField(rc, 'Directory', safeWorkingDirectory, true),
         (rc) => addField(rc, 'Project', projectName, true),

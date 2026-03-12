@@ -114,7 +114,7 @@ export class ClawCommandInterceptor {
     private jobCallback: JobCallback;
     private clawWorkspacePath: string;
     private agentRouter?: AgentRouter;
-    private cdpService?: CdpService;
+    private cdpServiceResolver?: () => CdpService | null;
     /** Callback invoked when an agent_send response is saved — injects notification back to sender. */
     private onAgentResponse?: (fromAgent: string, filePath: string, preview: string) => void;
 
@@ -123,7 +123,7 @@ export class ClawCommandInterceptor {
         jobCallback: JobCallback;
         clawWorkspacePath: string;
         agentRouter?: AgentRouter;
-        cdpService?: CdpService;
+        cdpServiceResolver?: () => CdpService | null;
         /** Called when agent_send response is saved — inject short notification to sender. */
         onAgentResponse?: (fromAgent: string, filePath: string, preview: string) => void;
     }) {
@@ -131,7 +131,7 @@ export class ClawCommandInterceptor {
         this.jobCallback = opts.jobCallback;
         this.clawWorkspacePath = opts.clawWorkspacePath;
         this.agentRouter = opts.agentRouter;
-        this.cdpService = opts.cdpService;
+        this.cdpServiceResolver = opts.cdpServiceResolver;
         this.onAgentResponse = opts.onAgentResponse;
     }
 
@@ -364,16 +364,17 @@ export class ClawCommandInterceptor {
     }
 
     private async handleGatewayRestart(cmd: ClawCommand): Promise<ClawCommandResult> {
-        if (!this.cdpService) {
+        const cdpService = this.cdpServiceResolver?.();
+        if (!cdpService) {
             return {
                 command: cmd,
                 success: false,
-                message: 'Gateway restart not available: CdpService is not configured.',
+                message: 'Gateway restart not available: CdpService is not configured or no active workspace.',
             };
         }
 
         logger.info('[ClawInterceptor] gateway_restart: executing full gateway restart...');
-        const result = await this.cdpService.resetGateway();
+        const result = await cdpService.resetGateway();
         const stepsText = result.steps.join('; ');
 
         return {

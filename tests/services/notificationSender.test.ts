@@ -4,6 +4,7 @@ import {
     buildAutoApprovedNotification,
     buildPlanningNotification,
     buildErrorPopupNotification,
+    buildRunCommandNotification,
     buildResolvedOverlay,
     buildStatusNotification,
     buildProgressNotification,
@@ -246,6 +247,26 @@ describe('buildErrorPopupNotification', () => {
         expect(ids[0]).toBe('error_popup_dismiss_action:err-proj');
         expect(ids[1]).toBe('error_popup_copy_debug_action:err-proj');
         expect(ids[2]).toBe('error_popup_retry_action:err-proj');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// buildRunCommandNotification
+// ---------------------------------------------------------------------------
+
+describe('buildRunCommandNotification', () => {
+    it('escapes HTML-sensitive characters inside the command code block', () => {
+        const payload = buildRunCommandNotification({
+            title: 'Run command?',
+            commandText: 'echo "<tag>" && test a < b && c > d',
+            workingDirectory: '/workspace/app',
+            projectName: 'my-project',
+            channelId: 'ch-123',
+        });
+
+        expect(payload.richContent!.description).toBe(
+            '<pre><code>echo &quot;&lt;tag&gt;&quot; &amp;&amp; test a &lt; b &amp;&amp; c &gt; d</code></pre>',
+        );
     });
 });
 

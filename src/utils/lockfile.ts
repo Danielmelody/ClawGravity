@@ -1,6 +1,7 @@
 import { logger } from './logger';
 import fs from 'fs';
 import path from 'path';
+import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 
 const LOCK_FILE = path.resolve(process.cwd(), '.bot.lock');
 let currentReleaseLock: (() => void) | null = null;
@@ -104,10 +105,34 @@ export function acquireLock(): () => void {
         releaseLock();
         process.exit(0);
     });
-    process.on('uncaughtException', (err) => {
+    process.on('uncaughtException', async (err) => {
         logger.error('Uncaught exception:', err);
+        try {
+            const { globalTelegramNotifier } = await import('../bot/index');
+            if (globalTelegramNotifier) {
+                await globalTelegramNotifier(
+                    `🚨 <b>Fatal Error (uncaughtException)</b>\n<pre>${escapeHtml(err instanceof Error ? err.stack || err.message : String(err))}</pre>`,
+                );
+            }
+        } catch (e) {
+            // ignore
+        }
         releaseLock();
         process.exit(1);
+    });
+
+    process.on('unhandledRejection', async (reason) => {
+        logger.error('Unhandled Rejection:', reason);
+        try {
+            const { globalTelegramNotifier } = await import('../bot/index');
+            if (globalTelegramNotifier) {
+                await globalTelegramNotifier(
+                    `🚨 <b>Unhandled Promise Rejection</b>\n<pre>${escapeHtml(reason instanceof Error ? reason.stack || reason.message : String(reason))}</pre>`,
+                );
+            }
+        } catch (e) {
+            // ignore
+        }
     });
 
     return releaseLock;

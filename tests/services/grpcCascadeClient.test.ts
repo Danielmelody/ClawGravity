@@ -26,6 +26,24 @@ describe('GrpcCascadeClient createCascade', () => {
         await expect(client.createCascade('hello')).resolves.toBeNull();
         expect(client.getLastOperationError()).toBe('LS StartCascade: 400 - bad request');
     });
+
+    it('passes the selected model into StartCascade when creating a new cascade', async () => {
+        const client = new GrpcCascadeClient();
+        const rpc = jest.spyOn(client as any, 'rpc').mockResolvedValue({ cascadeId: 'cascade-123' });
+        jest.spyOn(client, 'sendMessage').mockResolvedValue({ ok: true, data: {} });
+
+        await expect(client.createCascade('hello', 'MODEL_PLACEHOLDER_M26')).resolves.toBe('cascade-123');
+
+        expect(rpc).toHaveBeenCalledWith('StartCascade', {
+            source: 0,
+            cascadeConfig: {
+                plannerConfig: {
+                    conversational: {},
+                    planModel: 'MODEL_PLACEHOLDER_M26',
+                },
+            },
+        });
+    });
 });
 
 describe('decodeWorkspaceId', () => {

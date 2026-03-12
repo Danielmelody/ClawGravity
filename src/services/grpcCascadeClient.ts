@@ -127,19 +127,38 @@ export class GrpcCascadeClient extends EventEmitter {
     async createCascade(text?: string, model?: ModelId): Promise<string | null> {
         this.lastOperationError = null;
 
+        const plannerConfig: any = {
+            conversational: {},
+        };
+        if (model != null) {
+            plannerConfig.planModel = model;
+        }
+
+        const startPayload: any = { source: 0 };
+        if (model != null) {
+            startPayload.cascadeConfig = { plannerConfig };
+        }
+
         let startResp: any;
         try {
-            startResp = await this.rpc('StartCascade', { source: 0 });
+            startResp = await this.rpc('StartCascade', startPayload);
         } catch (err: any) {
             this.lastOperationError = err?.message || String(err);
             logger.error(`[GrpcCascadeClient] StartCascade failed: ${this.lastOperationError}`);
             return null;
         }
 
-        const cascadeId = startResp?.cascadeId;
+        const cascadeId =
+            startResp?.cascadeId
+            || startResp?.cascade?.cascadeId
+            || startResp?.cascade?.id
+            || startResp?.trajectory?.cascadeId
+            || startResp?.session?.cascadeId
+            || null;
         if (!cascadeId) {
-            this.lastOperationError = 'StartCascade returned no cascadeId';
-            logger.error('[GrpcCascadeClient] StartCascade returned no cascadeId');
+            const responsePreview = JSON.stringify(startResp)?.slice(0, 500) || '{}';
+            this.lastOperationError = `StartCascade returned no cascadeId: ${responsePreview}`;
+            logger.error(`[GrpcCascadeClient] ${this.lastOperationError}`);
             return null;
         }
 

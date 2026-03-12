@@ -34,6 +34,7 @@ import type {
     RichContent,
     PlatformAttachment,
 } from '../types';
+import { htmlToDiscordMarkdown } from '../../utils/htmlToDiscordMarkdown';
 
 // ---------------------------------------------------------------------------
 // Style mapping
@@ -59,6 +60,10 @@ export function toDiscordButtonStyle(style: ButtonStyle): DiscordButtonStyle {
  * Convert a platform RichContent to a discord.js EmbedBuilder.
  * Returns a new EmbedBuilder instance.
  */
+function richTextToDiscordText(text: string): string {
+    return htmlToDiscordMarkdown(text);
+}
+
 function toDiscordEmbed(rc: RichContent): EmbedBuilder {
     const embed = new EmbedBuilder();
 
@@ -66,18 +71,22 @@ function toDiscordEmbed(rc: RichContent): EmbedBuilder {
         embed.setTitle(rc.title);
     }
     if (rc.description !== undefined) {
-        embed.setDescription(rc.description);
+        embed.setDescription(richTextToDiscordText(rc.description));
     }
     if (rc.color !== undefined) {
         embed.setColor(rc.color);
     }
     if (rc.fields !== undefined) {
         for (const field of rc.fields) {
-            embed.addFields({ name: field.name, value: field.value, inline: field.inline });
+            embed.addFields({
+                name: richTextToDiscordText(field.name),
+                value: richTextToDiscordText(field.value),
+                inline: field.inline,
+            });
         }
     }
     if (rc.footer !== undefined) {
-        embed.setFooter({ text: rc.footer });
+        embed.setFooter({ text: richTextToDiscordText(rc.footer) });
     }
     if (rc.timestamp !== undefined) {
         embed.setTimestamp(rc.timestamp);

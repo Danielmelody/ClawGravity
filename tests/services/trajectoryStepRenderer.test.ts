@@ -385,10 +385,10 @@ describe('renderStepsToTelegramHtml', () => {
             plannerResponse: { response: 'Working...' },
         }];
         const resultRunning = renderStepsToTelegramHtml(steps, 'CASCADE_RUN_STATUS_RUNNING');
-        expect(resultRunning).toContain('⏳');
+        expect(resultRunning).toContain('● Generating…');
 
         const resultIdle = renderStepsToTelegramHtml(steps, 'CASCADE_RUN_STATUS_IDLE');
-        expect(resultIdle).not.toContain('⏳');
+        expect(resultIdle).not.toContain('● Generating…');
     });
 
     it('only renders steps after last user input', () => {

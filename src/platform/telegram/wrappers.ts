@@ -356,8 +356,8 @@ export function wrapTelegramChannel(
             } catch (err: any) {
                 // HTML parse error — retry with raw text, no parse_mode
                 logger.warn(`[TgSend] HTML parse failed, falling back to raw text. Error: ${err?.message || err}. Text starts: ${text.slice(0, 200)}`);
-                const rawText = payload.text || text;
-                const sent = await withRetry429(() => api.sendMessage(chatId, rawText, {}));
+                const rawText = payload.text || text.replace(/<[^>]*>?/gm, ''); // Strip HTML for neat raw text
+                const sent = await withRetry429(() => api.sendMessage(chatId, rawText, { reply_markup: rest.reply_markup }));
                 return wrapTelegramSentMessage(sent, api, chatId);
             }
         },
@@ -447,10 +447,20 @@ export function wrapTelegramMessage(
 
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            const sent = await api.sendMessage(msg.chat.id, text, {
-                ...rest,
-                reply_to_message_id: msg.message_id,
-            });
+            let sent;
+            try {
+                sent = await withRetry429(() => api.sendMessage(msg.chat.id, text, {
+                    ...rest,
+                    reply_to_message_id: msg.message_id,
+                }));
+            } catch (err: any) {
+                logger.warn(`[TgMsgReply] HTML parse failed, falling back to raw text.`);
+                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
+                sent = await withRetry429(() => api.sendMessage(msg.chat.id, rawText, {
+                    reply_markup: rest.reply_markup,
+                    reply_to_message_id: msg.message_id,
+                }));
+            }
             return wrapTelegramSentMessage(sent, api, msg.chat.id);
         },
     };
@@ -495,7 +505,13 @@ export function wrapTelegramCallbackQuery(
             assertValidChatId(chatId);
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            await withRetry429(() => api.sendMessage(chatId, text, rest));
+            try {
+                await withRetry429(() => api.sendMessage(chatId, text, rest));
+            } catch (err: any) {
+                logger.warn(`[TgReply] HTML parse failed, falling back to raw text.`);
+                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
+                await withRetry429(() => api.sendMessage(chatId, rawText, { reply_markup: rest.reply_markup }));
+            }
         },
         async update(payload: MessagePayload): Promise<void> {
             if (!query.message) return;
@@ -503,7 +519,13 @@ export function wrapTelegramCallbackQuery(
             const messageId = query.message.message_id;
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            await withRetry429(() => api.editMessageText(chatId, messageId, text, rest));
+            try {
+                await withRetry429(() => api.editMessageText(chatId, messageId, text, rest));
+            } catch (err: any) {
+                logger.warn(`[TgUpdate] HTML parse failed, falling back to raw text.`);
+                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
+                await withRetry429(() => api.editMessageText(chatId, messageId, rawText, { reply_markup: rest.reply_markup }));
+            }
         },
         async editReply(payload: MessagePayload): Promise<void> {
             // Semantically identical to update for Telegram callback queries
@@ -513,8 +535,15 @@ export function wrapTelegramCallbackQuery(
             assertValidChatId(chatId);
             const opts = toTelegramPayload(payload);
             const { text, ...rest } = opts;
-            const sent = await withRetry429(() => api.sendMessage(chatId, text, rest));
-            return wrapTelegramSentMessage(sent, api, chatId);
+            try {
+                const sent = await withRetry429(() => api.sendMessage(chatId, text, rest));
+                return wrapTelegramSentMessage(sent, api, chatId);
+            } catch (err: any) {
+                logger.warn(`[TgFollowUp] HTML parse failed, falling back to raw text.`);
+                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
+                const sent = await withRetry429(() => api.sendMessage(chatId, rawText, { reply_markup: rest.reply_markup }));
+                return wrapTelegramSentMessage(sent, api, chatId);
+            }
         },
     };
 }
@@ -544,8 +573,8 @@ export function wrapTelegramSentMessage(
             } catch (err: any) {
                 // HTML parse error — retry with raw text, no parse_mode
                 logger.warn(`[TgEdit] HTML parse failed, falling back to raw text. Error: ${err?.message || err}. Text starts: ${text.slice(0, 200)}`);
-                const rawText = payload.text || text;
-                const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), rawText, {}));
+                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
+                const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), rawText, { reply_markup: rest.reply_markup }));
                 return wrapTelegramSentMessage(edited, api, chatId);
             }
         },

@@ -45,6 +45,9 @@ jest.mock('../../src/services/grpcResponseMonitor', () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Drain the microtask queue so fire-and-forget monitor.start() completes. */
+const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+
 function createMockSentMessage(id = '1', channelId = 'chat-123') {
     const msg: any = {
         id,
@@ -612,7 +615,7 @@ describe('createTelegramMessageHandler', () => {
         await handler(message as any);
 
         expect(channel.send).toHaveBeenCalledTimes(1);
-        expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
+        expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Generating...' });
         expect(channel._statusMsg.edit).toHaveBeenCalled();
         const editCalls = channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
         expect(editCalls.some((t: string) => t.includes('Response text'))).toBe(true);
@@ -649,9 +652,10 @@ describe('createTelegramMessageHandler', () => {
 
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
+        await flushMicrotasks();
         // At least the Processing placeholder + a fallback send with the content
         expect(channel.send.mock.calls.length).toBeGreaterThanOrEqual(2);
-        expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
+        expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Generating...' });
         const allSendPayloads = channel.send.mock.calls.map(([p]: any[]) => p.text).filter(Boolean);
         expect(allSendPayloads.some((t: string) => t.includes('Response text'))).toBe(true);
         expect(channel._statusMsg.delete).toHaveBeenCalled();
@@ -676,6 +680,7 @@ describe('createTelegramMessageHandler', () => {
 
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
+        await flushMicrotasks();
 
         expect(channel.send).toHaveBeenCalledWith({
             text: '(Empty response from Antigravity)',
@@ -719,26 +724,22 @@ describe('createTelegramMessageHandler', () => {
         // At least the Processing + one overflow chunk
         expect(allPayloads.length).toBeGreaterThan(1);
         for (const payload of allPayloads) {
-            if (payload === 'Processing...') continue;
+            if (payload === 'Generating...') continue;
             expect(payload.length).toBeLessThanOrEqual(4096);
         }
     });
 
-    it('queues messages for same workspace (serial execution)', async () => {
-        const executionOrder: number[] = [];
+    it('serializes messages per workspace until the previous monitor completes', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        const completions: Array<() => Promise<void>> = [];
 
-        let callCount = 0;
         GrpcResponseMonitor.mockImplementation((opts: any) => ({
             start: jest.fn().mockImplementation(async () => {
-                callCount++;
-                const current = callCount;
-                // Simulate first message taking longer
-                if (current === 1) {
-                    await new Promise((r) => setTimeout(r, 30));
-                }
-                executionOrder.push(current);
-                if (opts.onComplete) await opts.onComplete(`Response ${current}`);
+                completions.push(async () => {
+                    if (opts.onComplete) {
+                        await opts.onComplete('Response');
+                    }
+                });
             }),
             stop: jest.fn().mockResolvedValue(undefined),
         }));
@@ -754,13 +755,24 @@ describe('createTelegramMessageHandler', () => {
         const { message: msg1 } = createMockMessage({ content: 'first' });
         const { message: msg2 } = createMockMessage({ content: 'second' });
 
-        // Fire both without awaiting — they should serialize
         const p1 = handler(msg1 as any);
+        await flushMicrotasks();
         const p2 = handler(msg2 as any);
-        await Promise.all([p1, p2]);
+        await flushMicrotasks();
 
-        // Due to queue serialization, 1 always completes before 2
-        expect(executionOrder).toEqual([1, 2]);
+        expect(completions).toHaveLength(1);
+        expect(mockCdp.injectMessage).toHaveBeenCalledTimes(1);
+        expect(mockCdp.injectMessage).toHaveBeenCalledWith('first');
+
+        await completions[0]();
+        await flushMicrotasks();
+
+        expect(completions).toHaveLength(2);
+        expect(mockCdp.injectMessage).toHaveBeenCalledTimes(2);
+        expect(mockCdp.injectMessage).toHaveBeenCalledWith('second');
+
+        await completions[1]();
+        await Promise.all([p1, p2]);
     });
 
     it('does not block subsequent messages when a task fails', async () => {
@@ -789,6 +801,24 @@ describe('createTelegramMessageHandler', () => {
 
         // Second message should still be processed
         expect(mockCdp.injectMessage).toHaveBeenCalledWith('second');
+    });
+
+    it('reports missing monitoring target without crashing', async () => {
+        const mockCdp = createMockCdp();
+        mockCdp.getGrpcClient.mockResolvedValue(null);
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage({ content: 'test prompt' });
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+
+        await expect(handler(message as any)).resolves.toBeUndefined();
+
+        expect(channel.send).toHaveBeenCalledWith({
+            text: '❌ LS client unavailable — cannot monitor response.',
+        });
     });
 
     it('does not crash when react() rejects', async () => {
@@ -829,7 +859,7 @@ describe('createTelegramMessageHandler', () => {
         expect(message.reply).toHaveBeenCalled();
     });
 
-    it('sends a "Processing..." status message before monitoring', async () => {
+    it('sends a "Generating..." status message before monitoring', async () => {
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
         const bridge = createBridge(pool);
@@ -841,7 +871,7 @@ describe('createTelegramMessageHandler', () => {
         await handler(message as any);
 
         // First call to channel.send should be the status message
-        expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Processing...' });
+        expect(channel.send).toHaveBeenNthCalledWith(1, { text: 'Generating...' });
     });
 
     it('edits status message with rendered HTML timeline from Antigravity', async () => {
@@ -908,6 +938,7 @@ describe('createTelegramMessageHandler', () => {
 
         const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
         await handler(message as any);
+        await flushMicrotasks();
 
         const allPayloads = [
             ...channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text),
@@ -1442,6 +1473,7 @@ describe('createTelegramMessageHandler', () => {
 
             const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo, activeMonitors });
             await handler(message as any);
+            await flushMicrotasks();
 
             // After completion, monitor should have been removed from the map
             expect(activeMonitors.size).toBe(0);

@@ -10,6 +10,7 @@ import {
     WorkspaceCommandHandler,
     WORKSPACE_SELECT_ID,
 } from '../../src/commands/workspaceCommandHandler';
+import type { ApplicationContext } from '../../src/context/applicationContext';
 import { ITEMS_PER_PAGE, PROJECT_SELECT_ID } from '../../src/ui/projectListUi';
 
 describe('WorkspaceCommandHandler', () => {
@@ -28,7 +29,24 @@ describe('WorkspaceCommandHandler', () => {
         tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-cmd-test-'));
         service = new WorkspaceService(tmpDir);
         channelManager = new ChannelManager();
-        handler = new WorkspaceCommandHandler(bindingRepo, chatSessionRepo, service, channelManager);
+        const ctx: ApplicationContext = {
+            db,
+            workspaceBindingRepo: bindingRepo,
+            chatSessionRepo,
+            workspaceService: service,
+            channelManager,
+            modeService: null as any,
+            modelService: null as any,
+            chatSessionService: null as any,
+            scheduleService: null as any,
+            promptDispatcher: null as any,
+            titleGenerator: null as any,
+            templateRepo: null as any,
+            scheduleRepo: null as any,
+            userPrefRepo: null as any,
+            bridge: null as any,
+        };
+        handler = new WorkspaceCommandHandler(ctx);
     });
 
     afterEach(() => {

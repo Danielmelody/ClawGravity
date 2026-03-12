@@ -47,6 +47,7 @@ import type { TelegramSessionStateStore } from './telegramJoinCommand';
 import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../services/trajectoryStepRenderer';
+import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 
 const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
 
@@ -104,7 +105,8 @@ export interface TelegramMessageHandlerDeps {
  * Returns an async function that processes a single PlatformMessage.
  */
 export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
-    // Per-workspace prompt queue to serialize messages
+    // Serialize the full send+monitor lifecycle per workspace so one turn's
+    // monitor cannot be polluted by later user inputs in the same cascade.
     const workspaceQueues = new Map<string, Promise<void>>();
 
     function enqueueForWorkspace(
@@ -120,7 +122,11 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             }
         });
         workspaceQueues.set(workspacePath, next);
-        return next;
+        return next.finally(() => {
+            if (workspaceQueues.get(workspacePath) === next) {
+                workspaceQueues.delete(workspacePath);
+            }
+        });
     }
 
     return async (message: PlatformMessage): Promise<void> => {
@@ -201,7 +207,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
             : binding.workspacePath;
 
-        // Acknowledge receipt before queueing
+        // Acknowledge receipt
         await message.react('\u{1F440}').catch(() => { });
 
         await enqueueForWorkspace(workspacePath, async () => {
@@ -348,12 +354,19 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             const TIMEOUT_MS = 600_000;
             const monitorDeferred = createDeferred<void>();
 
+            let monitor: GrpcResponseMonitor | null = null;
+            let safetyTimer: NodeJS.Timeout | null = null;
             let settled = false;
             const settle = () => {
                 if (settled) return;
                 settled = true;
-                clearTimeout(safetyTimer);
-                deps.activeMonitors?.delete(projectName);
+                if (safetyTimer) {
+                    clearTimeout(safetyTimer);
+                    safetyTimer = null;
+                }
+                if (monitor && deps.activeMonitors?.get(projectName) === monitor) {
+                    deps.activeMonitors.delete(projectName);
+                }
                 monitorDeferred.resolve();
             };
 
@@ -365,7 +378,6 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 return;
             }
             const { grpcClient, cascadeId } = monitoringTarget;
-            let monitor: GrpcResponseMonitor | null = null;
             const pipeline = createPipelineSession('tg-active');
             const monitorConfig = buildMonitorCallbacks({
                 pipeline,
@@ -431,6 +443,16 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                         await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(logger.error);
                     } else if (isError) {
                         await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(logger.error);
+                        try {
+                            const { globalTelegramNotifier } = await import('./index');
+                            if (globalTelegramNotifier) {
+                                await globalTelegramNotifier(
+                                    `🚨 <b>Antigravity Generation Error</b>\nAn error occurred while generating the response for project <code>${escapeHtml(projectName)}</code>.`,
+                                );
+                            }
+                        } catch (e) {
+                            // ignore
+                        }
                     } else {
                         const elapsedSeconds = Math.round((Date.now() - startTime) / 1000);
                         await channel.send({ text: `Response timed out after ${elapsedSeconds}s.` }).catch(logger.error);
@@ -452,16 +474,16 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 ...monitorConfig
             });
 
-            const safetyTimer = setTimeout(() => {
+            safetyTimer = setTimeout(() => {
                 logger.warn(`[TelegramHandler:${projectName}] Safety timeout — releasing queue after idle period`);
-                monitor.stop().catch(() => { });
+                monitor?.stop().catch(() => { });
                 settle();
             }, TIMEOUT_MS);
 
             // Register the monitor so /stop can access and stop it
             deps.activeMonitors?.set(projectName, monitor);
 
-            monitor.start().catch((err: any) => {
+            Promise.resolve(monitor.start()).catch((err: any) => {
                 logger.error(`[TelegramHandler:${projectName}] monitor.start() failed:`, err?.message || err);
                 mirror.dispose();
                 settle();
@@ -1147,6 +1169,16 @@ export async function handlePassiveUserMessage(
     const preview = info.text.length > 200 ? info.text.slice(0, 200) + '…' : info.text;
     await channel.send({ text: `🖥️ ${preview}` }).catch(logger.error);
 
+    // Ensure the stream router is polling the cascade where the PC user typed.
+    // Without this, approval/run-command detectors won't see trajectory data
+    // for this cascade, so TG notifications would never fire.
+    if (info.cascadeId) {
+        const streamRouter = runtime.getStreamRouter?.();
+        if (streamRouter?.isActive()) {
+            streamRouter.connectToCascade(info.cascadeId);
+        }
+    }
+
     // Start passive backend response monitor to capture the AI response
     startPassiveResponseMonitor(
         channel,
@@ -1183,6 +1215,13 @@ export async function startMonitorForActiveSession(
     logger.info(
         `[TelegramSessionSwitch:${projectName}] Starting passive monitor for streaming cascade=${cascadeId.slice(0, 12)}...`,
     );
+
+    // Connect stream router so approval/run-command detectors poll this cascade
+    const streamRouter = runtime.getStreamRouter?.();
+    if (streamRouter?.isActive()) {
+        streamRouter.connectToCascade(cascadeId);
+    }
+
     startPassiveResponseMonitor(
         channel, runtime, projectName,
         syntheticInfo, activeMonitors, clawInterceptor, sessionStateStore,

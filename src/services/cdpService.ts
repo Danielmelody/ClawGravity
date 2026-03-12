@@ -8,7 +8,7 @@ import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/path
 import { CdpConnection } from './cdpConnection';
 import { WorkspaceLauncher } from './workspaceLauncher';
 import { LsClientManager } from './lsClientManager';
-import { GrpcCascadeClient, ModelId, LSConnection } from './grpcCascadeClient';
+import { GrpcCascadeClient, ModelId, LSConnection, extractCascadeRunStatus } from './grpcCascadeClient';
 
 
 export interface CdpServiceOptions {
@@ -107,6 +107,10 @@ export class CdpService extends EventEmitter {
         this.reconnectDelayMs = options.reconnectDelayMs ?? 2000;
     }
 
+    static clearLaunchCooldowns(): void {
+        WorkspaceLauncher.clearLaunchCooldowns();
+    }
+
     public async getJson(url: string): Promise<any[]> {
         return new Promise((resolve, reject) => {
             http.get(url, (res) => {
@@ -116,6 +120,27 @@ export class CdpService extends EventEmitter {
                     try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
                 });
             }).on('error', reject);
+        });
+    }
+
+    /**
+     * Backward-compatible launch helper retained for older tests/callers.
+     */
+    public async runCommand(command: string, args: string[]): Promise<void> {
+        await new Promise<void>((resolve, reject) => {
+            const child = spawn(command, args, { stdio: 'ignore', shell: process.platform === 'win32' });
+
+            child.once('error', (error) => {
+                reject(error);
+            });
+
+            child.once('close', (code) => {
+                if (code === 0) {
+                    resolve();
+                    return;
+                }
+                reject(new Error(`${command} exited with code ${code ?? 'unknown'}`));
+            });
         });
     }
 
@@ -443,7 +468,7 @@ export class CdpService extends EventEmitter {
 
         this.disconnectQuietly();
 
-        // Reset LS client + sniffed state so ensureLSClient() re-discovers the correct LS
+        // Reset LS client + sniffed state so getLSClient() re-discovers the correct LS
         // for the NEW workspace page. Without this, the old LS client
         // continues pointing to the previous workspace's LS process (cross-talk bug).
         this.lsClientManager.reset();
@@ -902,7 +927,7 @@ export class CdpService extends EventEmitter {
      * Attempts discovery if not already attempted.
      */
     async getLSClient(): Promise<GrpcCascadeClient | null> {
-        return this.lsClientManager.getClient(this.currentWorkspacePath, async (expression: string) => {
+        const client = await this.lsClientManager.getClient(this.currentWorkspacePath, async (expression: string) => {
             const res = await this.call('Runtime.evaluate', {
                 expression,
                 returnByValue: true,
@@ -911,10 +936,24 @@ export class CdpService extends EventEmitter {
             });
             return res?.result?.value;
         });
+        if (!client) {
+            return null;
+        }
+
+        client.setCdpEvaluate(async (expression: string) => {
+            return this.call('Runtime.evaluate', {
+                expression,
+                returnByValue: true,
+                awaitPromise: true,
+                timeout: 10000,
+            });
+        });
+
+        return client;
     }
 
     /**
-     * @deprecated Use getLSClient() instead. Kept for backward compatibility.
+     * Public alias used by higher-level bot/runtime flows.
      */
     async getGrpcClient(): Promise<GrpcCascadeClient | null> {
         return this.getLSClient();
@@ -938,6 +977,16 @@ export class CdpService extends EventEmitter {
         const modelId = await this.resolveSelectedModelId();
 
         if (cascadeId) {
+            try {
+                const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
+                const runStatus = extractCascadeRunStatus(trajectoryResp);
+                if (runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+                    logger.info(`[CdpService] injectViaLS: cascade ${cascadeId.slice(0, 16)}... is still running; delegating turn queueing to Antigravity`);
+                }
+            } catch (err: any) {
+                logger.debug(`[CdpService] injectViaLS: failed to inspect existing cascade ${cascadeId.slice(0, 16)}...: ${err?.message || err}`);
+            }
+
             // Send to existing cascade
             logger.info(`[CdpService] injectViaLS: sending to existing cascade=${cascadeId.slice(0, 16)}... model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
             const result = await client.sendMessage(cascadeId, text, modelId || undefined);
@@ -945,13 +994,8 @@ export class CdpService extends EventEmitter {
                 logger.debug(`[CdpService] sendMessage OK, response: ${JSON.stringify(result.data)?.slice(0, 200)}`);
                 return { ok: true, method: 'ls-api', cascadeId };
             }
-            // If existing cascade failed, fall through to create a new one
-            logger.warn(`[CdpService] sendMessage to existing cascade failed: ${result.error}, creating new cascade`);
-            this.cachedCascadeId = null;
-            if (this.recentCreatedCascadeId === cascadeId) {
-                this.recentCreatedCascadeId = null;
-                this.recentCreatedCascadeAt = 0;
-            }
+            logger.warn(`[CdpService] sendMessage to existing cascade failed: ${result.error}`);
+            return { ok: false, error: result.error || 'LS client injection failed', cascadeId };
         }
 
         // Create a new Antigravity cascade and send the message
@@ -1027,6 +1071,32 @@ export class CdpService extends EventEmitter {
     /** Cached model configs from GetUserStatus */
     private cachedModelConfigs: Array<{ label: string; model: string; supportsImages?: boolean }> = [];
 
+    private extractModelIdentifier(config: any): string {
+        const direct =
+            config?.modelOrAlias?.model
+            ?? config?.modelOrAlias?.alias
+            ?? config?.model
+            ?? config?.modelId
+            ?? config?.requestedModel?.choice?.value
+            ?? config?.requestedModel?.value;
+        if (direct !== undefined && direct !== null && String(direct).trim()) {
+            return String(direct);
+        }
+
+        const nestedChoice =
+            config?.modelOrAlias?.choice
+            ?? config?.modelOrAlias;
+        const nestedValue =
+            nestedChoice?.value?.model
+            ?? nestedChoice?.value?.alias
+            ?? nestedChoice?.value;
+        if (nestedValue !== undefined && nestedValue !== null && String(nestedValue).trim()) {
+            return String(nestedValue);
+        }
+
+        return 'unknown';
+    }
+
     /**
      * Get the current mode name.
      * Returns the cached mode — mode is set per-message via plannerConfig.
@@ -1066,7 +1136,7 @@ export class CdpService extends EventEmitter {
             const configs = status?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
             this.cachedModelConfigs = configs.map((cfg: any) => {
                 const label = cfg.label || cfg.displayName || cfg.modelName || cfg.model || 'Unknown';
-                const modelId = cfg.modelOrAlias?.model || cfg.model || cfg.modelId || 'unknown';
+                const modelId = this.extractModelIdentifier(cfg);
                 return {
                     label,
                     model: String(modelId),
@@ -1180,7 +1250,7 @@ export class CdpService extends EventEmitter {
             if (configs.length > 0) {
                 this.cachedModelConfigs = configs.map((cfg: any) => {
                     const label = cfg.label || cfg.displayName || cfg.modelName || cfg.model || 'Unknown';
-                    const modelId = cfg.modelOrAlias?.model || cfg.model || cfg.modelId || 'unknown';
+                    const modelId = this.extractModelIdentifier(cfg);
                     return {
                         label,
                         model: String(modelId),

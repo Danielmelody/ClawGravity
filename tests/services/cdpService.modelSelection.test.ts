@@ -32,7 +32,7 @@ describe('CdpService model selection', () => {
         };
 
         primeUiModel(service, 'Claude Opus 4.6 (Thinking)');
-        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
+        jest.spyOn(service, 'getLSClient').mockResolvedValue(mockClient as any);
         service.setCachedCascadeId('cascade-123');
 
         await expect(service.injectMessage('hello')).resolves.toMatchObject({
@@ -62,7 +62,7 @@ describe('CdpService model selection', () => {
         };
 
         primeUiModel(service, 'Claude Opus 4.6 (Thinking)');
-        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
+        jest.spyOn(service, 'getLSClient').mockResolvedValue(mockClient as any);
         service.setCachedCascadeId('cascade-456');
 
         await expect(service.injectMessage('hello again')).resolves.toMatchObject({
@@ -92,7 +92,7 @@ describe('CdpService model selection', () => {
         };
 
         primeUiModel(service, 'Claude Opus 4.6 (Thinking)');
-        jest.spyOn(service as any, 'ensureLSClient').mockResolvedValue(mockClient);
+        jest.spyOn(service, 'getLSClient').mockResolvedValue(mockClient as any);
         service.setCachedCascadeId('cascade-789');
 
         await expect(service.injectMessage('hello string model')).resolves.toMatchObject({
@@ -102,5 +102,40 @@ describe('CdpService model selection', () => {
 
         expect(mockClient.sendMessage).toHaveBeenCalledWith('cascade-789', 'hello string model', 'MODEL_PLACEHOLDER_M26');
         expect(service.getSelectedModelId()).toBe('MODEL_PLACEHOLDER_M26');
+    });
+
+    it('extracts alias-style model identifiers from newer GetUserStatus payloads when creating a new cascade', async () => {
+        const service = new CdpService({ maxReconnectAttempts: 0 });
+        const mockClient = {
+            getUserStatus: jest.fn().mockResolvedValue({
+                userStatus: {
+                    cascadeModelConfigData: {
+                        clientModelConfigs: [
+                            {
+                                label: 'Gemini 3.1 Pro (High)',
+                                modelOrAlias: {
+                                    choice: {
+                                        case: 'alias',
+                                        value: 'MODEL_PLACEHOLDER_GEMINI_PRO_HIGH',
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                },
+            }),
+            createCascade: jest.fn().mockResolvedValue('cascade-gemini'),
+        };
+
+        primeUiModel(service, 'Gemini 3.1 Pro (High)');
+        jest.spyOn(service, 'getLSClient').mockResolvedValue(mockClient as any);
+
+        await expect(service.injectMessage('hello gemini')).resolves.toMatchObject({
+            ok: true,
+            cascadeId: 'cascade-gemini',
+        });
+
+        expect(mockClient.createCascade).toHaveBeenCalledWith('hello gemini', 'MODEL_PLACEHOLDER_GEMINI_PRO_HIGH');
+        expect(service.getSelectedModelId()).toBe('MODEL_PLACEHOLDER_GEMINI_PRO_HIGH');
     });
 });

@@ -21,6 +21,7 @@ import { ErrorPopupDetector } from './errorPopupDetector';
 import { PlanningDetector } from './planningDetector';
 import { RunCommandDetector } from './runCommandDetector';
 import { UserMessageDetector } from './userMessageDetector';
+import { extractCascadeRunStatus } from './grpcCascadeClient';
 
 /** Polling interval for trajectory fetches (ms) */
 const POLLING_INTERVAL_MS = 300;
@@ -168,12 +169,7 @@ export class TrajectoryStreamRouter {
             const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
             const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
             const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
-            const runStatus =
-                trajectory?.cascadeRunStatus
-                || trajectoryResp?.cascadeRunStatus
-                || trajectory?.status
-                || trajectoryResp?.status
-                || null;
+            const runStatus = extractCascadeRunStatus(trajectoryResp);
 
             // Dispatch to trajectory-based detectors
             this.approvalDetector?.evaluate(cascadeId, steps, runStatus);

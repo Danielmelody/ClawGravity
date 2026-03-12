@@ -301,3 +301,36 @@ export function sanitizeActivityLines(raw: string): string {
 
     return Array.from(new Set(kept)).join('\n');
 }
+
+/** Splitting functionality for Discord embeds extracted from bot/index.ts */
+export function buildEmbedDescriptions(text: string, maxLen: number): string[] {
+    const normalized = (text || '').trim();
+    if (!normalized) {
+        return [ 'Waiting for output...' ];
+    }
+    return splitForEmbedDescription(formatForDiscord(normalized), maxLen);
+}
+
+function splitForEmbedDescription(text: string, maxLen: number): string[] {
+    if (text.length <= maxLen) return [text];
+    
+    const chunks: string[] = [];
+    let remaining = text;
+    
+    while (remaining.length > 0) {
+        if (remaining.length <= maxLen) {
+            chunks.push(remaining);
+            break;
+        }
+        
+        let splitIdx = remaining.lastIndexOf('\n', maxLen);
+        if (splitIdx === -1) {
+            splitIdx = maxLen; // Force split if no newline
+        }
+        
+        chunks.push(remaining.slice(0, splitIdx));
+        remaining = remaining.slice(splitIdx).trimStart();
+    }
+    
+    return chunks;
+}

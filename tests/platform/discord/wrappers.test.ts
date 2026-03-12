@@ -137,6 +137,34 @@ describe('toDiscordPayload', () => {
         expect(embedData.image).toEqual({ url: 'https://example.com/img.png' });
     });
 
+    it('renders HTML code blocks as Discord code fences', () => {
+        const payload: MessagePayload = {
+            richContent: {
+                description: '<pre><code>npm test</code></pre>',
+            },
+        };
+
+        const result = toDiscordPayload(payload);
+        const embeds = result.embeds as EmbedBuilder[];
+        const embedData = embeds[0].toJSON();
+
+        expect(embedData.description).toBe('```\nnpm test\n```');
+    });
+
+    it('decodes HTML entities inside Discord code fences', () => {
+        const payload: MessagePayload = {
+            richContent: {
+                description: '<pre><code>if (a &lt; b &amp;&amp; c &gt; d) {}</code></pre>',
+            },
+        };
+
+        const result = toDiscordPayload(payload);
+        const embeds = result.embeds as EmbedBuilder[];
+        const embedData = embeds[0].toJSON();
+
+        expect(embedData.description).toBe('```\nif (a < b && c > d) {}\n```');
+    });
+
     it('converts components with buttons', () => {
         const payload: MessagePayload = {
             components: [
