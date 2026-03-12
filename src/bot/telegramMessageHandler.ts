@@ -234,7 +234,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             preparedRuntime,
                             info,
                             deps.activeMonitors,
-                            undefined,
+                            deps.clawInterceptor,
                             deps.sessionStateStore,
                         )
                             .catch((err: any) => logger.error('[TelegramPassive] Error handling PC message:', err));
@@ -343,7 +343,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             // Monitor the response
             const channel = trackedChannel;
             const startTime = Date.now();
-            const mirror = await createTelegramMirrorSession(channel, 'Processing...');
+            const mirror = await createTelegramMirrorSession(channel, 'Generating...');
 
             const TIMEOUT_MS = 600_000;
             const monitorDeferred = createDeferred<void>();

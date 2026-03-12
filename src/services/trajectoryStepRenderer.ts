@@ -82,7 +82,7 @@ export function renderStepsToTelegramHtml(
     const isRunning = runStatus === 'CASCADE_RUN_STATUS_RUNNING'
         || runStatus === 'RUNNING';
     if (isRunning && fragments.length > 0) {
-        fragments.push('⏳');
+        fragments.push('<i>● Generating…</i>');
     }
 
     return fragments.join('\n\n').trim();
@@ -634,11 +634,99 @@ function extractToolResult(tc: any): string | null {
 // Markdown → Telegram HTML
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Markdown table → <pre> conversion (Telegram has no table support)
+// ---------------------------------------------------------------------------
+
+/** Detect whether a line looks like a markdown table separator (| --- | --- |). */
+function isTableSeparatorLine(line: string): boolean {
+    return /^\|?[\s:]*-{2,}[\s:]*(\|[\s:]*-{2,}[\s:]*)+\|?\s*$/.test(line.trim());
+}
+
+/** Detect whether a line looks like a markdown table row (| x | y |). */
+function isTableRowLine(line: string): boolean {
+    const trimmed = line.trim();
+    // Must contain at least one pipe that isn't at the very start/end only
+    return trimmed.includes('|') && /\|/.test(trimmed);
+}
+
+/** Parse a markdown table row into cells. */
+function parseTableRow(line: string): string[] {
+    let trimmed = line.trim();
+    // Remove leading/trailing pipes
+    if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+    if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
+    return trimmed.split('|').map(c => c.trim());
+}
+
+/**
+ * Convert markdown tables in the input to `<pre>` blocks with aligned columns.
+ * Non-table content passes through unchanged.
+ */
+function convertMarkdownTables(text: string): string {
+    const lines = text.split('\n');
+    const output: string[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+        // Look for table start: a row line followed by a separator line
+        if (
+            i + 1 < lines.length &&
+            isTableRowLine(lines[i]) &&
+            isTableSeparatorLine(lines[i + 1])
+        ) {
+            // Collect all table rows
+            const tableLines: string[] = [lines[i]]; // header
+            let j = i + 2; // skip separator
+            while (j < lines.length && isTableRowLine(lines[j]) && !isTableSeparatorLine(lines[j])) {
+                tableLines.push(lines[j]);
+                j++;
+            }
+
+            // Parse into cells
+            const parsed = tableLines.map(parseTableRow);
+
+            // Calculate max column widths
+            const colCount = Math.max(...parsed.map(r => r.length));
+            const colWidths: number[] = new Array(colCount).fill(0);
+            for (const row of parsed) {
+                for (let c = 0; c < colCount; c++) {
+                    colWidths[c] = Math.max(colWidths[c], (row[c] || '').length);
+                }
+            }
+
+            // Render aligned table
+            const renderedRows: string[] = [];
+            for (let ri = 0; ri < parsed.length; ri++) {
+                const row = parsed[ri];
+                const cells = [];
+                for (let c = 0; c < colCount; c++) {
+                    cells.push((row[c] || '').padEnd(colWidths[c]));
+                }
+                renderedRows.push(cells.join(' │ '));
+
+                // After header, add a separator
+                if (ri === 0) {
+                    renderedRows.push(colWidths.map(w => '─'.repeat(w)).join('─┼─'));
+                }
+            }
+
+            output.push(`<pre>${escapeHtml(renderedRows.join('\n'))}</pre>`);
+            i = j;
+        } else {
+            output.push(lines[i]);
+            i++;
+        }
+    }
+
+    return output.join('\n');
+}
+
 /**
  * Lightweight Markdown to Telegram HTML converter.
  *
  * Handles: bold, italic, strikethrough, inline code, code blocks,
- * links, headers, lists (ordered + unordered), blockquotes.
+ * links, headers, lists (ordered + unordered), blockquotes, tables.
  *
  * No external dependencies. Designed for the subset of Markdown
  * typically found in AI assistant responses.
@@ -655,6 +743,9 @@ export function markdownToTelegramHtml(md: string): string {
     result = result.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
         return `<pre>${escapeHtml(code.trimEnd())}</pre>`;
     });
+
+    // Markdown tables → <pre> blocks (must be processed BEFORE line-by-line)
+    result = convertMarkdownTables(result);
 
     // Split into lines for block-level processing, but preserve <pre> blocks
     const preBlocks: string[] = [];
@@ -827,7 +918,7 @@ export function renderStepsToDiscordMarkdown(
     const isRunning = runStatus === 'CASCADE_RUN_STATUS_RUNNING'
         || runStatus === 'RUNNING';
     if (isRunning && fragments.length > 0) {
-        fragments.push('⏳');
+        fragments.push('*● Generating…*');
     }
 
     return fragments.join('\n\n').trim();

@@ -20,6 +20,7 @@ import type {
     SelectMenuDef,
 } from '../types';
 import { rawHtmlToTelegramHtml } from './trajectoryRenderer';
+import { logger } from '../../utils/logger';
 
 // ---------------------------------------------------------------------------
 // grammy-compatible interfaces (no grammy import needed)
@@ -352,8 +353,9 @@ export function wrapTelegramChannel(
             try {
                 const sent = await withRetry429(() => api.sendMessage(chatId, text, rest));
                 return wrapTelegramSentMessage(sent, api, chatId);
-            } catch {
+            } catch (err: any) {
                 // HTML parse error — retry with raw text, no parse_mode
+                logger.warn(`[TgSend] HTML parse failed, falling back to raw text. Error: ${err?.message || err}. Text starts: ${text.slice(0, 200)}`);
                 const rawText = payload.text || text;
                 const sent = await withRetry429(() => api.sendMessage(chatId, rawText, {}));
                 return wrapTelegramSentMessage(sent, api, chatId);
@@ -539,8 +541,9 @@ export function wrapTelegramSentMessage(
             try {
                 const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), text, rest));
                 return wrapTelegramSentMessage(edited, api, chatId);
-            } catch {
+            } catch (err: any) {
                 // HTML parse error — retry with raw text, no parse_mode
+                logger.warn(`[TgEdit] HTML parse failed, falling back to raw text. Error: ${err?.message || err}. Text starts: ${text.slice(0, 200)}`);
                 const rawText = payload.text || text;
                 const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), rawText, {}));
                 return wrapTelegramSentMessage(edited, api, chatId);

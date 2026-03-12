@@ -86,7 +86,8 @@ import { TelegramBindingRepository } from '../database/telegramBindingRepository
 import { TelegramRecentMessageRepository } from '../database/telegramRecentMessageRepository';
 import { TelegramMessageTracker } from '../services/telegramMessageTracker';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
-import { createTelegramMessageHandler, handlePassiveUserMessage } from './telegramMessageHandler';
+import { createTelegramMessageHandler, handlePassiveUserMessage, startMonitorForActiveSession } from './telegramMessageHandler';
+import { extractCascadeRunStatus } from '../services/grpcCascadeClient';
 import { wrapTelegramChannel } from '../platform/telegram/wrappers';
 import { createTelegramSelectHandler } from './telegramProjectCommand';
 import { createTelegramJoinSelectHandler, TelegramSessionStateStore } from './telegramJoinCommand';
@@ -2184,7 +2185,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                                     startupRuntime,
                                     info,
                                     activeMonitors,
-                                    undefined,
+                                    clawInterceptor,
                                     telegramSessionStateStore,
                                 )
                                     .catch((err: any) => logger.error('[TelegramPassive:Startup] Error handling PC message:', err?.message || err));
@@ -2194,6 +2195,25 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         const startupCascadeId = await startupRuntime.getActiveCascadeId().catch(() => null);
                         if (startupCascadeId) {
                             telegramSessionStateStore.setCurrentCascadeId(binding.chatId, startupCascadeId);
+
+                            // Check if the active cascade is still streaming and resume monitoring
+                            try {
+                                const monitoringTarget = await startupRuntime.getMonitoringTarget(startupCascadeId);
+                                if (monitoringTarget) {
+                                    const traj = await monitoringTarget.grpcClient.rawRPC('GetCascadeTrajectory', { cascadeId: startupCascadeId });
+                                    const runStatus = extractCascadeRunStatus(traj);
+                                    if (runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+                                        logger.info(`[TelegramPassive:Startup] Cascade ${startupCascadeId.slice(0, 12)}... is still streaming — starting passive monitor`);
+                                        await startMonitorForActiveSession(
+                                            tgChannel, startupRuntime, startupCascadeId,
+                                            activeMonitors, clawInterceptor,
+                                            telegramSessionStateStore,
+                                        );
+                                    }
+                                }
+                            } catch (err: any) {
+                                logger.debug(`[TelegramPassive:Startup] runStatus check failed for ${startupCascadeId.slice(0, 12)}...: ${err?.message || err}`);
+                            }
                         }
                         logger.info(`[TelegramPassive] Eager mirroring started for ${prepared.projectName} → chat ${binding.chatId}`);
                     } catch (e: any) {
