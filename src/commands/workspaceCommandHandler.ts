@@ -16,6 +16,8 @@ import { buildProjectListUI } from '../ui/projectListUi';
 // Re-export for backward compatibility
 export { WORKSPACE_SELECT_ID } from '../ui/projectListUi';
 
+import { ApplicationContext } from '../context/applicationContext';
+
 /**
  * Handler for the /project slash command.
  * When a project is selected, auto-creates a Discord category + session-1 channel and binds them.
@@ -28,19 +30,15 @@ export class WorkspaceCommandHandler {
 
     private processingWorkspaces: Set<string> = new Set();
 
-    constructor(
-        bindingRepo: WorkspaceBindingRepository,
-        chatSessionRepo: ChatSessionRepository,
-        workspaceService: WorkspaceService,
-        channelManager: ChannelManager,
-    ) {
-        this.bindingRepo = bindingRepo;
-        this.chatSessionRepo = chatSessionRepo;
-        this.workspaceService = workspaceService;
-        this.channelManager = channelManager;
+    constructor(ctx: ApplicationContext) {
+        this.bindingRepo = ctx.workspaceBindingRepo;
+        this.chatSessionRepo = ctx.chatSessionRepo;
+        this.workspaceService = ctx.workspaceService;
+        this.channelManager = ctx.channelManager;
     }
 
     /**
+
      * Shared helper: ensures category, creates session channel, registers binding & session.
      * Returns the created channelId.
      */

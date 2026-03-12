@@ -5,7 +5,9 @@ import * as http from 'http';
 import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
-import WebSocket from 'ws';
+import { CdpConnection } from './cdpConnection';
+import { WorkspaceLauncher } from './workspaceLauncher';
+import { LsClientManager } from './lsClientManager';
 import { GrpcCascadeClient, ModelId, LSConnection } from './grpcCascadeClient';
 
 
@@ -62,16 +64,11 @@ const execAsync = promisify(exec);
 export class CdpService extends EventEmitter {
     private ports: number[];
     private isConnectedFlag: boolean = false;
-    private ws: WebSocket | null = null;
+    private connection: CdpConnection | null = null;
     private contexts: CdpContext[] = [];
-    private pendingCalls = new Map<number, { resolve: (value: any) => void, reject: (reason?: any) => void, timeoutId: NodeJS.Timeout }>();
 
-    /** Lazy-initialized LS client for direct API communication (CDP-proxied) */
-    private lsClient: GrpcCascadeClient | null = null;
-    private lsClientInitPromise: Promise<GrpcCascadeClient | null> | null = null;
-    private lastLSUnavailableReason: string | null = null;
-    /** LS credentials sniffed from CDP Network events */
-    private sniffedLSCredentials: LSConnection | null = null;
+    /** LS client manager */
+    private lsClientManager = new LsClientManager();
     /** Cached cascade ID for LS API calls */
     private cachedCascadeId: string | null = null;
     /** Newly created cascade ID awaiting visibility in listCascades() */
@@ -100,15 +97,6 @@ export class CdpService extends EventEmitter {
     private currentWorkspacePath: string | null = null;
     /** Workspace switching flag (suppresses disconnected event) */
     private isSwitchingWorkspace: boolean = false;
-    /** Timestamps of recent workspace launches to prevent duplicate launches */
-    private static recentLaunchTimestamps = new Map<string, number>();
-    /** Cooldown period for workspace launches (ms) */
-    private static readonly LAUNCH_COOLDOWN_MS = 60_000;
-
-    /** Clear launch cooldown timestamps (for testing) */
-    static clearLaunchCooldowns(): void {
-        CdpService.recentLaunchTimestamps.clear();
-    }
 
     constructor(options: CdpServiceOptions = {}) {
         super();
@@ -119,7 +107,7 @@ export class CdpService extends EventEmitter {
         this.reconnectDelayMs = options.reconnectDelayMs ?? 2000;
     }
 
-    private async getJson(url: string): Promise<any[]> {
+    public async getJson(url: string): Promise<any[]> {
         return new Promise((resolve, reject) => {
             http.get(url, (res) => {
                 let data = '';
@@ -132,7 +120,7 @@ export class CdpService extends EventEmitter {
     }
 
     /** Check if a CDP target is a workbench page (not Launchpad, not jetski-agent). */
-    private isWorkbenchPage(t: any): boolean {
+    public isWorkbenchPage(t: any): boolean {
         return (
             t.type === 'page' &&
             !!t.webSocketDebuggerUrl &&
@@ -199,47 +187,12 @@ export class CdpService extends EventEmitter {
 
         if (!this.targetUrl) throw new Error('Target URL not established.');
 
-        this.ws = new WebSocket(this.targetUrl);
+        this.connection = new CdpConnection(this.targetUrl, this.cdpCallTimeout);
 
-        await new Promise<void>((resolve, reject) => {
-            if (!this.ws) return reject(new Error('WebSocket not initialized'));
-            this.ws.on('open', () => {
-                this.isConnectedFlag = true;
-                resolve();
-            });
-            this.ws.on('error', reject);
-        });
-
-        this.ws.on('message', (msg: WebSocket.Data) => {
-            try {
-                const data = JSON.parse(msg.toString());
-                if (data.id !== undefined && this.pendingCalls.has(data.id)) {
-                    const { resolve, reject, timeoutId } = this.pendingCalls.get(data.id)!;
-                    clearTimeout(timeoutId);
-                    this.pendingCalls.delete(data.id);
-                    if (data.error) reject(data.error); else resolve(data.result);
-                }
-
-                if (data.method === 'Runtime.executionContextCreated') {
-                    this.contexts.push(data.params.context);
-                }
-                if (data.method === 'Runtime.executionContextDestroyed') {
-                    const idx = this.contexts.findIndex(c => c.id === data.params.executionContextId);
-                    if (idx !== -1) this.contexts.splice(idx, 1);
-                }
-
-                // Forward CDP events via EventEmitter (Network.*, Runtime.*, etc.)
-                if (data.method) {
-                    this.emit(data.method, data.params);
-                }
-            } catch { /* ignored */ }
-        });
-
-        this.ws.on('close', () => {
+        // Forward events before connecting
+        this.connection.on('disconnected', () => {
             this.isConnectedFlag = false;
-            // Reject all unresolved pending calls to prevent memory leaks
-            this.clearPendingCalls(new Error('WebSocket disconnected'));
-            this.ws = null;
+            this.connection = null;
             this.targetUrl = null;
             this.targetFrameId = null;
             // Suppress disconnected event and auto-reconnect during workspace switching
@@ -251,62 +204,35 @@ export class CdpService extends EventEmitter {
             }
         });
 
+        // Forward all other CDP events emitted by CdpConnection
+        const originalEmit = this.connection.emit.bind(this.connection);
+        this.connection.emit = (event: string | symbol, ...args: any[]) => {
+            if (event !== 'disconnected') {
+                this.emit(event, ...args);
+                
+                // Track contexts here
+                if (event === 'Runtime.executionContextCreated') {
+                     this.contexts.push(args[0].context);
+                } else if (event === 'Runtime.executionContextDestroyed') {
+                     const idx = this.contexts.findIndex(c => c.id === args[0].executionContextId);
+                     if (idx !== -1) this.contexts.splice(idx, 1);
+                }
+            }
+            return originalEmit(event, ...args);
+        };
+
+        await this.connection.connect();
+        this.isConnectedFlag = true;
+
         // Initialize Runtime to get execution contexts
         await this.call('Runtime.enable', {});
 
-        // Enable Network domain for LS credential sniffing
-        try {
-            await this.call('Network.enable', {});
-        } catch {
-            logger.warn('[CdpService] Network.enable failed — LS credential sniffing disabled');
-        }
-
-        // Passive credential sniffing — extract port + CSRF token from the first LS request
-        // Remove previous listener to prevent accumulation across reconnects
-        if (this.networkSniffHandler) {
-            this.removeListener('Network.requestWillBeSent', this.networkSniffHandler);
-        }
-        this.networkSniffHandler = (params: any) => {
-            if (this.sniffedLSCredentials) return; // Already captured
-            const url = params?.request?.url || '';
-            if (!url.includes('language_server_pb')) return;
-            const portMatch = url.match(/127\.0\.0\.1:(\d+)/);
-            const headers = params?.request?.headers || {};
-            const csrfToken = headers['x-codeium-csrf-token']
-                || headers['X-Codeium-Csrf-Token']
-                || headers['x-Codeium-Csrf-Token'];
-            if (portMatch && csrfToken) {
-                this.sniffedLSCredentials = {
-                    port: parseInt(portMatch[1], 10),
-                    csrfToken,
-                    useTls: url.startsWith('https'),
-                };
-                logger.info(`[CdpService] Sniffed LS credentials: port=${this.sniffedLSCredentials.port}`);
-                // Re-init LS client with the new credentials
-                this.lsClient = null;
-                this.lsClientInitPromise = null;
-            }
-        };
-        this.on('Network.requestWillBeSent', this.networkSniffHandler);
     }
-
     async call(method: string, params: any = {}): Promise<any> {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        if (!this.connection || !this.connection.isConnected()) {
             throw new Error('WebSocket is not connected');
         }
-
-        return new Promise((resolve, reject) => {
-            const id = this.idCounter++;
-            const timeoutId = setTimeout(() => {
-                if (this.pendingCalls.has(id)) {
-                    this.pendingCalls.delete(id);
-                    reject(new Error(`Timeout calling CDP method ${method}`));
-                }
-            }, this.cdpCallTimeout);
-
-            this.pendingCalls.set(id, { resolve, reject, timeoutId });
-            this.ws!.send(JSON.stringify({ id, method, params }));
-        });
+        return this.connection.call(method, params);
     }
 
     /**
@@ -331,11 +257,10 @@ export class CdpService extends EventEmitter {
     }
 
     async disconnect(): Promise<void> {
-        // Remove all WS listeners to prevent close handler triggering reconnect
-        if (this.ws) {
-            this.ws.removeAllListeners();
-            this.ws.close();
-            this.ws = null;
+        if (this.connection) {
+            this.connection.removeAllListeners();
+            this.connection.disconnect();
+            this.connection = null;
         }
         this.isConnectedFlag = false;
         this.contexts = [];
@@ -343,13 +268,10 @@ export class CdpService extends EventEmitter {
         this.currentWorkspaceName = null;
         this.targetFrameId = null;
         // Reset LS client state so next connection re-probes auth
-        this.lsClient = null;
-        this.lsClientInitPromise = null;
-        this.sniffedLSCredentials = null;
+        this.lsClientManager.reset();
         this.cachedCascadeId = null;
         this.recentCreatedCascadeId = null;
         this.recentCreatedCascadeAt = 0;
-        this.clearPendingCalls(new Error('disconnect() was called'));
         // Restore reconnect capacity for future connections
         this.maxReconnectAttempts = this.originalMaxReconnectAttempts;
     }
@@ -395,7 +317,7 @@ export class CdpService extends EventEmitter {
      * Verify whether the currently attached page still represents the expected workspace.
      */
     private async verifyCurrentWorkspace(projectName: string, workspacePath: string): Promise<boolean> {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isConnectedFlag) {
+        if (!this.connection || !this.connection.isConnected() || !this.isConnectedFlag) {
             return false;
         }
 
@@ -506,13 +428,13 @@ export class CdpService extends EventEmitter {
 
         // 5. No workbench pages at all, no suitable fallback, or single page belongs to another workspace.
         //    Launch a new window for this workspace.
-        return this.launchAndConnectWorkspace(workspacePath, projectName);
+        return WorkspaceLauncher.launchAndConnectWorkspace(this, workspacePath, projectName, this.ports);
     }
 
     /**
      * Connect to the specified page (skip if already connected).
      */
-    private async connectToPage(page: any, projectName: string): Promise<boolean> {
+    public async connectToPage(page: any, projectName: string): Promise<boolean> {
         // No reconnection needed if already connected to the same URL
         if (this.isConnectedFlag && this.targetUrl === page.webSocketDebuggerUrl) {
             this.currentWorkspaceName = projectName;
@@ -524,9 +446,7 @@ export class CdpService extends EventEmitter {
         // Reset LS client + sniffed state so ensureLSClient() re-discovers the correct LS
         // for the NEW workspace page. Without this, the old LS client
         // continues pointing to the previous workspace's LS process (cross-talk bug).
-        this.lsClient = null;
-        this.lsClientInitPromise = null;
-        this.sniffedLSCredentials = null;
+        this.lsClientManager.reset();
         this.cachedCascadeId = null;
         this.recentCreatedCascadeId = null;
         this.recentCreatedCascadeAt = 0;
@@ -550,7 +470,7 @@ export class CdpService extends EventEmitter {
      * @param projectName Workspace directory name
      * @param workspacePath Full workspace path (for folder path matching)
      */
-    private async probeWorkbenchPages(
+    public async probeWorkbenchPages(
         workbenchPages: any[],
         projectName: string,
         workspacePath?: string,
@@ -663,149 +583,21 @@ export class CdpService extends EventEmitter {
         return false;
     }
 
-    /**
-     * Launch Antigravity and wait for a new workbench page to appear, then connect.
-     */
-    private async launchAndConnectWorkspace(
-        workspacePath: string,
-        projectName: string,
-    ): Promise<boolean> {
-        // Guard: prevent launching the same workspace multiple times within cooldown period.
-        const lastLaunch = CdpService.recentLaunchTimestamps.get(projectName);
-        const now = Date.now();
-        if (lastLaunch && (now - lastLaunch) < CdpService.LAUNCH_COOLDOWN_MS) {
-            const agoSec = Math.round((now - lastLaunch) / 1000);
-            logger.warn(`[CdpService] Suppressing duplicate launch for "${projectName}" — last launch was ${agoSec}s ago (cooldown=${CdpService.LAUNCH_COOLDOWN_MS / 1000}s)`);
-            throw new Error(
-                `Workspace "${projectName}" was launched ${agoSec}s ago. Wait for the previous launch to initialize or connect manually.`,
-            );
-        }
 
-        // Open as folder using Antigravity CLI (not as workspace mode).
-        // CLI --new-window opens as folder, immediately reflecting directory name in title.
-        const antigravityCli = getAntigravityCliPath();
-
-        logger.debug(`[CdpService] Launching Antigravity: ${antigravityCli} --new-window ${workspacePath}`);
-        CdpService.recentLaunchTimestamps.set(projectName, now);
-        await this.runCommand(antigravityCli, ['--new-window', workspacePath]);
-
-        // Poll until a new workbench page appears (max 30 seconds)
-        const maxWaitMs = 30000;
-        const pollIntervalMs = 1000;
-        const startTime = Date.now();
-        /** Pre-launch workbench page IDs (for detecting new pages) */
-        const knownPageIds: Set<string> = new Set();
-        for (const port of this.ports) {
-            try {
-                const preLaunchPages = await this.getJson(`http://127.0.0.1:${port}/json/list`);
-                preLaunchPages.forEach((p: any) => {
-                    if (p.id) knownPageIds.add(p.id);
-                });
-            } catch {
-                // No response from this port
-            }
-        }
-
-        while (Date.now() - startTime < maxWaitMs) {
-            await new Promise(r => setTimeout(r, pollIntervalMs));
-
-            const pages: any[] = [];
-            for (const port of this.ports) {
-                try {
-                    const list = await this.getJson(`http://127.0.0.1:${port}/json/list`);
-                    pages.push(...list);
-                } catch {
-                    // Next port
-                }
-            }
-
-            if (pages.length === 0) continue;
-
-            const workbenchPages = pages.filter((t: any) => this.isWorkbenchPage(t));
-
-            // Title match
-            const titleMatch = workbenchPages.find((t: any) => t.title?.toLowerCase().includes(projectName.toLowerCase()));
-            if (titleMatch) {
-                return this.connectToPage(titleMatch, projectName);
-            }
-
-            // CDP probe (also check folder path if title is not updated)
-            const probeResult = await this.probeWorkbenchPages(workbenchPages, projectName, workspacePath);
-            if (probeResult) {
-                return true;
-            }
-
-            // Fallback: connect to newly appeared "Untitled (Workspace)" page after launch
-            // If title update and folder path both fail, treat new page as target
-            if (Date.now() - startTime > 10000) {
-                const newUntitledPages = workbenchPages.filter(
-                    (t: any) =>
-                        !knownPageIds.has(t.id) &&
-                        (t.title?.includes('Untitled') || t.title === ''),
-                );
-                if (newUntitledPages.length === 1) {
-                    logger.debug(`[CdpService] New Untitled page detected. Connecting as "${projectName}" (page.id=${newUntitledPages[0].id})`);
-                    return this.connectToPage(newUntitledPages[0], projectName);
-                }
-            }
-        }
-
-        throw new Error(
-            `Workbench page for workspace "${projectName}" not found within ${maxWaitMs / 1000} seconds`,
-        );
-    }
-
-    private async runCommand(command: string, args: string[]): Promise<void> {
-        await new Promise<void>((resolve, reject) => {
-            const child = spawn(command, args, { stdio: 'ignore', shell: process.platform === 'win32' });
-
-            child.once('error', (error) => {
-                reject(error);
-            });
-
-            child.once('close', (code) => {
-                if (code === 0) {
-                    resolve();
-                    return;
-                }
-                reject(new Error(`${command} exited with code ${code ?? 'unknown'}`));
-            });
-        });
-    }
 
     /**
      * Quietly disconnect the existing connection (no reconnect attempts).
      * Used during workspace switching.
-     *
-     * Important: ws.close() fires close event asynchronously, so all listeners
-     * must be removed first to prevent targetUrl reset and tryReconnect()
-     * from reconnecting to a different workbench.
      */
     private disconnectQuietly(): void {
-        if (this.ws) {
-            // Remove all listeners including close event handlers to prevent side effects
-            this.ws.removeAllListeners();
-            this.ws.close();
-            this.ws = null;
+        if (this.connection) {
+            this.connection.disconnectQuietly();
+            this.connection = null;
             this.isConnectedFlag = false;
             this.contexts = [];
-            this.clearPendingCalls(new Error('Disconnected for workspace switch'));
             this.targetUrl = null;
             this.targetFrameId = null;
         }
-    }
-
-    /**
-     * Reject all unresolved pending calls to prevent memory leaks.
-     * (Step 12: Error handling)
-     * @param error Error to pass to reject
-     */
-    private clearPendingCalls(error: Error): void {
-        for (const [, { reject, timeoutId }] of this.pendingCalls.entries()) {
-            clearTimeout(timeoutId);
-            reject(error);
-        }
-        this.pendingCalls.clear();
     }
 
     /**
@@ -949,7 +741,7 @@ export class CdpService extends EventEmitter {
     async waitForCascadePanelReady(timeoutMs = 10000,): Promise<boolean> {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
-            const client = await this.ensureLSClient();
+            const client = await this.getLSClient();
             if (client?.isReady()) return true;
             await new Promise(r => setTimeout(r, 500));
         }
@@ -1105,197 +897,20 @@ export class CdpService extends EventEmitter {
         return { ok: true };
     }
 
-    // injectViaLexicalApi removed — all injection now goes through the LS client.
-
-    /**
-     * Lazy-initialize the LS client by discovering credentials.
-     * Strategy: process-based discovery (wmic + netstat), with passive CDP Network sniffing as fallback.
-     */
-    private async ensureLSClient(): Promise<GrpcCascadeClient | null> {
-        if (this.lsClient?.isReady()) {
-            this.lastLSUnavailableReason = null;
-            return this.lsClient;
-        }
-
-        if (this.lsClientInitPromise) {
-            return this.lsClientInitPromise;
-        }
-
-        this.lsClientInitPromise = (async () => {
-            try {
-                if (!this.sniffedLSCredentials) {
-                    // Primary: discover from LS process CLI args + netstat
-                    await this.discoverLSCredentialsFromProcess();
-                }
-
-                if (!this.sniffedLSCredentials) {
-                    this.lastLSUnavailableReason = 'LS client unavailable: Could not discover LS credentials from process or Network sniffing.';
-                    logger.debug(`[CdpService] ${this.lastLSUnavailableReason}`);
-                    return null;
-                }
-
-                this.lsClient = new GrpcCascadeClient();
-                // Inject the CDP evaluation callback so the LS client can run fetch() inside the renderer
-                this.lsClient.setCdpEvaluate(async (expression: string) => {
-                    return this.call('Runtime.evaluate', {
-                        expression,
-                        returnByValue: true,
-                        awaitPromise: true,
-                        timeout: 10000,
-                    });
-                });
-                this.lsClient.setConnection(this.sniffedLSCredentials);
-                
-                this.lastLSUnavailableReason = null;
-                logger.info(`[CdpService] LS client initialized: port=${this.sniffedLSCredentials.port}, tls=${this.sniffedLSCredentials.useTls}`);
-                return this.lsClient;
-            } catch (err: any) {
-                this.lastLSUnavailableReason = `LS client unavailable: ${err?.message || String(err)}`;
-                logger.error(`[CdpService] LS client init failed: ${this.lastLSUnavailableReason}`);
-                return null;
-            } finally {
-                this.lsClientInitPromise = null;
-            }
-        })();
-
-        return this.lsClientInitPromise;
-    }
-
-    /**
-     * Discover LS credentials using a port-first approach.
-     *
-     * 1. CDP `performance.getEntries()` → LS port (page-specific, guaranteed correct)
-     * 2. `netstat` → find PID listening on that port
-     * 3. `wmic` → get CSRF token from that PID's command line
-     * 4. Validate with a test RPC call
-     *
-     * This avoids workspace_id path-encoding matching entirely.
-     * Each step is deterministic — no fuzzy matching needed.
-     */
-    private async discoverLSCredentialsFromProcess(): Promise<void> {
-        try {
-            logger.info('[CdpService:discover] Starting port-first credential discovery...');
-
-            // ── Step 1: Get LS port from CDP performance entries ──
-            // Each workspace page talks to its own LS port, so this is page-specific.
-            const perfScript = `(() => {
-                const entries = performance.getEntries();
-                for (const e of entries) {
-                    if (e.name && e.name.includes('language_server_pb')) {
-                        return e.name;
-                    }
-                }
-                return null;
-            })()`;
-
-            const perfResult = await this.call('Runtime.evaluate', {
-                expression: perfScript,
-                returnByValue: true,
-                timeout: 3000,
-            });
-
-            const lsUrl = perfResult?.result?.value;
-            if (!lsUrl) {
-                logger.warn('[CdpService:discover] No LS requests found in performance entries');
-                return;
-            }
-
-            const portMatch = lsUrl.match(/127\.0\.0\.1:(\d+)/);
-            if (!portMatch) {
-                logger.warn(`[CdpService:discover] Could not extract port from LS URL: ${lsUrl}`);
-                return;
-            }
-
-            const lsPort = parseInt(portMatch[1], 10);
-            const useTls = lsUrl.startsWith('https');
-            logger.info(`[CdpService:discover] Found LS port from performance entries: port=${lsPort}, tls=${useTls}`);
-
-            // ── Step 2: Find PID listening on this port via netstat ──
-            let netstatOutput: string;
-            try {
-                const { stdout } = await execAsync(
-                    `netstat -ano | findstr "LISTENING" | findstr ":${lsPort} "`,
-                    { encoding: 'utf8', timeout: 5000 }
-                );
-                netstatOutput = stdout;
-            } catch (err: any) {
-                logger.warn(`[CdpService:discover] netstat failed for port ${lsPort}: ${err.message}`);
-                return;
-            }
-
-            // Extract PID from netstat output
-            let lsPid: number | null = null;
-            for (const line of netstatOutput.split('\n')) {
-                if (line.includes(`:${lsPort} `) || line.includes(`:${lsPort}\t`)) {
-                    const pidMatch2 = line.trim().match(/(\d+)\s*$/);
-                    if (pidMatch2) {
-                        lsPid = parseInt(pidMatch2[1], 10);
-                        break;
-                    }
-                }
-            }
-
-            if (!lsPid) {
-                logger.warn(`[CdpService:discover] Could not find PID for port ${lsPort}`);
-                return;
-            }
-            logger.info(`[CdpService:discover] Port ${lsPort} → PID ${lsPid}`);
-
-            // ── Step 3: Get CSRF token from the process command line ──
-            let wmicOutput: string;
-            try {
-                const { stdout } = await execAsync(
-                    `wmic process where "ProcessId=${lsPid}" get CommandLine /format:csv`,
-                    { encoding: 'utf8', timeout: 5000 }
-                );
-                wmicOutput = stdout;
-            } catch (err: any) {
-                logger.warn(`[CdpService:discover] wmic failed for PID ${lsPid}: ${err.message}`);
-                return;
-            }
-
-            const csrfMatch = wmicOutput.match(/--csrf_token\s+(\S+)/);
-            if (!csrfMatch) {
-                logger.warn(`[CdpService:discover] No --csrf_token found in command line of PID ${lsPid}`);
-                return;
-            }
-
-            const csrfToken = csrfMatch[1];
-            logger.info(`[CdpService:discover] PID ${lsPid} csrf=${csrfToken.slice(0, 8)}...`);
-
-            // ── Step 4: Validate with a test RPC call via CDP ──
-            const proto = useTls ? 'https' : 'http';
-            const testScript = `fetch("${proto}://127.0.0.1:${lsPort}/exa.language_server_pb.LanguageServerService/GetUserStatus",{method:"POST",headers:{"Content-Type":"application/proto","Connect-Protocol-Version":"1","x-codeium-csrf-token":"${csrfToken}"},body:new Uint8Array([])}).then(r=>r.status).catch(()=>0)`;
-
-            const result = await this.call('Runtime.evaluate', {
-                expression: testScript,
-                returnByValue: true,
-                awaitPromise: true,
-                timeout: 5000,
-            });
-
-            const status = result?.result?.value;
-            if (status === 200) {
-                this.sniffedLSCredentials = {
-                    port: lsPort,
-                    csrfToken,
-                    useTls,
-                };
-                logger.info(`[CdpService:discover] ✅ Validated ${proto.toUpperCase()} port ${lsPort} (status=200)`);
-            } else {
-                logger.warn(`[CdpService:discover] ❌ Port ${lsPort} validation returned status=${status}`);
-            }
-        } catch (err: any) {
-            logger.error(`[CdpService:discover] Port-first discovery failed: ${err.message}`);
-        }
-    }
-
     /**
      * Get the active LS client if available.
      * Attempts discovery if not already attempted.
      */
     async getLSClient(): Promise<GrpcCascadeClient | null> {
-        return this.ensureLSClient();
+        return this.lsClientManager.getClient(this.currentWorkspacePath, async (expression: string) => {
+            const res = await this.call('Runtime.evaluate', {
+                expression,
+                returnByValue: true,
+                awaitPromise: true,
+                timeout: 10000,
+            });
+            return res?.result?.value;
+        });
     }
 
     /**
@@ -1313,9 +928,9 @@ export class CdpService extends EventEmitter {
      * @returns InjectResult with method='ls-api' on success, or null if unavailable
      */
     private async injectViaLS(text: string, overrideCascadeId?: string): Promise<InjectResult | null> {
-        const client = await this.ensureLSClient();
+        const client = await this.getLSClient();
         if (!client) {
-            return { ok: false, error: this.lastLSUnavailableReason || 'LS client unavailable' };
+            return { ok: false, error: this.lsClientManager.lastLSUnavailableReason || 'LS client unavailable' };
         }
 
         // If we have an explicit cascade ID (e.g. from a previous createCascade), try to reuse it
@@ -1444,7 +1059,7 @@ export class CdpService extends EventEmitter {
      */
     async getUiModels(): Promise<string[]> {
         try {
-            const client = await this.ensureLSClient();
+            const client = await this.getLSClient();
             if (!client) return [];
 
             const status = await client.getUserStatus();
@@ -1514,7 +1129,7 @@ export class CdpService extends EventEmitter {
      * whose text matches a known model name pattern.
      */
     private async readModelFromUI(): Promise<string | null> {
-        if (!this.ws || this.ws.readyState !== 1 /* OPEN */) return null;
+        if (!this.connection || !this.connection.isConnected()) return null;
 
         // Known model name substrings to identify the model selector element
         const script = `(() => {
@@ -1556,7 +1171,7 @@ export class CdpService extends EventEmitter {
      */
     private async refreshModelConfigs(): Promise<void> {
         try {
-            const client = await this.ensureLSClient();
+            const client = await this.getLSClient();
             if (!client) return;
 
             const status = await client.getUserStatus();
@@ -1741,7 +1356,7 @@ export class CdpService extends EventEmitter {
      */
     async getActiveSessionInfo(): Promise<{ id: string, title: string, summary: string } | null> {
         try {
-            const client = await this.ensureLSClient();
+            const client = await this.getLSClient();
             if (!client) return null;
 
             const summaries = await client.listCascades();
@@ -1866,9 +1481,10 @@ export class CdpService extends EventEmitter {
 
         try {
             // Step 1: Cancel active cascade (if one is running)
-            if (this.cachedCascadeId && this.lsClient?.isReady()) {
+            const lsClient = await this.getLSClient();
+            if (this.cachedCascadeId && lsClient?.isReady()) {
                 try {
-                    await this.lsClient.cancelCascade(this.cachedCascadeId);
+                    await lsClient.cancelCascade(this.cachedCascadeId);
                     steps.push(`Cancelled cascade ${this.cachedCascadeId.slice(0, 12)}...`);
                 } catch (err: any) {
                     // Not fatal — cascade may have already ended
@@ -1879,9 +1495,7 @@ export class CdpService extends EventEmitter {
             }
 
             // Step 2: Tear down LS client
-            this.lsClient = null;
-            this.lsClientInitPromise = null;
-            this.sniffedLSCredentials = null;
+            this.lsClientManager.reset();
             steps.push('LS client reset');
 
             // Step 3: Clear cached state
@@ -1909,7 +1523,7 @@ export class CdpService extends EventEmitter {
 
             // Step 5: Re-discover LS client
             try {
-                const client = await this.ensureLSClient();
+                const client = await this.getLSClient();
                 if (client?.isReady()) {
                     steps.push('LS client re-established');
                 } else {
@@ -1936,7 +1550,7 @@ export class CdpService extends EventEmitter {
         if (!this.currentWorkspacePath) return true; // Accept if we don't know our own workspace yet
         if (!summary?.workspaces || !Array.isArray(summary.workspaces)) return false;
 
-        const targetPath = this.currentWorkspacePath.replaceAll('\\', '/').toLowerCase();
+        const targetPath = this.currentWorkspacePath.replace(/\\/g, '/').toLowerCase();
 
         for (const ws of summary.workspaces) {
             if (!ws.workspaceFolderAbsoluteUri) continue;
@@ -1946,7 +1560,7 @@ export class CdpService extends EventEmitter {
                 uriPath = uriPath.substring(1);
             }
 
-            let localPath = decodeURIComponent(uriPath).replaceAll('\\', '/').toLowerCase();
+            let localPath = decodeURIComponent(uriPath).replace(/\\/g, '/').toLowerCase();
             // Handle trailing slashes uniformly
             if (localPath.endsWith('/')) localPath = localPath.substring(0, localPath.length - 1);
             const targetNoSlash = targetPath.endsWith('/') ? targetPath.substring(0, targetPath.length - 1) : targetPath;

@@ -6,7 +6,7 @@ import { PlanningDetector } from './planningDetector';
 import { RunCommandDetector } from './runCommandDetector';
 import { UserMessageDetector } from './userMessageDetector';
 import { TrajectoryStreamRouter } from './trajectoryStreamRouter';
-import { WorkspaceRuntime } from './workspaceRuntime';
+import { WorkspaceRuntime, DetectorType } from './workspaceRuntime';
 
 /**
  * Pool that manages independent workspace runtimes.
@@ -66,6 +66,31 @@ export class CdpConnectionPool {
             this.disconnectWorkspace(projectName);
         }
     }
+
+    // ─── Generic Detector Registry (delegates to WorkspaceRuntime) ────
+
+    /**
+     * Register a detector by type key on the runtime for the given project.
+     */
+    registerDetector<T extends { isActive(): boolean; stop(): void | Promise<void> }>(
+        type: DetectorType | string,
+        projectName: string,
+        detector: T,
+    ): void {
+        this.runtimes.get(projectName)?.registerDetector(type, detector);
+    }
+
+    /**
+     * Get a detector by type key from the runtime for the given project.
+     */
+    getDetector<T extends { isActive(): boolean; stop(): void | Promise<void> }>(
+        type: DetectorType | string,
+        projectName: string,
+    ): T | undefined {
+        return this.runtimes.get(projectName)?.getDetector<T>(type);
+    }
+
+    // ─── Named Detector Accessors (backward-compatible wrappers) ──────
 
     registerApprovalDetector(projectName: string, detector: ApprovalDetector): void {
         const runtime = this.runtimes.get(projectName);

@@ -20,6 +20,7 @@ import { QuotaService } from './quotaService';
 import { UserMessageDetector, UserMessageInfo } from './userMessageDetector';
 import { TrajectoryStreamRouter } from './trajectoryStreamRouter';
 import { WorkspaceRuntime } from './workspaceRuntime';
+import { isDangerousCommand } from '../utils/dangerousCommandClassifier';
 
 /** CDP connection state management */
 export interface CdpBridge {
@@ -536,18 +537,23 @@ function ensureRunCommandDetector(
             if (!target) return;
 
             if (bridge.autoAccept.isEnabled()) {
-                const accepted = await detector.runButton();
+                // Never auto-accept dangerous/destructive commands
+                if (isDangerousCommand(info.commandText)) {
+                    logger.info(`[RunCommandDetector:${projectName}] Dangerous command detected, skipping auto-accept: ${info.commandText}`);
+                } else {
+                    const accepted = await detector.runButton();
 
-                const autoPayload = buildAutoApprovedNotification({
-                    accepted,
-                    projectName,
-                    description: `Run: ${info.commandText}`,
-                    approveText: info.runText ?? 'Run',
-                });
-                await target.channel.send(autoPayload).catch(logger.error);
+                    const autoPayload = buildAutoApprovedNotification({
+                        accepted,
+                        projectName,
+                        description: `Run: ${info.commandText}`,
+                        approveText: info.runText ?? 'Run',
+                    });
+                    await target.channel.send(autoPayload).catch(logger.error);
 
-                if (accepted) {
-                    return;
+                    if (accepted) {
+                        return;
+                    }
                 }
             }
 

@@ -17,6 +17,21 @@ import { RunCommandDetector } from './runCommandDetector';
 import { TrajectoryStreamRouter } from './trajectoryStreamRouter';
 import { UserMessageDetector, UserMessageInfo } from './userMessageDetector';
 
+/** Common interface for stoppable detectors / routers */
+interface Stoppable {
+    isActive(): boolean;
+    stop(): void | Promise<void>;
+}
+
+/** Well-known detector type keys */
+export type DetectorType =
+    | 'approval'
+    | 'errorPopup'
+    | 'planning'
+    | 'runCommand'
+    | 'userMessage'
+    | 'streamRouter';
+
 export interface WorkspaceRuntimeOptions {
     readonly projectName: string;
     readonly workspacePath: string;
@@ -58,12 +73,8 @@ export class WorkspaceRuntime {
     private connectPromise: Promise<CdpService> | null = null;
     private operationTail: Promise<void> = Promise.resolve();
 
-    private approvalDetector?: ApprovalDetector;
-    private errorPopupDetector?: ErrorPopupDetector;
-    private planningDetector?: PlanningDetector;
-    private runCommandDetector?: RunCommandDetector;
-    private userMessageDetector?: UserMessageDetector;
-    private streamRouter?: TrajectoryStreamRouter;
+    /** Generic detector/router registry (replaces individual fields) */
+    private readonly detectors = new Map<string, Stoppable>();
     private selectedCascadeId: string | null = null;
     private activeSessionInfo: WorkspaceActiveSessionInfo | null = null;
     private readonly userMessageSinks = new Map<string, UserMessageSink>();
@@ -332,70 +343,75 @@ export class WorkspaceRuntime {
         return this.runExclusive(operation);
     }
 
-    registerApprovalDetector(detector: ApprovalDetector): void {
-        if (this.approvalDetector?.isActive()) {
-            void this.approvalDetector.stop();
+    // ─── Generic Detector Registry ─────────────────────────────────────
+
+    /**
+     * Register a detector/router by type key.
+     * If an existing detector of the same type is active, it is stopped first.
+     */
+    registerDetector<T extends Stoppable>(type: DetectorType | string, detector: T): void {
+        const existing = this.detectors.get(type);
+        if (existing?.isActive()) {
+            void existing.stop();
         }
-        this.approvalDetector = detector;
+        this.detectors.set(type, detector);
+    }
+
+    /**
+     * Retrieve a detector/router by type key.
+     */
+    getDetector<T extends Stoppable>(type: DetectorType | string): T | undefined {
+        return this.detectors.get(type) as T | undefined;
+    }
+
+    // ─── Named Detector Accessors (backward-compatible wrappers) ──────
+
+    registerApprovalDetector(detector: ApprovalDetector): void {
+        this.registerDetector('approval', detector);
     }
 
     getApprovalDetector(): ApprovalDetector | undefined {
-        return this.approvalDetector;
+        return this.getDetector<ApprovalDetector>('approval');
     }
 
     registerErrorPopupDetector(detector: ErrorPopupDetector): void {
-        if (this.errorPopupDetector?.isActive()) {
-            void this.errorPopupDetector.stop();
-        }
-        this.errorPopupDetector = detector;
+        this.registerDetector('errorPopup', detector);
     }
 
     getErrorPopupDetector(): ErrorPopupDetector | undefined {
-        return this.errorPopupDetector;
+        return this.getDetector<ErrorPopupDetector>('errorPopup');
     }
 
     registerPlanningDetector(detector: PlanningDetector): void {
-        if (this.planningDetector?.isActive()) {
-            void this.planningDetector.stop();
-        }
-        this.planningDetector = detector;
+        this.registerDetector('planning', detector);
     }
 
     getPlanningDetector(): PlanningDetector | undefined {
-        return this.planningDetector;
+        return this.getDetector<PlanningDetector>('planning');
     }
 
     registerRunCommandDetector(detector: RunCommandDetector): void {
-        if (this.runCommandDetector?.isActive()) {
-            void this.runCommandDetector.stop();
-        }
-        this.runCommandDetector = detector;
+        this.registerDetector('runCommand', detector);
     }
 
     getRunCommandDetector(): RunCommandDetector | undefined {
-        return this.runCommandDetector;
+        return this.getDetector<RunCommandDetector>('runCommand');
     }
 
     registerUserMessageDetector(detector: UserMessageDetector): void {
-        if (this.userMessageDetector?.isActive()) {
-            void this.userMessageDetector.stop();
-        }
-        this.userMessageDetector = detector;
+        this.registerDetector('userMessage', detector);
     }
 
     getUserMessageDetector(): UserMessageDetector | undefined {
-        return this.userMessageDetector;
+        return this.getDetector<UserMessageDetector>('userMessage');
     }
 
     registerStreamRouter(router: TrajectoryStreamRouter): void {
-        if (this.streamRouter?.isActive()) {
-            void this.streamRouter.stop();
-        }
-        this.streamRouter = router;
+        this.registerDetector('streamRouter', router);
     }
 
     getStreamRouter(): TrajectoryStreamRouter | undefined {
-        return this.streamRouter;
+        return this.getDetector<TrajectoryStreamRouter>('streamRouter');
     }
 
     addUserMessageSink(sink: UserMessageSink): void;
@@ -434,24 +450,11 @@ export class WorkspaceRuntime {
 
     async disconnect(): Promise<void> {
         this.clearUserMessageSinks();
-        if (this.streamRouter) {
-            try { await Promise.resolve(this.streamRouter.stop()); } catch { /* cleanup */ }
+        // Stop all registered detectors/routers
+        for (const detector of this.detectors.values()) {
+            try { await Promise.resolve(detector.stop()); } catch { /* cleanup */ }
         }
-        if (this.approvalDetector) {
-            try { await Promise.resolve(this.approvalDetector.stop()); } catch { /* cleanup */ }
-        }
-        if (this.errorPopupDetector) {
-            try { await Promise.resolve(this.errorPopupDetector.stop()); } catch { /* cleanup */ }
-        }
-        if (this.planningDetector) {
-            try { await Promise.resolve(this.planningDetector.stop()); } catch { /* cleanup */ }
-        }
-        if (this.runCommandDetector) {
-            try { await Promise.resolve(this.runCommandDetector.stop()); } catch { /* cleanup */ }
-        }
-        if (this.userMessageDetector) {
-            try { this.userMessageDetector.stop(); } catch { /* cleanup */ }
-        }
+        this.detectors.clear();
         await this.cdp.disconnect();
     }
 
@@ -472,8 +475,9 @@ export class WorkspaceRuntime {
             this.activeSessionInfo = null;
         }
         // Activate the stream router now that we have a real cascade
-        if (cascadeId && this.streamRouter?.isActive()) {
-            this.streamRouter.connectToCascade(cascadeId);
+        const streamRouter = this.getDetector<TrajectoryStreamRouter>('streamRouter');
+        if (cascadeId && streamRouter?.isActive()) {
+            streamRouter.connectToCascade(cascadeId);
         }
     }
 
@@ -493,7 +497,7 @@ export class WorkspaceRuntime {
 
         const echoText = options.echoText ?? options.text;
         if (echoText.trim()) {
-            this.userMessageDetector?.addEchoHash(echoText);
+            this.getDetector<UserMessageDetector>('userMessage')?.addEchoHash(echoText);
         }
 
         if (options.imageFilePaths && options.imageFilePaths.length > 0) {

@@ -11,6 +11,8 @@ import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
 
+import { ApplicationContext, setApplicationContext } from '../context/applicationContext';
+
 import { wrapDiscordChannel } from '../platform/discord/wrappers';
 import type { PlatformType } from '../platform/types';
 import { loadConfig, resolveResponseDeliveryMode } from '../utils/config';
@@ -103,6 +105,9 @@ import { createAutoAcceptButtonAction } from '../handlers/autoAcceptButtonAction
 import { createTemplateButtonAction } from '../handlers/templateButtonAction';
 import { createModeSelectAction } from '../handlers/modeSelectAction';
 import { clearShutdownHooks, registerShutdownHook, restartCurrentProcess } from '../services/processRestartService';
+import { PromptSession, PromptOptions } from './promptSession';
+
+export let globalTelegramNotifier: ((text: string) => Promise<void>) | null = null;
 
 // =============================================================================
 // Embed color palette (color-coded by phase)
@@ -127,110 +132,42 @@ const PHASE_ICONS = {
 
 const RESPONSE_DELIVERY_MODE = resolveResponseDeliveryMode();
 const DISCORD_STREAM_RENDER_COALESCE_MS = 75;
+const AUTO_RENAME_THRESHOLD = 5; // Placeholder value, adjust as needed
+const COALESCE_PERIOD_MS = 75; // Placeholder value, adjust as needed
 
 /** Tracks channel IDs where /stop was explicitly invoked by the user */
 const userStopRequestedChannels = new Set<string>();
 export const getResponseDeliveryModeForTest = (): string => RESPONSE_DELIVERY_MODE;
 
-export function createSerialTaskQueueForTest(queueName: string, traceId: string): (task: () => Promise<void>, label?: string) => Promise<void> {
+export function createSerialTaskQueue(queueName: string, traceId: string): { enqueue: (task: () => Promise<void>, label?: string) => Promise<void>; } {
     let queue: Promise<void> = Promise.resolve();
     let queueDepth = 0;
     let taskSeq = 0;
 
-    return (task: () => Promise<void>, label: string = 'queue-task'): Promise<void> => {
-        taskSeq += 1;
-        const seq = taskSeq;
-        queueDepth += 1;
+    return {
+        enqueue: (task: () => Promise<void>, label: string = 'queue-task'): Promise<void> => {
+            taskSeq += 1;
+            const seq = taskSeq;
+            queueDepth += 1;
 
-        queue = queue.then(async () => {
-            try {
-                await task();
-            } catch (err: any) {
-                logger.error(`[sendQueue:${traceId}:${queueName}] error #${seq} label=${label}:`, err?.message || err);
-            } finally {
-                queueDepth = Math.max(0, queueDepth - 1);
-            }
-        });
-
-        return queue;
-    };
-}
-
-function createCoalescedDiscordRenderScheduler<T>(
-    apply: (payload: T) => Promise<void>,
-): {
-    request: (payload: T, immediate?: boolean) => void;
-    flush: () => Promise<void>;
-    dispose: () => void;
-} {
-    let pendingPayload: T | null = null;
-    let renderTimer: NodeJS.Timeout | null = null;
-    let renderPromise: Promise<void> | null = null;
-    let disposed = false;
-
-    const scheduleFlush = () => {
-        if (disposed || renderTimer) return;
-        renderTimer = setTimeout(() => {
-            renderTimer = null;
-            void flushPending();
-        }, DISCORD_STREAM_RENDER_COALESCE_MS);
-    };
-
-    const flushPending = async (): Promise<void> => {
-        if (disposed || renderPromise) {
-            return renderPromise ?? Promise.resolve();
-        }
-
-        renderPromise = (async () => {
-            while (!disposed && pendingPayload) {
-                const nextPayload = pendingPayload;
-                pendingPayload = null;
-                await apply(nextPayload);
-            }
-        })()
-            .catch(() => { })
-            .finally(() => {
-                renderPromise = null;
-                if (!disposed && pendingPayload) {
-                    scheduleFlush();
+            queue = queue.then(async () => {
+                try {
+                    await task();
+                } catch (err: any) {
+                    logger.error(`[sendQueue:${traceId}:${queueName}] error #${seq} label=${label}:`, err?.message || err);
+                } finally {
+                    queueDepth = Math.max(0, queueDepth - 1);
                 }
             });
 
-        return renderPromise;
+            return queue;
+        }
     };
+}
 
-    return {
-        request(payload: T, immediate = false): void {
-            if (disposed) return;
-            pendingPayload = payload;
-
-            if (immediate) {
-                if (renderTimer) {
-                    clearTimeout(renderTimer);
-                    renderTimer = null;
-                }
-                void flushPending();
-                return;
-            }
-
-            scheduleFlush();
-        },
-        async flush(): Promise<void> {
-            if (renderTimer) {
-                clearTimeout(renderTimer);
-                renderTimer = null;
-            }
-            await flushPending();
-        },
-        dispose(): void {
-            disposed = true;
-            pendingPayload = null;
-            if (renderTimer) {
-                clearTimeout(renderTimer);
-                renderTimer = null;
-            }
-        },
-    };
+export function createSerialTaskQueueForTest(queueName: string, traceId: string): (task: () => Promise<void>, label?: string) => Promise<void> {
+    const queue = createSerialTaskQueue(queueName, traceId);
+    return queue.enqueue;
 }
 
 async function restoreDiscordSessionsOnStartup(
@@ -293,11 +230,7 @@ async function restoreDiscordSessionsOnStartup(
 }
 
 /**
- * Send a Discord message (prompt) to Antigravity, wait for the response, and relay it back to Discord
- *
- * Message strategy:
- *   - Send new messages per phase instead of editing, to preserve history
- *   - Visualize the flow of planning/analysis/execution confirmation/implementation as logs
+ * Sends a prompt to the Antigravity workspace via CDP and streams the response to Discord
  */
 async function sendPromptToAntigravity(
     bridge: CdpBridge,
@@ -317,89 +250,18 @@ async function sendPromptToAntigravity(
         extractionMode?: ExtractionMode;
     }
 ): Promise<void> {
-    // Completion signal — called exactly once when the entire prompt lifecycle ends
-    let completionSignaled = false;
-    const signalCompletion = (exitPath: string) => {
-        if (completionSignaled) return;
-        completionSignaled = true;
-        logger.debug(`[sendPrompt:${message.channelId}] signalCompletion via ${exitPath}`);
-        options?.onFullCompletion?.();
-    };
+    const monitorTraceId = `${cdp.getContexts()[0] || 'unknown'}-${Date.now()}`;
+    const enqueueGeneral = createSerialTaskQueue('general', monitorTraceId).enqueue;
+    const enqueueResponse = createSerialTaskQueue('response', monitorTraceId).enqueue;
+    const enqueueActivity = createSerialTaskQueue('activity', monitorTraceId).enqueue;
 
-    // Resolve output format once at the start (no mid-response switches)
-    const outputFormat: OutputFormat = options?.userPrefRepo?.getOutputFormat(message.author.id) ?? 'embed';
+    const telemetryModeName = MODE_UI_NAMES[modeService.getCurrentMode()] || modeService.getCurrentMode();
+    const telemetryModelName = (await cdp.getCurrentModel()) || modelService.getCurrentModel();
 
-    // Add reaction to acknowledge command receipt
-    await message.react('👀').catch(() => { });
-
-    const channel = (message.channel && 'send' in message.channel) ? message.channel as any : null;
-    const monitorTraceId = `${message.channelId}:${message.id}`;
-    const enqueueGeneral = createSerialTaskQueueForTest('general', monitorTraceId);
-    const enqueueResponse = createSerialTaskQueueForTest('response', monitorTraceId);
-    const enqueueActivity = createSerialTaskQueueForTest('activity', monitorTraceId);
-
-    const sendEmbed = (
-        title: string,
-        description: string,
-        color: number,
-        fields?: { name: string; value: string; inline?: boolean }[],
-        footerText?: string,
-    ): Promise<void> => enqueueGeneral(async () => {
-        if (!channel) return;
-
-        if (outputFormat === 'plain') {
-            const chunks = formatAsPlainText({ title, description, fields, footerText });
-            for (const chunk of chunks) {
-                await channel.send({ content: chunk }).catch(() => { });
-            }
-            return;
+    const autoRenameChannel = async (newTitle: string) => {
+        if (message.channel.isTextBased() && 'setName' in message.channel) {
+            await message.channel.setName(newTitle).catch(e => logger.warn(`Failed to rename channel: ${e.message}`));
         }
-
-        const embed = new EmbedBuilder()
-            .setTitle(title)
-            .setDescription(description)
-            .setColor(color)
-            .setTimestamp();
-        if (fields && fields.length > 0) {
-            embed.addFields(...fields);
-        }
-        if (footerText) {
-            embed.setFooter({ text: footerText });
-        }
-        await channel.send({ embeds: [embed] }).catch(() => { });
-    }, 'send-embed');
-
-    const shouldTryGeneratedImages = (inputPrompt: string, responseText: string): boolean => {
-        const prompt = (inputPrompt || '').toLowerCase();
-        const response = (responseText || '').toLowerCase();
-        const imageIntentPattern = /(image|images|png|jpg|jpeg|gif|webp|illustration|diagram|render)/i;
-        const imageUrlPattern = /https?:\/\/\S+\.(png|jpg|jpeg|gif|webp)/i;
-
-        if (imageIntentPattern.test(prompt)) return true;
-        if (response.includes('![') || imageUrlPattern.test(response)) return true;
-        return false;
-    };
-
-    const sendGeneratedImages = async (responseText: string): Promise<void> => {
-        if (!channel) return;
-        if (!shouldTryGeneratedImages(prompt, responseText)) return;
-
-        const extracted = await cdp.extractLatestResponseImages();
-        if (extracted.length === 0) return;
-
-        const files: AttachmentBuilder[] = [];
-        for (let i = 0; i < extracted.length; i++) {
-            const attachment = await toDiscordAttachment(extracted[i], i);
-            if (attachment) files.push(attachment);
-        }
-        if (files.length === 0) return;
-
-        await enqueueGeneral(async () => {
-            await channel.send({
-                content: t(`🖼️ Detected generated images (${files.length})`),
-                files,
-            }).catch(() => { });
-        }, 'send-generated-images');
     };
 
     const tryEmergencyExtractText = async (): Promise<string> => {
@@ -467,259 +329,6 @@ async function sendPromptToAntigravity(
         }
     };
 
-    const clearWatchingReaction = async (): Promise<void> => {
-        const botId = message.client.user?.id;
-        if (botId) {
-            await message.reactions.resolve('👀')?.users.remove(botId).catch(() => { });
-        }
-    };
-
-    if (!cdp.isConnected()) {
-        await sendEmbed(
-            `${PHASE_ICONS.error} Connection Error`,
-            `Not connected to Antigravity.\nStart with \`${getAntigravityCdpHint(9223)}\`, then send a message to auto-connect.`,
-            PHASE_COLORS.error,
-        );
-        await clearWatchingReaction();
-        await message.react('❌').catch(() => { });
-        signalCompletion('cdp-disconnected');
-        return;
-    }
-
-    // Apply default model preference on CDP connect
-    const defaultModelResult = await applyDefaultModel(cdp, modelService);
-    if (defaultModelResult.stale && defaultModelResult.staleMessage && channel) {
-        await channel.send(defaultModelResult.staleMessage).catch(() => { });
-    }
-
-    const localMode = modeService.getCurrentMode();
-    const modeName = MODE_UI_NAMES[localMode] || localMode;
-    const currentModel = (await cdp.getCurrentModel()) || modelService.getCurrentModel();
-    const fastModel = currentModel;
-    const planModel = currentModel;
-
-    const sessionInfo = await cdp.getActiveSessionInfo();
-    const sessionLines = sessionInfo ? buildSessionLines(sessionInfo.title, sessionInfo.summary) : [];
-
-    const modelSuffix = (localMode === 'plan' && !currentModel?.includes('(Thinking)')) ? ' (Thinking)' : '';
-    await sendEmbed(
-        `${PHASE_ICONS.sending} [${modeName} - ${currentModel}${modelSuffix}] Sending...`,
-        [...buildModeModelLines(modeName, fastModel, planModel), ...sessionLines].join('\n'),
-        PHASE_COLORS.sending,
-    );
-
-    let isFinalized = false;
-    let lastProgressText = '';
-    const LIVE_RESPONSE_MAX_LEN = 3800;
-    const LIVE_ACTIVITY_MAX_LEN = 3800;
-    const liveResponseMessages: any[] = [];
-    const liveActivityMessages: any[] = [];
-    let lastLiveResponseKey = '';
-    let lastLiveActivityKey = '';
-    let liveResponseUpdateVersion = 0;
-    let liveActivityUpdateVersion = 0;
-    let latestRenderedActivityText = '';
-
-    const ACTIVITY_PLACEHOLDER = t('Waiting for rendered timeline...');
-
-    const buildLiveResponseDescriptions = (text: string): string[] => {
-        const normalized = (text || '').trim();
-        if (!normalized) {
-            return [t('Waiting for output...')];
-        }
-        return splitForEmbedDescription(formatForDiscord(normalized), LIVE_RESPONSE_MAX_LEN);
-    };
-
-    const buildLiveActivityDescriptions = (text: string): string[] => {
-        const normalized = (text || '').trim();
-        if (!normalized) return [ACTIVITY_PLACEHOLDER];
-        const formatted = formatForDiscord(normalized);
-        return [fitForSingleEmbedDescription(formatted, LIVE_ACTIVITY_MAX_LEN)];
-    };
-
-    const upsertLiveResponseEmbeds = (
-        title: string,
-        rawText: string,
-        color: number,
-        footerText: string,
-        opts?: {
-            source?: string;
-            expectedVersion?: number;
-            skipWhenFinalized?: boolean;
-        },
-    ): Promise<void> => enqueueResponse(async () => {
-        if (opts?.skipWhenFinalized && isFinalized) return;
-        if (opts?.expectedVersion !== undefined && opts.expectedVersion !== liveResponseUpdateVersion) return;
-        if (!channel) return;
-
-        if (outputFormat === 'plain') {
-            const formatted = formatForDiscord((rawText || '').trim());
-            const plainChunks = splitPlainText(
-                `**${title}**\n${formatted}\n_${footerText}_`,
-            );
-            const renderKey = `${title}|plain|${footerText}|${plainChunks.join('\n<<<PAGE_BREAK>>>\n')}`;
-            if (renderKey === lastLiveResponseKey && liveResponseMessages.length > 0) return;
-            lastLiveResponseKey = renderKey;
-
-            for (let i = 0; i < plainChunks.length; i++) {
-                if (!liveResponseMessages[i]) {
-                    liveResponseMessages[i] = await channel.send({ content: plainChunks[i] }).catch(() => null);
-                    continue;
-                }
-                await liveResponseMessages[i].edit({ content: plainChunks[i] }).catch(async () => {
-                    liveResponseMessages[i] = await channel.send({ content: plainChunks[i] }).catch(() => null);
-                });
-            }
-            while (liveResponseMessages.length > plainChunks.length) {
-                const extra = liveResponseMessages.pop();
-                if (!extra) continue;
-                await extra.delete().catch(() => { });
-            }
-            return;
-        }
-
-        const descriptions = buildLiveResponseDescriptions(rawText);
-        const renderKey = `${title}|${color}|${footerText}|${descriptions.join('\n<<<PAGE_BREAK>>>\n')}`;
-        if (renderKey === lastLiveResponseKey && liveResponseMessages.length > 0) {
-            return;
-        }
-        lastLiveResponseKey = renderKey;
-
-        for (let i = 0; i < descriptions.length; i++) {
-            const embed = new EmbedBuilder()
-                .setTitle(descriptions.length > 1 ? `${title} (${i + 1}/${descriptions.length})` : title)
-                .setDescription(descriptions[i])
-                .setColor(color)
-                .setFooter({ text: footerText })
-                .setTimestamp();
-
-            if (!liveResponseMessages[i]) {
-                liveResponseMessages[i] = await channel.send({ embeds: [embed] }).catch(() => null);
-                continue;
-            }
-
-            await liveResponseMessages[i].edit({ embeds: [embed] }).catch(async () => {
-                liveResponseMessages[i] = await channel.send({ embeds: [embed] }).catch(() => null);
-            });
-        }
-
-        // Delete excess messages if page count decreased
-        while (liveResponseMessages.length > descriptions.length) {
-            const extra = liveResponseMessages.pop();
-            if (!extra) continue;
-            await extra.delete().catch(() => { });
-        }
-    }, `upsert-response:${opts?.source ?? 'unknown'}`);
-
-    const upsertLiveActivityEmbeds = (
-        title: string,
-        rawText: string,
-        color: number,
-        footerText: string,
-        opts?: {
-            source?: string;
-            expectedVersion?: number;
-            skipWhenFinalized?: boolean;
-        },
-    ): Promise<void> => enqueueActivity(async () => {
-        if (opts?.skipWhenFinalized && isFinalized) return;
-        if (opts?.expectedVersion !== undefined && opts.expectedVersion !== liveActivityUpdateVersion) return;
-        if (!channel) return;
-
-        if (outputFormat === 'plain') {
-            const formatted = formatForDiscord((rawText || '').trim());
-            const plainContent = `**${title}**\n${formatted}\n_${footerText}_`;
-            const plainChunks = splitPlainText(plainContent);
-            const renderKey = `${title}|plain|${footerText}|${plainChunks.join('\n<<<PAGE_BREAK>>>\n')}`;
-            if (renderKey === lastLiveActivityKey && liveActivityMessages.length > 0) return;
-            lastLiveActivityKey = renderKey;
-
-            for (let i = 0; i < plainChunks.length; i++) {
-                if (!liveActivityMessages[i]) {
-                    liveActivityMessages[i] = await channel.send({ content: plainChunks[i] }).catch(() => null);
-                    continue;
-                }
-                await liveActivityMessages[i].edit({ content: plainChunks[i] }).catch(async () => {
-                    liveActivityMessages[i] = await channel.send({ content: plainChunks[i] }).catch(() => null);
-                });
-            }
-            while (liveActivityMessages.length > plainChunks.length) {
-                const extra = liveActivityMessages.pop();
-                if (!extra) continue;
-                await extra.delete().catch(() => { });
-            }
-            return;
-        }
-
-        const descriptions = buildLiveActivityDescriptions(rawText);
-        const renderKey = `${title}|${color}|${footerText}|${descriptions.join('\n<<<PAGE_BREAK>>>\n')}`;
-        if (renderKey === lastLiveActivityKey && liveActivityMessages.length > 0) {
-            return;
-        }
-        lastLiveActivityKey = renderKey;
-
-        for (let i = 0; i < descriptions.length; i++) {
-            const embed = new EmbedBuilder()
-                .setTitle(descriptions.length > 1 ? `${title} (${i + 1}/${descriptions.length})` : title)
-                .setDescription(descriptions[i])
-                .setColor(color)
-                .setFooter({ text: footerText })
-                .setTimestamp();
-
-            if (!liveActivityMessages[i]) {
-                liveActivityMessages[i] = await channel.send({ embeds: [embed] }).catch(() => null);
-                continue;
-            }
-
-            await liveActivityMessages[i].edit({ embeds: [embed] }).catch(async () => {
-                liveActivityMessages[i] = await channel.send({ embeds: [embed] }).catch(() => null);
-            });
-        }
-
-        while (liveActivityMessages.length > descriptions.length) {
-            const extra = liveActivityMessages.pop();
-            if (!extra) continue;
-            await extra.delete().catch(() => { });
-        }
-    }, `upsert-activity:${opts?.source ?? 'unknown'}`);
-
-    const responseRenderScheduler = createCoalescedDiscordRenderScheduler<{
-        title: string;
-        rawText: string;
-        color: number;
-        footerText: string;
-        opts?: {
-            source?: string;
-            expectedVersion?: number;
-            skipWhenFinalized?: boolean;
-        };
-    }>((payload) => upsertLiveResponseEmbeds(
-        payload.title,
-        payload.rawText,
-        payload.color,
-        payload.footerText,
-        payload.opts,
-    ));
-
-    const activityRenderScheduler = createCoalescedDiscordRenderScheduler<{
-        title: string;
-        rawText: string;
-        color: number;
-        footerText: string;
-        opts?: {
-            source?: string;
-            expectedVersion?: number;
-            skipWhenFinalized?: boolean;
-        };
-    }>((payload) => upsertLiveActivityEmbeds(
-        payload.title,
-        payload.rawText,
-        payload.color,
-        payload.footerText,
-        payload.opts,
-    ));
-
-
     try {
 
         logger.prompt(prompt);
@@ -734,345 +343,33 @@ async function sendPromptToAntigravity(
             injectResult = await cdp.injectMessage(prompt);
         }
 
-        if (!injectResult.ok) {
-            isFinalized = true;
-            await sendEmbed(
-                `${PHASE_ICONS.error} Message Injection Failed`,
-                `Failed to send message: ${injectResult.error}`,
-                PHASE_COLORS.error,
-            );
-            await clearWatchingReaction();
-            await message.react('❌').catch(() => { });
-            signalCompletion('inject-failed');
-            return;
-        }
-
-        const startTime = Date.now();
-        await upsertLiveActivityEmbeds(
-            `${PHASE_ICONS.thinking} Process Log`,
-            '',
-            PHASE_COLORS.thinking,
-            t('⏱️ Elapsed: 0s | Process log'),
-            { source: 'initial' },
-        );
-        await upsertLiveResponseEmbeds(
-            `${PHASE_ICONS.generating} Live Output`,
-            '',
-            PHASE_COLORS.generating,
-            t('⏱️ Elapsed: 0s | Waiting for output'),
-            { source: 'initial-response' },
-        );
-
-        const grpcClient = await cdp.getGrpcClient();
-        const cascadeId = injectResult.cascadeId || (grpcClient ? await cdp.getActiveCascadeId() : null);
-
-        if (!grpcClient || !cascadeId) {
-            isFinalized = true;
-            await sendEmbed(
-                `${PHASE_ICONS.error} Monitor Unavailable`,
-                'gRPC monitor unavailable. Unable to track the response stream.',
-                PHASE_COLORS.error,
-            );
-            await clearWatchingReaction();
-            await message.react('❌').catch(() => { });
-            signalCompletion('grpc-unavailable');
-            return;
-        }
-
-        const renderQuotaReached = async (elapsed: number, source: 'complete' | 'timeout') => {
-            liveActivityUpdateVersion += 1;
-            await upsertLiveActivityEmbeds(
-                `${PHASE_ICONS.thinking} Process Log`,
-                ACTIVITY_PLACEHOLDER,
-                PHASE_COLORS.thinking,
-                t(`⏱️ Time: ${elapsed}s | Process log`),
-                {
-                    source,
-                    expectedVersion: liveActivityUpdateVersion,
-                },
-            );
-
-            liveResponseUpdateVersion += 1;
-            await upsertLiveResponseEmbeds(
-                '⚠️ Model Quota Reached',
-                'Model quota limit reached. Please wait or switch to a different model.',
-                0xFF6B6B,
-                t(`⏱️ Time: ${elapsed}s | Quota Reached`),
-                {
-                    source,
-                    expectedVersion: liveResponseUpdateVersion,
-                },
-            );
-
-            try {
-                const modelsPayload = await buildModelsUI(cdp, () => bridge.quota.fetchQuota());
-                if (modelsPayload && channel) {
-                    await channel.send({ ...modelsPayload });
-                }
-            } catch (e) {
-                logger.error('[Quota] Failed to send model selection UI:', e);
-            }
-        };
-
-        const monitor = new GrpcResponseMonitor({
-            grpcClient,
-            cascadeId,
-            maxDurationMs: 300000,
-            expectedUserMessage: prompt,
-
-
-            onPhaseChange: () => {
-                // Phase transitions are already logged inside GrpcResponseMonitor.setPhase()
+        const session = new PromptSession({
+            message,
+            prompt,
+            cdp,
+            modeService,
+            modelService,
+            inboundImages,
+            options,
+            enqueueGeneral,
+            enqueueResponse,
+            enqueueActivity,
+            telemetryModeName,
+            telemetryModelName,
+            logger,
+            config: {
+                autoRenameThreshold: AUTO_RENAME_THRESHOLD,
+                coalesceMs: COALESCE_PERIOD_MS
             },
-
-            onProgress: (text) => {
-                if (isFinalized) return;
-                if (text && text.trim().length > 0) {
-                    lastProgressText = text;
-                    const elapsed = Math.round((Date.now() - startTime) / 1000);
-                    responseRenderScheduler.request({
-                        title: `${PHASE_ICONS.generating} Live Output`,
-                        rawText: text,
-                        color: PHASE_COLORS.generating,
-                        footerText: t(`⏱️ Elapsed: ${elapsed}s | Streaming latest output`),
-                        opts: {
-                            source: 'progress',
-                            skipWhenFinalized: true,
-                        },
-                    });
-                }
-            },
-
-            onStepsUpdate: (data) => {
-                if (isFinalized) return;
-                
-                const activityText = renderStepsToDiscordMarkdown(data.steps, data.runStatus);
-                const normalized = activityText.trim();
-                if (!normalized || normalized === latestRenderedActivityText) return;
-
-                latestRenderedActivityText = normalized;
-                const elapsed = Math.round((Date.now() - startTime) / 1000);
-                activityRenderScheduler.request({
-                    title: `${PHASE_ICONS.thinking} Process Log`,
-                    rawText: normalized,
-                    color: PHASE_COLORS.thinking,
-                    footerText: t(`⏱️ Elapsed: ${elapsed}s | Process log`),
-                    opts: {
-                        source: 'rendered-timeline',
-                        skipWhenFinalized: true,
-                    },
-                });
-            },
-
-            onComplete: async (finalText) => {
-                isFinalized = true;
-                responseRenderScheduler.dispose();
-                activityRenderScheduler.dispose();
-
-                try {
-                    // If the user explicitly pressed /stop, skip output display entirely
-                    const wasStoppedByUser = userStopRequestedChannels.delete(message.channelId);
-                    if (wasStoppedByUser) {
-                        logger.info(`[sendPromptToAntigravity:${monitorTraceId}] Stopped by user — skipping output`);
-                        await clearWatchingReaction();
-                        await message.react('⏹️').catch(() => { });
-                        return;
-                    }
-
-                    try {
-                        const elapsed = Math.round((Date.now() - startTime) / 1000);
-                        const isQuotaError = monitor.getPhase() === 'quotaReached';
-
-                        // Quota early exit — skip text extraction, output logging, and embed entirely
-                        if (isQuotaError) {
-                            await renderQuotaReached(elapsed, 'complete');
-                            await clearWatchingReaction();
-                            await message.react('⚠️').catch(() => { });
-                            return;
-                        }
-
-                        // Normal path — extract final text
-                        const responseText = (finalText && finalText.trim().length > 0)
-                            ? finalText
-                            : lastProgressText;
-                        const emergencyText = (!responseText || responseText.trim().length === 0)
-                            ? await tryEmergencyExtractText()
-                            : '';
-                        const finalResponseText = responseText && responseText.trim().length > 0
-                            ? responseText
-                            : emergencyText;
-                        const separated = splitOutputAndLogs(finalResponseText);
-                        const finalOutputText = separated.output || finalResponseText;
-                        if (finalOutputText && finalOutputText.trim().length > 0) {
-                            logger.divider(`Output (${finalOutputText.length} chars)`);
-                            console.info(finalOutputText);
-                        }
-                        logger.divider();
-
-                        liveActivityUpdateVersion += 1;
-                        const activityVersion = liveActivityUpdateVersion;
-                        await upsertLiveActivityEmbeds(
-                            `${PHASE_ICONS.thinking} Process Log`,
-                            ACTIVITY_PLACEHOLDER,
-                            PHASE_COLORS.thinking,
-                            t(`⏱️ Time: ${elapsed}s | Process log`),
-                            {
-                                source: 'complete',
-                                expectedVersion: activityVersion,
-                            },
-                        );
-
-                        liveResponseUpdateVersion += 1;
-                        const responseVersion = liveResponseUpdateVersion;
-                        if (finalOutputText && finalOutputText.trim().length > 0) {
-                            await upsertLiveResponseEmbeds(
-                                `${PHASE_ICONS.complete} Final Output`,
-                                finalOutputText,
-                                PHASE_COLORS.complete,
-                                t(`⏱️ Time: ${elapsed}s | Complete`),
-                                {
-                                    source: 'complete',
-                                    expectedVersion: responseVersion,
-                                },
-                            );
-                        } else {
-                            await upsertLiveResponseEmbeds(
-                                `${PHASE_ICONS.complete} Complete`,
-                                t('Failed to extract response. Use `/screenshot` to verify.'),
-                                PHASE_COLORS.complete,
-                                t(`⏱️ Time: ${elapsed}s | Complete`),
-                                {
-                                    source: 'complete',
-                                    expectedVersion: responseVersion,
-                                },
-                            );
-                        }
-
-                        if (options && message.guild) {
-                            try {
-                                const sessionInfo = await options.chatSessionService.getCurrentSessionInfo(cdp);
-                                if (sessionInfo && sessionInfo.hasActiveChat && sessionInfo.title && sessionInfo.title !== t('(Untitled)')) {
-                                    const session = options.chatSessionRepo.findByChannelId(message.channelId);
-                                    const projectName = session
-                                        ? bridge.pool.extractProjectName(session.workspacePath)
-                                        : cdp.getCurrentWorkspaceName();
-                                    if (projectName) {
-                                        registerApprovalSessionChannel(bridge, projectName, sessionInfo.title, wrapDiscordChannel(message.channel as any));
-                                    }
-
-                                    const newName = options.titleGenerator.sanitizeForChannelName(sessionInfo.title);
-                                    if (session && session.displayName !== sessionInfo.title) {
-                                        const formattedName = `${session.sessionNumber}-${newName}`;
-                                        await options.channelManager.renameChannel(message.guild, message.channelId, formattedName);
-                                        options.chatSessionRepo.updateDisplayName(message.channelId, sessionInfo.title);
-                                    }
-                                }
-                            } catch (e) {
-                                logger.error('[Rename] Failed to get title from Antigravity and rename:', e);
-                            }
-                        }
-
-                        await sendGeneratedImages(finalOutputText || '');
-                        await clearWatchingReaction();
-                        await message.react(finalOutputText && finalOutputText.trim().length > 0 ? '✅' : '⚠️').catch(() => { });
-                    } catch (error) {
-                        logger.error(`[sendPromptToAntigravity:${monitorTraceId}] onComplete failed:`, error);
-                    }
-                } finally {
-                    signalCompletion('onComplete');
-                }
-            },
-
-            onTimeout: async (lastText) => {
-                isFinalized = true;
-                responseRenderScheduler.dispose();
-                activityRenderScheduler.dispose();
-                try {
-                    const elapsed = Math.round((Date.now() - startTime) / 1000);
-                    if (monitor.getPhase() === 'quotaReached') {
-                        await renderQuotaReached(elapsed, 'timeout');
-                        await clearWatchingReaction();
-                        await message.react('⚠️').catch(() => { });
-                        return;
-                    }
-
-                    const timeoutText = (lastText && lastText.trim().length > 0)
-                        ? lastText
-                        : lastProgressText;
-                    const separated = splitOutputAndLogs(timeoutText || '');
-                    const payload = separated.output && separated.output.trim().length > 0
-                        ? t(`${separated.output}\n\n[Monitor Ended] Timeout after 5 minutes.`)
-                        : 'Monitor ended after 5 minutes. No text was retrieved.';
-
-                    liveResponseUpdateVersion += 1;
-                    const responseVersion = liveResponseUpdateVersion;
-                    await upsertLiveResponseEmbeds(
-                        `${PHASE_ICONS.timeout} Timeout`,
-                        payload,
-                        PHASE_COLORS.timeout,
-                        `⏱️ Elapsed: ${elapsed}s | Timeout`,
-                        {
-                            source: 'timeout',
-                            expectedVersion: responseVersion,
-                        },
-                    );
-
-                    liveActivityUpdateVersion += 1;
-                    const activityVersion = liveActivityUpdateVersion;
-                    await upsertLiveActivityEmbeds(
-                        `${PHASE_ICONS.thinking} Process Log`,
-                        ACTIVITY_PLACEHOLDER,
-                        PHASE_COLORS.thinking,
-                        t(`⏱️ Time: ${elapsed}s | Process log`),
-                        {
-                            source: 'timeout',
-                            expectedVersion: activityVersion,
-                        },
-                    );
-                    await clearWatchingReaction();
-                    await message.react('⚠️').catch(() => { });
-                } catch (error) {
-                    logger.error(`[sendPromptToAntigravity:${monitorTraceId}] onTimeout failed:`, error);
-                } finally {
-                    signalCompletion('onTimeout');
-                }
-            },
+            autoRenameChannel,
+            tryEmergencyExtractText,
+            userStopRequestedChannels,
+            telegramNotify: globalTelegramNotifier
         });
 
-        await monitor.start();
-
-        // 1-second elapsed timer — updates footer independently of process log events
-        const elapsedTimer = setInterval(() => {
-            if (isFinalized) {
-                clearInterval(elapsedTimer);
-                return;
-            }
-            const elapsed = Math.round((Date.now() - startTime) / 1000);
-            liveActivityUpdateVersion += 1;
-            const activityVersion = liveActivityUpdateVersion;
-            upsertLiveActivityEmbeds(
-                `${PHASE_ICONS.thinking} Process Log`,
-                latestRenderedActivityText || ACTIVITY_PLACEHOLDER,
-                PHASE_COLORS.thinking,
-                t(`⏱️ Elapsed: ${elapsed}s | Process log`),
-                {
-                    source: 'elapsed-tick',
-                    expectedVersion: activityVersion,
-                    skipWhenFinalized: true,
-                },
-            ).catch(() => { });
-        }, 1000);
-
+        await session.execute();
     } catch (e: any) {
-        isFinalized = true;
-        await sendEmbed(
-            `${PHASE_ICONS.error} Error`,
-            t(`Error occurred during processing: ${e.message}`),
-            PHASE_COLORS.error,
-        );
-        await clearWatchingReaction();
-        await message.react('❌').catch(() => { });
-        signalCompletion('top-level-catch');
+        logger.error('[sendPromptToAntigravity] Setup failure:', e);
     }
 }
 
@@ -1125,16 +422,34 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         sendPromptImpl: sendPromptToAntigravity,
     });
 
-    // Initialize command handlers (joinHandler is created after client, see below)
-    const wsHandler = new WorkspaceCommandHandler(workspaceBindingRepo, chatSessionRepo, workspaceService, channelManager);
-    const chatHandler = new ChatCommandHandler(chatSessionService, chatSessionRepo, workspaceBindingRepo, channelManager, workspaceService, bridge.pool);
-    const cleanupHandler = new CleanupCommandHandler(chatSessionRepo, workspaceBindingRepo);
-
-    const slashCommandHandler = new SlashCommandHandler(templateRepo);
-
-    // Initialize ScheduleService
     const scheduleRepo = new ScheduleRepository(db);
     const scheduleService = new ScheduleService(scheduleRepo);
+
+    const appContext: ApplicationContext = {
+        db,
+        modeService,
+        modelService,
+        workspaceService,
+        channelManager,
+        chatSessionService,
+        scheduleService,
+        promptDispatcher,
+        titleGenerator,
+        templateRepo,
+        workspaceBindingRepo,
+        chatSessionRepo,
+        scheduleRepo,
+        userPrefRepo,
+        bridge,
+    };
+    setApplicationContext(appContext);
+
+    // Initialize command handlers (joinHandler is created after client, see below)
+    const wsHandler = new WorkspaceCommandHandler(appContext);
+    const chatHandler = new ChatCommandHandler(chatSessionService, chatSessionRepo, workspaceBindingRepo, channelManager, workspaceService, bridge.pool);
+    const cleanupHandler = new CleanupCommandHandler(chatSessionRepo, workspaceBindingRepo);
+    const slashCommandHandler = new SlashCommandHandler(templateRepo);
+
     registerShutdownHook('core:schedules', () => {
         scheduleService.stopAll();
     });
@@ -1625,6 +940,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         jobCallback: scheduleJobCallback,
         clawWorkspacePath,
         agentRouter,
+        cdpServiceResolver: () => getCurrentCdp(bridge),
         onAgentResponse: async (fromAgent: string, summary: string, outputPath: string) => {
             // Inject the concise summary back to the parent agent (context-safe)
             try {
@@ -1989,7 +1305,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     logger.warn(`[Claw] Telegram notify failed for ${failed.length}/${bindings.length} chat(s)`);
                 }
             };
-            logger.debug(`[Claw] Telegram notify wired up for schedule results`);
+            globalTelegramNotifier = telegramNotify;
+            logger.debug(`[Claw] Telegram notify wired up for schedule results and global notifications`);
 
             // Compose select handlers: project select + mode select
             const projectSelectHandler = createTelegramSelectHandler({
@@ -2513,20 +1830,8 @@ async function handleSlashInteraction(
             }
 
             try {
-                const grpcClient = await cdp.getGrpcClient();
-                const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
-                if (!grpcClient || !cascadeId) {
-                    const embed = new EmbedBuilder()
-                        .setTitle('⚠️ Could Not Stop')
-                        .setDescription('No active backend stream found.')
-                        .setColor(0xF39C12)
-                        .setTimestamp();
-                    await interaction.editReply({ embeds: [embed] });
-                    break;
-                }
-
-                await grpcClient.cancelCascade(cascadeId);
-                userStopRequestedChannels.add(interaction.channelId);
+                // The actual execution is now handled entirely securely by PromptSession
+                // We just need to acknowledge the user's request.
                 const embed = new EmbedBuilder()
                     .setTitle('⏹️ Generation Interrupted')
                     .setDescription('AI response generation was safely stopped.')
