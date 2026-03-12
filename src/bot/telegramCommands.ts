@@ -722,6 +722,7 @@ async function handleSession(deps: TelegramCommandDeps, message: PlatformMessage
         workspaceService: deps.workspaceService,
         chatSessionService: deps.chatSessionService,
         sessionStateStore: deps.sessionStateStore,
+        activeMonitors: deps.activeMonitors,
     }, message);
 }
 

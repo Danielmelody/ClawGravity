@@ -191,12 +191,12 @@ export class WorkspaceRuntime {
                         return { ok: false, error: 'Failed to create cascade via gRPC' };
                     }
                     cdp.rememberCreatedCascade(cascadeId);
-                    try {
-                        await grpcClient.focusCascade?.(cascadeId);
-                    } catch (error: unknown) {
-                        const message = error instanceof Error ? error.message : String(error);
-                        logger.warn(`[WorkspaceRuntime:${this.projectName}] SmartFocusConversation failed for ${cascadeId.slice(0, 12)}...: ${message}`);
-                    }
+                    // NOTE: We intentionally do NOT call focusCascade (SmartFocusConversation)
+                    // here. All Antigravity windows share the same LS, so focusCascade would
+                    // focus the cascade in whichever window the LS considers "active" — often
+                    // the __claw__ agent workspace after a restart. Since remote callers
+                    // (Telegram/Discord) interact with the cascade through gRPC, UI focus is
+                    // unnecessary and would cause the cascade to appear in the wrong workspace.
                     this.rememberActiveCascade(cascadeId);
                     return { ok: true };
                 } catch (error: unknown) {

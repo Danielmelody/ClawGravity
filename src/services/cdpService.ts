@@ -2,7 +2,8 @@ import { logger } from '../utils/logger';
 import { CDP_PORTS } from '../utils/cdpPorts';
 import { EventEmitter } from 'events';
 import * as http from 'http';
-import { spawn, execSync } from 'child_process';
+import { spawn, exec } from 'child_process';
+import { promisify } from 'util';
 import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
 import WebSocket from 'ws';
 import { GrpcCascadeClient, ModelId, LSConnection } from './grpcCascadeClient';
@@ -43,22 +44,7 @@ export interface ExtractedResponseImage {
     url?: string;
 }
 
-type PendingWorkspaceBlock =
-    | {
-        kind: 'planning';
-        message: string;
-        cascadeId: string;
-    }
-    | {
-        kind: 'approval';
-        message: string;
-        cascadeId: string;
-    }
-    | {
-        kind: 'run_command';
-        message: string;
-        cascadeId: string;
-    };
+
 
 /** UI sync operation result type (Step 9) */
 export interface UiSyncResult {
@@ -71,6 +57,7 @@ export interface UiSyncResult {
 }
 
 const RECENT_CASCADE_PROPAGATION_GRACE_MS = 15_000;
+const execAsync = promisify(exec);
 
 export class CdpService extends EventEmitter {
     private ports: number[];
@@ -95,8 +82,12 @@ export class CdpService extends EventEmitter {
     private cdpCallTimeout = 30000;
     private targetUrl: string | null = null;
     private targetFrameId: string | null = null;
+    /** Network sniff handler reference (for cleanup across reconnects) */
+    private networkSniffHandler: ((params: any) => void) | null = null;
     /** Number of auto-reconnect attempts on disconnect */
     private maxReconnectAttempts: number;
+    /** Original maxReconnectAttempts (preserved across disconnect/reconnect) */
+    private readonly originalMaxReconnectAttempts: number;
     /** Delay between reconnect attempts (ms) */
     private reconnectDelayMs: number;
     /** Current reconnect attempt count */
@@ -124,6 +115,7 @@ export class CdpService extends EventEmitter {
         this.ports = options.portsToScan || [...CDP_PORTS];
         if (options.cdpCallTimeout) this.cdpCallTimeout = options.cdpCallTimeout;
         this.maxReconnectAttempts = options.maxReconnectAttempts ?? 3;
+        this.originalMaxReconnectAttempts = this.maxReconnectAttempts;
         this.reconnectDelayMs = options.reconnectDelayMs ?? 2000;
     }
 
@@ -137,6 +129,17 @@ export class CdpService extends EventEmitter {
                 });
             }).on('error', reject);
         });
+    }
+
+    /** Check if a CDP target is a workbench page (not Launchpad, not jetski-agent). */
+    private isWorkbenchPage(t: any): boolean {
+        return (
+            t.type === 'page' &&
+            !!t.webSocketDebuggerUrl &&
+            !t.title?.includes('Launchpad') &&
+            !t.url?.includes('workbench-jetski-agent') &&
+            !!t.url?.includes('workbench')
+        );
     }
 
     async discoverTarget(): Promise<string> {
@@ -259,7 +262,11 @@ export class CdpService extends EventEmitter {
         }
 
         // Passive credential sniffing — extract port + CSRF token from the first LS request
-        this.on('Network.requestWillBeSent', (params: any) => {
+        // Remove previous listener to prevent accumulation across reconnects
+        if (this.networkSniffHandler) {
+            this.removeListener('Network.requestWillBeSent', this.networkSniffHandler);
+        }
+        this.networkSniffHandler = (params: any) => {
             if (this.sniffedLSCredentials) return; // Already captured
             const url = params?.request?.url || '';
             if (!url.includes('language_server_pb')) return;
@@ -279,7 +286,8 @@ export class CdpService extends EventEmitter {
                 this.lsClient = null;
                 this.lsClientInitPromise = null;
             }
-        });
+        };
+        this.on('Network.requestWillBeSent', this.networkSniffHandler);
     }
 
     async call(method: string, params: any = {}): Promise<any> {
@@ -323,9 +331,9 @@ export class CdpService extends EventEmitter {
     }
 
     async disconnect(): Promise<void> {
-        // Stop reconnection attempts
-        this.maxReconnectAttempts = 0;
+        // Remove all WS listeners to prevent close handler triggering reconnect
         if (this.ws) {
+            this.ws.removeAllListeners();
             this.ws.close();
             this.ws = null;
         }
@@ -342,6 +350,8 @@ export class CdpService extends EventEmitter {
         this.recentCreatedCascadeId = null;
         this.recentCreatedCascadeAt = 0;
         this.clearPendingCalls(new Error('disconnect() was called'));
+        // Restore reconnect capacity for future connections
+        this.maxReconnectAttempts = this.originalMaxReconnectAttempts;
     }
 
     /**
@@ -440,14 +450,7 @@ export class CdpService extends EventEmitter {
         }
 
         // Filter workbench pages only (exclude Launchpad, Manager, iframe, worker)
-        const workbenchPages = pages.filter(
-            (t: any) =>
-                t.type === 'page' &&
-                t.webSocketDebuggerUrl &&
-                !t.title?.includes('Launchpad') &&
-                !t.url?.includes('workbench-jetski-agent') &&
-                t.url?.includes('workbench'),
-        );
+        const workbenchPages = pages.filter((t: any) => this.isWorkbenchPage(t));
 
         logger.debug(`[CdpService] Searching for workspace "${projectName}" (port=${respondingPort})... ${workbenchPages.length} workbench pages:`);
         for (const p of workbenchPages) {
@@ -718,14 +721,7 @@ export class CdpService extends EventEmitter {
 
             if (pages.length === 0) continue;
 
-            const workbenchPages = pages.filter(
-                (t: any) =>
-                    t.type === 'page' &&
-                    t.webSocketDebuggerUrl &&
-                    !t.title?.includes('Launchpad') &&
-                    !t.url?.includes('workbench-jetski-agent') &&
-                    t.url?.includes('workbench'),
-            );
+            const workbenchPages = pages.filter((t: any) => this.isWorkbenchPage(t));
 
             // Title match
             const titleMatch = workbenchPages.find((t: any) => t.title?.toLowerCase().includes(projectName.toLowerCase()));
@@ -839,7 +835,7 @@ export class CdpService extends EventEmitter {
                     await this.discoverTarget();
                     await this.connect();
                 }
-                logger.error('[CdpService] Reconnect succeeded.');
+                logger.info('[CdpService] Reconnect succeeded.');
                 this.reconnectAttemptCount = 0;
                 this.isReconnecting = false;
                 this.emit('reconnected');
@@ -1166,143 +1162,131 @@ export class CdpService extends EventEmitter {
     }
 
     /**
-     * Discover LS credentials by inspecting the language_server OS process.
+     * Discover LS credentials using a port-first approach.
      *
-     * 1. `wmic process` → find LS processes with --csrf_token and --workspace_id
-     * 2. Match by workspace path (from CDP window title)
-     * 3. `netstat -ano` → find the HTTPS port the LS PID is listening on
+     * 1. CDP `performance.getEntries()` → LS port (page-specific, guaranteed correct)
+     * 2. `netstat` → find PID listening on that port
+     * 3. `wmic` → get CSRF token from that PID's command line
+     * 4. Validate with a test RPC call
      *
-     * This works reliably after bot restarts because the LS process stays alive.
-     * All RPC calls still go through CDP Runtime.evaluate + fetch() in the renderer.
+     * This avoids workspace_id path-encoding matching entirely.
+     * Each step is deterministic — no fuzzy matching needed.
      */
     private async discoverLSCredentialsFromProcess(): Promise<void> {
         try {
-            logger.info('[CdpService:discover] Starting process-based credential discovery...');
+            logger.info('[CdpService:discover] Starting port-first credential discovery...');
 
-            // ── Step 1: Find all language_server processes and their CLI args ──
-            let wmicOutput: string;
+            // ── Step 1: Get LS port from CDP performance entries ──
+            // Each workspace page talks to its own LS port, so this is page-specific.
+            const perfScript = `(() => {
+                const entries = performance.getEntries();
+                for (const e of entries) {
+                    if (e.name && e.name.includes('language_server_pb')) {
+                        return e.name;
+                    }
+                }
+                return null;
+            })()`;
+
+            const perfResult = await this.call('Runtime.evaluate', {
+                expression: perfScript,
+                returnByValue: true,
+                timeout: 3000,
+            });
+
+            const lsUrl = perfResult?.result?.value;
+            if (!lsUrl) {
+                logger.warn('[CdpService:discover] No LS requests found in performance entries');
+                return;
+            }
+
+            const portMatch = lsUrl.match(/127\.0\.0\.1:(\d+)/);
+            if (!portMatch) {
+                logger.warn(`[CdpService:discover] Could not extract port from LS URL: ${lsUrl}`);
+                return;
+            }
+
+            const lsPort = parseInt(portMatch[1], 10);
+            const useTls = lsUrl.startsWith('https');
+            logger.info(`[CdpService:discover] Found LS port from performance entries: port=${lsPort}, tls=${useTls}`);
+
+            // ── Step 2: Find PID listening on this port via netstat ──
+            let netstatOutput: string;
             try {
-                wmicOutput = execSync(
-                    'wmic process where "name like \'%language_server%\'" get ProcessId,CommandLine /format:csv',
+                const { stdout } = await execAsync(
+                    `netstat -ano | findstr "LISTENING" | findstr ":${lsPort} "`,
                     { encoding: 'utf8', timeout: 5000 }
                 );
+                netstatOutput = stdout;
             } catch (err: any) {
-                logger.warn(`[CdpService:discover] wmic failed: ${err.message}`);
+                logger.warn(`[CdpService:discover] netstat failed for port ${lsPort}: ${err.message}`);
                 return;
             }
 
-            // Parse wmic CSV output into structured records
-            const lsProcesses: Array<{ pid: number; csrfToken: string; workspaceId: string }> = [];
-            for (const line of wmicOutput.split('\n')) {
-                const trimmed = line.trim();
-                if (!trimmed || !trimmed.includes('--csrf_token')) continue;
-
-                const csrfMatch = trimmed.match(/--csrf_token\s+(\S+)/);
-                const wsIdMatch = trimmed.match(/--workspace_id\s+(\S+)/);
-                // PID is the last CSV field
-                const pidMatch = trimmed.match(/(\d+)\s*$/);
-
-                if (csrfMatch && pidMatch) {
-                    lsProcesses.push({
-                        pid: parseInt(pidMatch[1], 10),
-                        csrfToken: csrfMatch[1],
-                        workspaceId: wsIdMatch?.[1] || '',
-                    });
-                }
-            }
-
-            if (lsProcesses.length === 0) {
-                logger.warn('[CdpService:discover] No language_server processes found');
-                return;
-            }
-            logger.info(`[CdpService:discover] Found ${lsProcesses.length} LS process(es): ${lsProcesses.map(p => `pid=${p.pid} ws=${p.workspaceId}`).join(', ')}`);
-
-            // ── Step 2: Match by workspace path ──
-            // The CDP window title contains the workspace folder path.
-            // The LS --workspace_id encodes the path as: file_c_3A_Users_Daniel_Projects_foo
-            let targetProcess = lsProcesses[0]; // Default to first if only one
-
-            if (lsProcesses.length > 1 && this.targetUrl) {
-                // Try to match using the title which contains the workspace path
-                // Title format: "projectName-C:\Users\Daniel\Projects\projectName"
-                for (const proc of lsProcesses) {
-                    if (!proc.workspaceId) continue;
-                    // Decode workspace_id: file_c_3A_Users_Daniel_Projects_foo
-                    // → c:/Users/Daniel/Projects/foo  (lowered and normalized)
-                    const decoded = proc.workspaceId
-                        .replace(/^file_/, '')
-                        .replace(/_3A_/gi, ':/')
-                        .replace(/_/g, '/');
-                    
-                    if (this.targetUrl.toLowerCase().includes(decoded.toLowerCase())) {
-                        targetProcess = proc;
+            // Extract PID from netstat output
+            let lsPid: number | null = null;
+            for (const line of netstatOutput.split('\n')) {
+                if (line.includes(`:${lsPort} `) || line.includes(`:${lsPort}\t`)) {
+                    const pidMatch2 = line.trim().match(/(\d+)\s*$/);
+                    if (pidMatch2) {
+                        lsPid = parseInt(pidMatch2[1], 10);
                         break;
                     }
                 }
             }
 
-            logger.info(`[CdpService:discover] Using LS process: pid=${targetProcess.pid} csrf=${targetProcess.csrfToken.slice(0, 8)}... ws=${targetProcess.workspaceId}`);
+            if (!lsPid) {
+                logger.warn(`[CdpService:discover] Could not find PID for port ${lsPort}`);
+                return;
+            }
+            logger.info(`[CdpService:discover] Port ${lsPort} → PID ${lsPid}`);
 
-            // ── Step 3: Find HTTPS port via netstat ──
-            let netstatOutput: string;
+            // ── Step 3: Get CSRF token from the process command line ──
+            let wmicOutput: string;
             try {
-                netstatOutput = execSync(
-                    `netstat -ano | findstr "LISTENING" | findstr "${targetProcess.pid}"`,
+                const { stdout } = await execAsync(
+                    `wmic process where "ProcessId=${lsPid}" get CommandLine /format:csv`,
                     { encoding: 'utf8', timeout: 5000 }
                 );
+                wmicOutput = stdout;
             } catch (err: any) {
-                logger.warn(`[CdpService:discover] netstat failed: ${err.message}`);
+                logger.warn(`[CdpService:discover] wmic failed for PID ${lsPid}: ${err.message}`);
                 return;
             }
 
-            // Parse listening ports for this PID
-            const ports: number[] = [];
-            for (const line of netstatOutput.split('\n')) {
-                const m = line.match(/127\.0\.0\.1:(\d+)/);
-                if (m) ports.push(parseInt(m[1], 10));
-            }
-
-            if (ports.length === 0) {
-                logger.warn(`[CdpService:discover] No listening ports found for PID ${targetProcess.pid}`);
+            const csrfMatch = wmicOutput.match(/--csrf_token\s+(\S+)/);
+            if (!csrfMatch) {
+                logger.warn(`[CdpService:discover] No --csrf_token found in command line of PID ${lsPid}`);
                 return;
             }
-            logger.info(`[CdpService:discover] PID ${targetProcess.pid} listening on ports: ${ports.join(', ')}`);
 
-            // ── Step 4: Validate HTTPS port by making a test RPC call via CDP ──
-            // The LS typically has 3 ports: httpsPort, httpPort, lspPort.
-            // We need the HTTPS one. Try each port with a lightweight RPC call.
-            for (const port of ports) {
-                try {
-                    const testScript = `fetch("https://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetUserStatus",{method:"POST",headers:{"Content-Type":"application/proto","Connect-Protocol-Version":"1","x-codeium-csrf-token":"${targetProcess.csrfToken}"},body:new Uint8Array([])}).then(r=>r.status).catch(()=>0)`;
+            const csrfToken = csrfMatch[1];
+            logger.info(`[CdpService:discover] PID ${lsPid} csrf=${csrfToken.slice(0, 8)}...`);
 
-                    const result = await this.call('Runtime.evaluate', {
-                        expression: testScript,
-                        returnByValue: true,
-                        awaitPromise: true,
-                        timeout: 5000,
-                    });
+            // ── Step 4: Validate with a test RPC call via CDP ──
+            const proto = useTls ? 'https' : 'http';
+            const testScript = `fetch("${proto}://127.0.0.1:${lsPort}/exa.language_server_pb.LanguageServerService/GetUserStatus",{method:"POST",headers:{"Content-Type":"application/proto","Connect-Protocol-Version":"1","x-codeium-csrf-token":"${csrfToken}"},body:new Uint8Array([])}).then(r=>r.status).catch(()=>0)`;
 
-                    const status = result?.result?.value;
-                    if (status === 200) {
-                        this.sniffedLSCredentials = {
-                            port,
-                            csrfToken: targetProcess.csrfToken,
-                            useTls: true,
-                            workspaceId: targetProcess.workspaceId,
-                        };
-                        logger.info(`[CdpService:discover] ✅ Validated HTTPS port ${port} (status=200)`);
-                        return;
-                    } else {
-                        logger.debug(`[CdpService:discover] Port ${port} returned status=${status}, trying next...`);
-                    }
-                } catch (err: any) {
-                    logger.debug(`[CdpService:discover] Port ${port} probe failed: ${err.message}`);
-                }
+            const result = await this.call('Runtime.evaluate', {
+                expression: testScript,
+                returnByValue: true,
+                awaitPromise: true,
+                timeout: 5000,
+            });
+
+            const status = result?.result?.value;
+            if (status === 200) {
+                this.sniffedLSCredentials = {
+                    port: lsPort,
+                    csrfToken,
+                    useTls,
+                };
+                logger.info(`[CdpService:discover] ✅ Validated ${proto.toUpperCase()} port ${lsPort} (status=200)`);
+            } else {
+                logger.warn(`[CdpService:discover] ❌ Port ${lsPort} validation returned status=${status}`);
             }
-
-            logger.warn(`[CdpService:discover] ❌ No HTTPS port validated for PID ${targetProcess.pid}`);
         } catch (err: any) {
-            logger.error(`[CdpService:discover] Process discovery failed: ${err.message}`);
+            logger.error(`[CdpService:discover] Port-first discovery failed: ${err.message}`);
         }
     }
 
@@ -1340,10 +1324,10 @@ export class CdpService extends EventEmitter {
 
         if (cascadeId) {
             // Send to existing cascade
-            logger.warn(`[CdpService] injectViaLS: sending to existing cascade=${cascadeId.slice(0, 16)}... model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
+            logger.info(`[CdpService] injectViaLS: sending to existing cascade=${cascadeId.slice(0, 16)}... model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
             const result = await client.sendMessage(cascadeId, text, modelId || undefined);
             if (result.ok) {
-                logger.warn(`[CdpService] sendMessage OK, response: ${JSON.stringify(result.data)?.slice(0, 200)}`);
+                logger.debug(`[CdpService] sendMessage OK, response: ${JSON.stringify(result.data)?.slice(0, 200)}`);
                 return { ok: true, method: 'ls-api', cascadeId };
             }
             // If existing cascade failed, fall through to create a new one
@@ -1356,11 +1340,11 @@ export class CdpService extends EventEmitter {
         }
 
         // Create a new Antigravity cascade and send the message
-        logger.warn(`[CdpService] injectViaLS: creating new cascade with model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
+        logger.info(`[CdpService] injectViaLS: creating new cascade with model=${modelId || 'default'} text="${text.slice(0, 50)}"`);
         const newCascadeId = await client.createCascade(text, modelId || undefined);
         if (newCascadeId) {
             this.rememberCreatedCascade(newCascadeId);
-            logger.warn(`[CdpService] New cascade created: ${newCascadeId.slice(0, 16)}...`);
+            logger.info(`[CdpService] New cascade created: ${newCascadeId.slice(0, 16)}...`);
             return { ok: true, method: 'ls-api', cascadeId: newCascadeId };
         }
 
@@ -1962,12 +1946,12 @@ export class CdpService extends EventEmitter {
                 uriPath = uriPath.substring(1);
             }
 
-            let localPath = uriPath.replaceAll('\\', '/').toLowerCase();
+            let localPath = decodeURIComponent(uriPath).replaceAll('\\', '/').toLowerCase();
             // Handle trailing slashes uniformly
             if (localPath.endsWith('/')) localPath = localPath.substring(0, localPath.length - 1);
             const targetNoSlash = targetPath.endsWith('/') ? targetPath.substring(0, targetPath.length - 1) : targetPath;
 
-            if (localPath === targetNoSlash || localPath.endsWith(targetNoSlash) || targetNoSlash.endsWith(localPath)) {
+            if (localPath === targetNoSlash) {
                 return true;
             }
         }

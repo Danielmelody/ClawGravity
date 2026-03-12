@@ -2001,6 +2001,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 workspaceService,
                 chatSessionService,
                 sessionStateStore: telegramSessionStateStore,
+                activeMonitors,
+                clawInterceptor,
             });
             const modeSelectAction = createModeSelectAction({ bridge, modeService });
             const telegramSelectHandler = createPlatformSelectHandler({

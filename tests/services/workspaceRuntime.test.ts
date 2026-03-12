@@ -244,7 +244,7 @@ describe('WorkspaceRuntime', () => {
 
         await expect(runtime.startNewChat(chatSessionService)).resolves.toEqual({ ok: true });
         expect(mockGrpcClient.createCascade).toHaveBeenCalledTimes(1);
-        expect(mockGrpcClient.focusCascade).toHaveBeenCalledWith('cascade-new');
+        expect(mockGrpcClient.focusCascade).not.toHaveBeenCalled();
         expect(chatSessionService.startNewChat).not.toHaveBeenCalled();
         expect(mockCdp.rememberCreatedCascade).toHaveBeenCalledWith('cascade-new');
         expect(runtime.getSelectedCascadeId()).toBe('cascade-new');

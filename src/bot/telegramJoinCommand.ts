@@ -4,7 +4,10 @@ import type { TelegramRecentMessageRepository } from '../database/telegramRecent
 import type { WorkspaceService } from '../services/workspaceService';
 import type { ChatSessionService, ConversationHistoryEntry } from '../services/chatSessionService';
 import type { CdpBridge } from '../services/cdpBridgeManager';
+import type { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
+import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import { ensureWorkspaceRuntime } from '../services/cdpBridgeManager';
+import { startMonitorForActiveSession } from './telegramMessageHandler';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 import { logger } from '../utils/logger';
 import { formatRelativeTime } from '../utils/relativeTime';
@@ -84,6 +87,10 @@ export interface TelegramJoinCommandDeps {
     readonly workspaceService?: WorkspaceService;
     readonly chatSessionService: ChatSessionService;
     readonly sessionStateStore: TelegramSessionStateStore;
+    /** Shared active monitor map — allows /stop to halt streaming. */
+    readonly activeMonitors?: Map<string, GrpcResponseMonitor>;
+    /** Interceptor that scans AI responses for @claw commands. */
+    readonly clawInterceptor?: ClawCommandInterceptor;
 }
 
 /** Shared workspace→runtime resolution used by both join command and join select. */
@@ -173,6 +180,32 @@ export async function handleTelegramJoinSelect(
 
     if (cascadeId) {
         await runtime.setActiveCascade(cascadeId);
+    }
+
+    // Check if the switched-to cascade is still actively streaming.
+    // If so, start a passive monitor to capture and relay its remaining output.
+    if (cascadeId) {
+        const monitoringTarget = await runtime.getMonitoringTarget(cascadeId);
+        if (monitoringTarget) {
+            try {
+                const traj = await monitoringTarget.grpcClient.rawRPC('GetCascadeTrajectory', { cascadeId });
+                const runStatus = traj?.trajectory?.cascadeRunStatus
+                    || traj?.cascadeRunStatus
+                    || traj?.trajectory?.status
+                    || traj?.status
+                    || null;
+                if (runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+                    logger.info(`[TelegramJoin] Cascade ${cascadeId.slice(0, 12)}... is still streaming — starting passive monitor`);
+                    await startMonitorForActiveSession(
+                        interaction.channel, runtime, cascadeId,
+                        deps.activeMonitors, deps.clawInterceptor,
+                        deps.sessionStateStore,
+                    );
+                }
+            } catch (err: any) {
+                logger.debug(`[TelegramJoin] runStatus check failed: ${err?.message || err}`);
+            }
+        }
     }
 
     await interaction.update({

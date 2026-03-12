@@ -178,6 +178,8 @@ describe('handleTelegramJoinSelect', () => {
                     listAllSessions: jest.fn().mockImplementation(async (chatSessionService: any) => chatSessionService.listAllSessions(cdp)),
                     getConversationHistory: jest.fn().mockImplementation(async (chatSessionService: any, options: any) => chatSessionService.getConversationHistory(cdp, options)),
                     setActiveCascade: jest.fn().mockImplementation(async (cascadeId: string) => cdp.setCachedCascadeId?.(cascadeId)),
+                    getMonitoringTarget: jest.fn().mockResolvedValue(null),
+                    getProjectName: jest.fn().mockReturnValue(bridge.pool.extractProjectName?.(workspacePath) ?? workspacePath),
                 },
                 cdp,
                 projectName: bridge.pool.extractProjectName?.(workspacePath) ?? workspacePath,

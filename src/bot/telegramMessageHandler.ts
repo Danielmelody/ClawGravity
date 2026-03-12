@@ -1160,6 +1160,36 @@ export async function handlePassiveUserMessage(
 }
 
 /**
+ * Start a passive monitor for a cascade that is already streaming.
+ * Called after session switching when the target cascade's runStatus
+ * is still RUNNING — captures and relays the remaining output.
+ *
+ * Unlike `handlePassiveUserMessage`, this does NOT require a detected
+ * user message event; it simply begins observing the cascade.
+ */
+export async function startMonitorForActiveSession(
+    channel: PlatformChannel,
+    runtime: WorkspaceRuntime,
+    cascadeId: string,
+    activeMonitors?: Map<string, GrpcResponseMonitor>,
+    clawInterceptor?: ClawCommandInterceptor,
+    sessionStateStore?: TelegramSessionStateStore,
+): Promise<void> {
+    const projectName = runtime.getProjectName();
+    const syntheticInfo: UserMessageInfo = {
+        text: '',       // No specific user message — just observing ongoing output
+        cascadeId,
+    };
+    logger.info(
+        `[TelegramSessionSwitch:${projectName}] Starting passive monitor for streaming cascade=${cascadeId.slice(0, 12)}...`,
+    );
+    startPassiveResponseMonitor(
+        channel, runtime, projectName,
+        syntheticInfo, activeMonitors, clawInterceptor, sessionStateStore,
+    );
+}
+
+/**
  * Start a passive backend response monitor that sends the AI response to Telegram
  * when generation completes. If a monitor is already running for this
  * workspace, it is stopped and replaced.
