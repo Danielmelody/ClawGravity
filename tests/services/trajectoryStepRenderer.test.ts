@@ -93,6 +93,58 @@ describe('markdownToTelegramHtml', () => {
     it('handles empty string', () => {
         expect(markdownToTelegramHtml('')).toBe('');
     });
+
+    it('aligns CJK table columns correctly', () => {
+        const md = [
+            '| 文件 | 说明 |',
+            '|------|------|',
+            '| `check_quota.ts` | Quota 检查脚本 |',
+            '| `a.ts` | 简短 |',
+        ].join('\n');
+        const result = markdownToTelegramHtml(md);
+        expect(result).toContain('<pre>');
+        expect(result).toContain('</pre>');
+        // CJK padding should produce consistent column widths in the <pre> block
+        // The key check: it doesn't produce misaligned output
+        expect(result).toContain('│');
+    });
+
+    it('converts <details>/<summary> to expandable blockquote', () => {
+        const md = [
+            '<details>',
+            '<summary>Click to expand</summary>',
+            '',
+            '- item 1',
+            '- item 2',
+            '',
+            '</details>',
+        ].join('\n');
+        const result = markdownToTelegramHtml(md);
+        expect(result).toContain('<b>Click to expand</b>');
+        expect(result).toContain('<blockquote expandable>');
+        expect(result).toContain('</blockquote>');
+    });
+
+    it('converts GitHub-style alerts with emoji', () => {
+        const md = [
+            '> [!WARNING]',
+            '> Something dangerous here.',
+            '> Be careful.',
+        ].join('\n');
+        const result = markdownToTelegramHtml(md);
+        expect(result).toContain('⚠️');
+        expect(result).toContain('<b>WARNING</b>');
+        expect(result).toContain('Something dangerous here.');
+        expect(result).toContain('<blockquote>');
+    });
+
+    it('converts GitHub-style NOTE alert', () => {
+        const md = '> [!NOTE]\n> Just a note.';
+        const result = markdownToTelegramHtml(md);
+        expect(result).toContain('ℹ️');
+        expect(result).toContain('<b>NOTE</b>');
+        expect(result).toContain('Just a note.');
+    });
 });
 
 describe('renderStepsToTelegramHtml', () => {
@@ -160,9 +212,10 @@ describe('renderStepsToTelegramHtml', () => {
             },
         }];
         const result = renderStepsToTelegramHtml(steps, null, { showToolArgs: false, showToolResults: false });
-        expect(result).toContain('✅');
-        expect(result).toContain('❌');
-        expect(result).toContain('⏳');
+        // Status icons use <tg-emoji> wrappers for Telegram animated emoji
+        expect(result).toContain('✔️');    // completed → success checkmark
+        expect(result).toContain('✖️');    // error → X mark
+        expect(result).toContain('⏳');    // pending → hourglass
         // Compact labels instead of raw tool names
         expect(result).toContain('<b>Analyzed</b>');
         expect(result).toContain('<b>Listed</b>');

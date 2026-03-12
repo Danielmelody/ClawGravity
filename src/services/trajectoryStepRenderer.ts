@@ -243,10 +243,14 @@ function renderToolCalls(toolCalls: any[], showArgs: boolean, showResults: boole
 
     for (const tc of toolCalls) {
         const status = resolveToolStatus(tc);
-        const statusIcon = status === 'pending' ? '⏳' : status === 'error' ? '❌' : '✅';
+        const statusIcon = status === 'pending'
+            ? '<tg-emoji emoji-id="5465665476971471368">⏳</tg-emoji>'
+            : status === 'error'
+                ? '<tg-emoji emoji-id="5465465565741634628">✖️</tg-emoji>'
+                : '<tg-emoji emoji-id="5465665476971471369">✔️</tg-emoji>';
         const summary = buildCompactToolSummary(tc);
 
-        let line = `${statusIcon}${summary.icon}`;
+        let line = `${statusIcon} ${summary.icon}`;
         if (showArgs && summary.subject) {
             line += ` <b>${escapeHtml(summary.label)}</b> <code>${escapeHtml(summary.subject)}</code>`;
         } else {
@@ -680,6 +684,68 @@ function extractToolResult(tc: any): string | null {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// CJK-aware display width (monospace terminal column width)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the display width of a string in a monospace font.
+ * CJK characters, fullwidth forms, and some symbols occupy 2 columns;
+ * everything else occupies 1 column.
+ */
+function displayWidth(str: string): number {
+    let width = 0;
+    for (const ch of str) {
+        const cp = ch.codePointAt(0)!;
+        width += isWideChar(cp) ? 2 : 1;
+    }
+    return width;
+}
+
+/** Pad a string to a target *display* width with spaces. */
+function padEndDisplay(str: string, targetWidth: number): string {
+    const diff = targetWidth - displayWidth(str);
+    return diff > 0 ? str + ' '.repeat(diff) : str;
+}
+
+/**
+ * Check whether a Unicode code point is a "wide" character (occupies 2
+ * columns in a monospace / terminal context).
+ *
+ * Covers: CJK Unified Ideographs, CJK Extension A/B, CJK Compatibility
+ * Ideographs, Hangul Syllables, Fullwidth Forms, some CJK symbols, and
+ * common emoji ranges.
+ */
+function isWideChar(cp: number): boolean {
+    return (
+        // CJK Radicals Supplement .. Ideographic Description Characters
+        (cp >= 0x2E80 && cp <= 0x2FFF) ||
+        // CJK Symbols and Punctuation, Hiragana, Katakana, Bopomofo, etc.
+        (cp >= 0x3000 && cp <= 0x303F) ||
+        (cp >= 0x3040 && cp <= 0x309F) ||
+        (cp >= 0x30A0 && cp <= 0x30FF) ||
+        (cp >= 0x3100 && cp <= 0x312F) ||
+        (cp >= 0x3130 && cp <= 0x318F) ||
+        (cp >= 0x3190 && cp <= 0x31FF) ||
+        (cp >= 0x3200 && cp <= 0x33FF) ||
+        // CJK Unified Ideographs Extension A
+        (cp >= 0x3400 && cp <= 0x4DBF) ||
+        // CJK Unified Ideographs
+        (cp >= 0x4E00 && cp <= 0x9FFF) ||
+        // Hangul Syllables
+        (cp >= 0xAC00 && cp <= 0xD7AF) ||
+        // CJK Compatibility Ideographs
+        (cp >= 0xF900 && cp <= 0xFAFF) ||
+        // Fullwidth Forms
+        (cp >= 0xFF01 && cp <= 0xFF60) ||
+        (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+        // CJK Unified Ideographs Extension B+
+        (cp >= 0x20000 && cp <= 0x2FA1F) ||
+        // Common emoji ranges (most render as wide in monospace)
+        (cp >= 0x1F300 && cp <= 0x1F9FF)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Markdown table → <pre> conversion (Telegram has no table support)
 // ---------------------------------------------------------------------------
 
@@ -706,6 +772,7 @@ function parseTableRow(line: string): string[] {
 
 /**
  * Convert markdown tables in the input to `<pre>` blocks with aligned columns.
+ * Uses CJK-aware display width for proper alignment.
  * Non-table content passes through unchanged.
  */
 function convertMarkdownTables(text: string): string {
@@ -731,22 +798,22 @@ function convertMarkdownTables(text: string): string {
             // Parse into cells
             const parsed = tableLines.map(parseTableRow);
 
-            // Calculate max column widths
+            // Calculate max column *display* widths (CJK-aware)
             const colCount = Math.max(...parsed.map(r => r.length));
             const colWidths: number[] = new Array(colCount).fill(0);
             for (const row of parsed) {
                 for (let c = 0; c < colCount; c++) {
-                    colWidths[c] = Math.max(colWidths[c], (row[c] || '').length);
+                    colWidths[c] = Math.max(colWidths[c], displayWidth(row[c] || ''));
                 }
             }
 
-            // Render aligned table
+            // Render aligned table using display-width padding
             const renderedRows: string[] = [];
             for (let ri = 0; ri < parsed.length; ri++) {
                 const row = parsed[ri];
                 const cells = [];
                 for (let c = 0; c < colCount; c++) {
-                    cells.push((row[c] || '').padEnd(colWidths[c]));
+                    cells.push(padEndDisplay(row[c] || '', colWidths[c]));
                 }
                 renderedRows.push(cells.join(' │ '));
 
@@ -767,6 +834,73 @@ function convertMarkdownTables(text: string): string {
     return output.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// <details>/<summary> → <blockquote expandable> conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert HTML `<details>/<summary>` blocks into Telegram `<blockquote expandable>`.
+ * The summary text becomes a bold header line above the expandable blockquote.
+ */
+function convertDetailsBlocks(text: string): string {
+    // Match <details> ... <summary>Title</summary> ... content ... </details>
+    return text.replace(
+        /<details>\s*(?:\n\s*)?<summary>([\s\S]*?)<\/summary>\s*(?:\n)?((?:[\s\S]*?))<\/details>/gi,
+        (_m, summary: string, content: string) => {
+            const title = summary.trim();
+            const body = content.trim();
+            if (!body) return `<b>${title}</b>`;
+            return `<b>${title}</b>\n<blockquote expandable>${body}</blockquote>`;
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// GitHub-style alerts (> [!NOTE], > [!WARNING], etc.)
+// ---------------------------------------------------------------------------
+
+/** Alert type → emoji mapping. */
+const ALERT_ICONS: Record<string, string> = {
+    NOTE: 'ℹ️',
+    TIP: '💡',
+    IMPORTANT: '❗',
+    WARNING: '⚠️',
+    CAUTION: '🚨',
+};
+
+/**
+ * Convert GitHub-style alert blockquotes into Telegram blockquotes with
+ * emoji-prefixed headers.
+ *
+ * Input:
+ *   > [!NOTE]
+ *   > Some note content here.
+ *
+ * Output (Telegram HTML after further processing):
+ *   <blockquote>ℹ️ <b>NOTE</b>
+ *   Some note content here.</blockquote>
+ */
+function convertGitHubAlerts(text: string): string {
+    // Pattern: lines starting with > [!TYPE] followed by subsequent > lines
+    return text.replace(
+        /^> \[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n((?:>[ \t]?.*(?:\n|$))*)/gim,
+        (_m, type: string, body: string) => {
+            const icon = ALERT_ICONS[type.toUpperCase()] || 'ℹ️';
+            // Strip leading '> ' from each body line
+            const bodyText = body
+                .split('\n')
+                .map(l => l.replace(/^>\s?/, ''))
+                .join('\n')
+                .trim();
+            const header = `> ${icon} **${type}**`;
+            if (!bodyText) return header;
+            // Re-wrap in blockquote syntax so the normal blockquote processing picks it up
+            const rewrapped = bodyText.split('\n').map(l => `> ${l}`).join('\n');
+            return `${header}\n${rewrapped}`;
+        },
+    );
+}
+
 /**
  * Lightweight Markdown to Telegram HTML converter.
  *
@@ -783,6 +917,14 @@ export function markdownToTelegramHtml(md: string): string {
 
     // Normalize line endings
     result = result.replace(/\r\n/g, '\n');
+
+    // HTML <details>/<summary> → Telegram <blockquote expandable>
+    // Must run BEFORE HTML escaping since it processes raw HTML tags
+    result = convertDetailsBlocks(result);
+
+    // GitHub-style alerts (> [!NOTE], > [!WARNING], etc.)
+    // Must run BEFORE blockquote processing to inject emoji headers
+    result = convertGitHubAlerts(result);
 
     // Fenced code blocks (``` ... ```) — must be processed BEFORE inline escaping
     result = result.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
