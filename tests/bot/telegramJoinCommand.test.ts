@@ -22,6 +22,10 @@ jest.mock('../../src/services/cdpBridgeManager', () => ({
     ensureWorkspaceRuntime: jest.fn(),
 }));
 
+jest.mock('../../src/bot/telegramMessageHandler', () => ({
+    startMonitorForActiveSession: jest.fn().mockResolvedValue(undefined),
+}));
+
 function createMessage(chatId = 'chat-1'): PlatformMessage {
     return {
         id: 'msg-1',
@@ -73,7 +77,7 @@ function createInteraction(value: string, chatId = 'chat-1'): PlatformSelectInte
         reply: jest.fn().mockResolvedValue(undefined),
         update: jest.fn().mockResolvedValue(undefined),
         editReply: jest.fn().mockResolvedValue(undefined),
-        followUp: jest.fn(),
+        followUp: jest.fn().mockResolvedValue(undefined),
     } as any;
 }
 
@@ -232,5 +236,68 @@ describe('handleTelegramJoinSelect', () => {
         expect(interaction.followUp).toHaveBeenCalledWith(expect.objectContaining({
             text: expect.stringContaining('<b>You</b>'),
         }));
+    });
+
+    it('starts a passive monitor when the switched-to cascade is still streaming', async () => {
+        // Mock startMonitorForActiveSession at the module level
+        const tmh = jest.requireMock('../../src/bot/telegramMessageHandler');
+        tmh.startMonitorForActiveSession = jest.fn().mockResolvedValue(undefined);
+
+        const interaction = createInteraction('Streaming Session');
+        const cdp = { setCachedCascadeId: jest.fn() };
+        const store = new TelegramSessionStateStore();
+
+        const mockGrpcClient = {
+            rawRPC: jest.fn().mockResolvedValue({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                    steps: [],
+                },
+            }),
+        };
+
+        // Override ensureWorkspaceRuntime for this test to return a runtime
+        // whose getMonitoringTarget returns a valid grpc client
+        const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
+        ensureWorkspaceRuntime.mockImplementation(async () => ({
+            runtime: {
+                listAllSessions: jest.fn().mockImplementation(async (svc: any) => svc.listAllSessions(cdp)),
+                getConversationHistory: jest.fn().mockResolvedValue({ messages: [], truncated: false }),
+                setActiveCascade: jest.fn().mockImplementation(async (id: string) => cdp.setCachedCascadeId?.(id)),
+                getMonitoringTarget: jest.fn().mockResolvedValue({ grpcClient: mockGrpcClient, cascadeId: 'cascade-stream' }),
+                getProjectName: jest.fn().mockReturnValue('StreamProject'),
+            },
+            cdp,
+            projectName: 'StreamProject',
+        }));
+
+        const activeMonitors = new Map();
+        const deps = {
+            bridge: { pool: { getOrConnect: jest.fn().mockResolvedValue(cdp), extractProjectName: jest.fn().mockReturnValue('StreamProject') } },
+            telegramBindingRepo: { findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-1', workspacePath: 'StreamProject' }) },
+            workspaceService: { getWorkspacePath: jest.fn().mockReturnValue('/workspace/StreamProject') },
+            chatSessionService: {
+                listAllSessions: jest.fn().mockResolvedValue([
+                    { title: 'Streaming Session', isActive: false, cascadeId: 'cascade-stream' },
+                ]),
+                getConversationHistory: jest.fn().mockResolvedValue({ messages: [], truncated: false }),
+            },
+            sessionStateStore: store,
+            activeMonitors,
+        } as any;
+
+        await handleTelegramJoinSelect(deps, interaction);
+
+        // Verify the cascade status was checked
+        expect(mockGrpcClient.rawRPC).toHaveBeenCalledWith('GetCascadeTrajectory', { cascadeId: 'cascade-stream' });
+        // Verify passive monitor was started for the streaming cascade
+        expect(tmh.startMonitorForActiveSession).toHaveBeenCalledWith(
+            interaction.channel,
+            expect.objectContaining({ getProjectName: expect.any(Function) }),
+            'cascade-stream',
+            activeMonitors,
+            undefined,
+            store,
+        );
     });
 });

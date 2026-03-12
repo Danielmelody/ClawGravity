@@ -9,7 +9,7 @@
  */
 
 import { logger } from '../utils/logger';
-import { GrpcCascadeClient } from './grpcCascadeClient';
+import { GrpcCascadeClient, extractCascadeRunStatus } from './grpcCascadeClient';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -269,15 +269,7 @@ export class GrpcResponseMonitor {
             const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
             const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
 
-            const runStatus = typeof trajectory?.cascadeRunStatus === 'string'
-                ? trajectory.cascadeRunStatus
-                : typeof trajectoryResp?.cascadeRunStatus === 'string'
-                    ? trajectoryResp.cascadeRunStatus
-                    : typeof trajectory?.status === 'string'
-                        ? trajectory.status
-                        : typeof trajectoryResp?.status === 'string'
-                            ? trajectoryResp.status
-                            : null;
+            const runStatus = extractCascadeRunStatus(trajectoryResp);
 
             const hasExplicitRunStatus = typeof runStatus === 'string' && runStatus.length > 0;
             let latestRole: 'user' | 'assistant' | null = null;

@@ -7,6 +7,7 @@ import type { CdpBridge } from '../services/cdpBridgeManager';
 import type { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import { ensureWorkspaceRuntime } from '../services/cdpBridgeManager';
+import { extractCascadeRunStatus } from '../services/grpcCascadeClient';
 import { startMonitorForActiveSession } from './telegramMessageHandler';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 import { logger } from '../utils/logger';
@@ -189,11 +190,7 @@ export async function handleTelegramJoinSelect(
         if (monitoringTarget) {
             try {
                 const traj = await monitoringTarget.grpcClient.rawRPC('GetCascadeTrajectory', { cascadeId });
-                const runStatus = traj?.trajectory?.cascadeRunStatus
-                    || traj?.cascadeRunStatus
-                    || traj?.trajectory?.status
-                    || traj?.status
-                    || null;
+                const runStatus = extractCascadeRunStatus(traj);
                 if (runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
                     logger.info(`[TelegramJoin] Cascade ${cascadeId.slice(0, 12)}... is still streaming — starting passive monitor`);
                     await startMonitorForActiveSession(

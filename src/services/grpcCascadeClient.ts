@@ -327,3 +327,26 @@ export function decodeWorkspaceId(encodedId: string): string {
     decoded = decoded.replace(/_/g, '/');
     return decoded;
 }
+
+/**
+ * Extract the cascade run status from a GetCascadeTrajectory response.
+ *
+ * The gRPC response nests the status in different places depending on the
+ * server version. This helper normalizes the lookup so callers don't need
+ * to duplicate the fallback chain.
+ *
+ * @param trajectoryResp Raw response from GetCascadeTrajectory RPC
+ * @returns The run status string (e.g. 'CASCADE_RUN_STATUS_RUNNING') or null
+ */
+export function extractCascadeRunStatus(trajectoryResp: any): string | null {
+    const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
+    return typeof trajectory?.cascadeRunStatus === 'string'
+        ? trajectory.cascadeRunStatus
+        : typeof trajectoryResp?.cascadeRunStatus === 'string'
+            ? trajectoryResp.cascadeRunStatus
+            : typeof trajectory?.status === 'string'
+                ? trajectory.status
+                : typeof trajectoryResp?.status === 'string'
+                    ? trajectoryResp.status
+                    : null;
+}
