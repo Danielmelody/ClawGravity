@@ -1,78 +1,117 @@
-# ClawGravity Roadmap
+# 🦞 ClawGravity Roadmap
 
-> An OpenClaw implementation built on Antigravity's Agent capabilities.
-> Tracking upcoming work and known issues.
-> Items link to GitHub Issues — contributions welcome!
+> An OpenClaw-compatible Agent Gateway built on Google Antigravity.
 
 ---
 
-## Known Issues
+## v0.1.0 — Foundation ✅ *Current*
 
-- [x] **Error Retry UI** — Display a Retry button in Discord on model errors ([#1](https://github.com/Danielmelody/ClawGravity/issues/1))
-- [x] **Planning Mode Flow** — Surface Open / Proceed decision points in Discord ([#2](https://github.com/Danielmelody/ClawGravity/issues/2))
-- [x] **Output Streaming** — Re-enable real-time streaming of final output ([#3](https://github.com/Danielmelody/ClawGravity/issues/3))
+The initial release. ClawGravity bridges Telegram/Discord to Antigravity via CDP + gRPC, providing remote access to agentic coding capabilities.
 
-## CLI & Management
+### Core
+- [x] CDP → gRPC trajectory-based architecture (zero DOM dependency)
+- [x] `StartCascade` / `SendUserCascadeMessage` / `GetCascadeTrajectory` full integration
+- [x] Telegram + Discord dual-platform support
+- [x] Rich trajectory rendering (tool calls, thinking blocks, status icons)
+- [x] Artifact forwarding to Telegram as expandable blockquotes
 
-- [x] **`/status` command** — Show bot connection state, active projects, and current mode
-- [x] **Invite Link Generator** — Auto-generate a bot invite URL during `claw-gravity setup`
-- [x] **`doctor` enhancements** — Colored output and expanded checks ([#4](https://github.com/Danielmelody/ClawGravity/issues/4))
+### Session Management
+- [x] Multi-workspace binding (`/project`)
+- [x] Chat session create / switch / restore
+- [x] Passive PC→Telegram mirroring (locally-typed prompts forwarded)
+- [x] Mode / Model sync between IM and Antigravity UI
 
-## UX & Notifications
+### Agent Autonomy
+- [x] `@claw` command protocol (schedule, agent delegation)
+- [x] `ScheduleService` + cron persistence
+- [x] `AgentRouter` cross-workspace task delegation
+- [x] Dedicated `__claw__` agent workspace with `GEMINI.md` / `HEARTBEAT.md` / `CLAW.md`
 
-- [x] **Startup Dashboard** — Rich embed on bot launch with system info ([#5](https://github.com/Danielmelody/ClawGravity/issues/5))
-- [ ] **Heartbeat** — Optional periodic alive-check notification ([#6](https://github.com/Danielmelody/ClawGravity/issues/6))
-- [x] **Scheduled Tasks** — Wire `ScheduleService` backend to `/schedule` command ([#7](https://github.com/Danielmelody/ClawGravity/issues/7))
-- [x] **Usage Stats & Rate Limiting** — `/stats` command and per-user rate limits ([#8](https://github.com/Danielmelody/ClawGravity/issues/8))
-- [ ] **External Webhooks** — Notify Slack, LINE Notify, etc. on task completion ([#9](https://github.com/Danielmelody/ClawGravity/issues/9))
-
-## Advanced Features
-
-- [ ] **Template Import / Export** — Portable prompt templates ([#10](https://github.com/Danielmelody/ClawGravity/issues/10))
-- [ ] **Auto Update Check** — Notify on new npm version at startup ([#11](https://github.com/Danielmelody/ClawGravity/issues/11))
-
-## Response Extraction Architecture ([#23](https://github.com/Danielmelody/ClawGravity/issues/23))
-
-Migrated from DOM-based extraction to gRPC trajectory-based response monitoring. All detection and response extraction now uses `GetCascadeTrajectory` API calls — zero DOM dependency.
-
-- [x] **Phase 1: Structured DOM Extraction + HTML-to-Markdown** — [PR #27](https://github.com/Danielmelody/ClawGravity/pull/27) *(legacy, superseded)*
-- [x] **Phase 2: gRPC Trajectory-Based Detection** — All detectors (approval, planning, error, run command, user message) migrated to trajectory data
-- [x] **Phase 3: LS API Message Injection** — `injectMessage()` uses LS direct API, bypassing DOM entirely
-- [x] **Phase 4: GrpcResponseMonitor** — Response monitoring via `GetCascadeTrajectory` polling (replaces DOM-based `ResponseMonitor`)
-- [ ] **Phase 5: Bundle-Based Trajectory Rendering** — Replace mounted-tree renderer with detached `chat.js` bundle rendering (see `ANTIGRAVITY_TRAJECTORY_RENDERER_HANDOFF.md`)
-
-## Scalability & Architecture
-
-- [X] **Logger Improvements** — File output, rotation, `--verbose` / `--quiet` flags ([#12](https://github.com/Danielmelody/ClawGravity/issues/12))
-- [ ] **Multi-Editor Support** — Adapter abstraction for Cursor, Windsurf, etc. ([#13](https://github.com/Danielmelody/ClawGravity/issues/13))
-- [ ] **Plugin System** — User-defined hooks and commands ([#14](https://github.com/Danielmelody/ClawGravity/issues/14))
-
-## Public Release
-
-- [x] **Assets** — Demo video, banner image, and Mermaid architecture diagram (all in README)
-- [x] **npm Publish** — Published as `claw-gravity`
-- [x] **GitHub Infrastructure** — Issue/PR templates, `CONTRIBUTING.md`, Discussions ([#15](https://github.com/Danielmelody/ClawGravity/issues/15))
-- [ ] **v1.0 Stable Release** — First production-ready version ([#16](https://github.com/Danielmelody/ClawGravity/issues/16))
+### Interactive Controls
+- [x] Approval / Planning / Error / Run Command detection → interactive buttons
+- [x] `/stop` generation interrupt
+- [x] `/screenshot` capture
+- [x] Auto-accept mode
+- [x] Template system (`/template`)
+- [x] Inspect mode (self-analysis loop)
 
 ---
 
-## Completed
+## v0.2.0 — Shadow Memory
 
-- [x] Session sync — fixed sessions drifting when Antigravity UI is used directly
-- [x] Media support — image attachment receiving and content extraction
-- [x] Process log filtering — strip terminal output from final responses
-- [x] Channel naming — LLM-powered high-precision channel titles
-- [x] Output buffering — show complete output after generation finishes
-- [x] Approval routing — confirmation buttons sent to the correct channel
-- [x] `/stop` command — fixed accidental voice recording trigger
-- [x] Channel isolation — messages in old channels no longer leak to latest session
-- [x] Completion detection — improved end-of-response detection (previously timeout-based)
-- [x] Structured response extraction — trajectory-based extraction with HTML-to-Markdown conversion
-- [x] Planning mode detection — surface planning decisions in Discord ([#25](https://github.com/Danielmelody/ClawGravity/pull/25))
-- [x] Error popup detection — detect and report Antigravity error popups ([#26](https://github.com/Danielmelody/ClawGravity/pull/26))
-- [x] Quota error detection — improved popup and inline pattern matching ([#22](https://github.com/Danielmelody/ClawGravity/issues/22))
-- [x] Project list pagination — support for >25 projects ([#21](https://github.com/Danielmelody/ClawGravity/pull/21))
-- [x] Dialog exclusion — exclude role="dialog" containers from activity scan ([#32](https://github.com/Danielmelody/ClawGravity/pull/32))
-- [x] Scheduled tasks — `/schedule` command wiring for Discord + Telegram with cron persistence ([#7](https://github.com/Danielmelody/ClawGravity/issues/7))
-- [x] Event-driven trajectory monitoring — gRPC trajectory polling via TrajectoryStreamRouter (replaces DOM MutationObserver)
-- [x] Passive PC→Telegram notifications — mirror locally-typed prompts and AI responses to Telegram
+Persistent user memory across sessions. The agent remembers who you are, your preferences, and past decisions — even in brand new cascades.
+
+### Shadow Memory Store
+- [ ] `user_preferences.memory` column + `getMemory()` / `setMemory()`
+- [ ] Auto-inject memory into new cascade prompts as `[System Context]`
+- [ ] `/memory show|set|clear` Telegram command
+
+### Context Compaction
+- [ ] Trajectory step count monitor with configurable threshold
+- [ ] Auto-trigger summary prompt → persist key facts to memory
+- [ ] Seamless cascade rollover (new cascade with memory injected)
+
+---
+
+## v0.3.0 — Skills Integration
+
+Leverage Antigravity's native `SKILL.md` system from the IM layer. Users can discover, trigger, and manage agent skills without touching the IDE.
+
+### Skill Discovery
+- [ ] Scan workspace `{.agents,.agent}/skills/` directories
+- [ ] `SkillDiscoveryService` — list, read, cache skill metadata
+- [ ] `/skill` command — list available skills with descriptions
+
+### Skill Execution
+- [ ] `/skill <name>` — parse `SKILL.md` body → inject as prompt payload
+- [ ] `@claw:skill_run` — agent-initiated skill execution
+- [ ] `/skill install <url>` — download skill packages from GitHub
+
+---
+
+## v0.4.0 — Multi-Agent Enhancement
+
+Evolve the existing `AgentRouter` from basic delegation to a full multi-agent coordination system.
+
+### Agent Awareness
+- [ ] `agent_status` — query each workspace's connection state and active task
+- [ ] Agent capability registry (what each workspace specializes in)
+- [ ] `@claw:memory_set|memory_get` — agents read/write user shadow memory
+
+### Async Task Coordination
+- [ ] Shared task board (`__claw__/task_board.md`)
+- [ ] Non-blocking `agent_send` — fire and forget, callback on completion
+- [ ] `task_post` / `task_poll` protocol for loose agent coordination
+
+### Future: A2A Compatibility
+- [ ] Evaluate Google A2A protocol adoption when SDK stabilizes
+- [ ] Agent Card (`/.well-known/agent.json`) for capability advertisement
+- [ ] JSON-RPC 2.0 task delegation interface
+
+---
+
+## v0.5.0 — Security & Sandboxing
+
+Harden ClawGravity for public-facing deployment. Terminal commands currently execute directly on the host — this must change.
+
+### Command Guardrails
+- [ ] `CommandSandbox` service with `claw_security.json` deny-list
+- [ ] Regex pattern matching against `run_command` trajectory steps
+- [ ] Auto-reject + notify on dangerous command detection
+
+### Execution Isolation
+- [ ] `execMode: 'host' | 'docker'` configuration
+- [ ] Docker-based command sandboxing for untrusted operations
+- [ ] Per-workspace security policy profiles
+
+---
+
+## Future
+
+Items under consideration, not yet scheduled:
+
+- [ ] **Multi-editor support** — adapter abstraction for Cursor, Windsurf, etc.
+- [ ] **Plugin system** — user-defined hooks and event listeners
+- [ ] **External webhooks** — Slack, LINE Notify on task completion
+- [ ] **Web dashboard** — browser-based management UI
+- [ ] **Bundle-based trajectory rendering** — detached `chat.js` renderer
