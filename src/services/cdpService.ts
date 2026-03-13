@@ -1030,26 +1030,48 @@ export class CdpService extends EventEmitter {
     /**
      * Inject a message with image files.
      *
-     * Strategy: attach images via CDP DOM file input, then send text via LS API.
-     * If CDP is not connected or image attachment fails, falls back to text-only.
+     * Strategy (Plan A): Read image files from disk, convert to base64 MediaItems,
+     * and pass them through the LS API's `media` field in SendUserCascadeMessage.
+     * This ensures images + text are sent together in a single prompt within the
+     * same cascade, avoiding the previous DOM/LS path mismatch.
      */
     async injectMessageWithImageFiles(text: string, imageFilePaths: string[], overrideCascadeId?: string): Promise<InjectResult> {
-        if (imageFilePaths.length > 0) {
-            // Try to attach images via CDP before sending text
+        const fsP = await import('fs/promises');
+        const pathMod = await import('path');
+
+        // Convert image files to MediaItems for LS API
+        const mediaItems: import('./grpcCascadeClient').MediaItem[] = [];
+
+        for (const filePath of imageFilePaths) {
             try {
-                const contextId = this.getPrimaryContextId() ?? undefined;
-                const attachResult = await this.attachImageFiles(imageFilePaths, contextId);
-                if (attachResult.ok) {
-                    logger.info(`[CdpService] ${imageFilePaths.length} image(s) attached via CDP`);
-                } else {
-                    logger.warn(`[CdpService] Image attachment via CDP failed: ${attachResult.error}. Sending text-only.`);
+                const fileData = await fsP.readFile(filePath);
+                if (fileData.length === 0) {
+                    logger.warn(`[CdpService] Skipping empty image file: ${filePath}`);
+                    continue;
                 }
+
+                const base64Data = fileData.toString('base64');
+                const ext = pathMod.extname(filePath).toLowerCase();
+
+                let mimeType = 'image/png';
+                if (ext === '.jpg' || ext === '.jpeg') mimeType = 'image/jpeg';
+                else if (ext === '.gif') mimeType = 'image/gif';
+                else if (ext === '.webp') mimeType = 'image/webp';
+                else if (ext === '.bmp') mimeType = 'image/bmp';
+
+                mediaItems.push({ mimeType, inlineData: base64Data });
+                logger.info(`[CdpService] Prepared media item: ${pathMod.basename(filePath)} (${mimeType}, ${Math.round(fileData.length / 1024)}KB)`);
             } catch (err: any) {
-                logger.warn(`[CdpService] Image attachment error: ${err?.message || err}. Sending text-only.`);
+                logger.warn(`[CdpService] Failed to read image file ${filePath}: ${err?.message || err}`);
             }
         }
-        // Send text via LS API (images are already in the chat input from CDP attachment)
-        return this.injectMessage(text, overrideCascadeId);
+
+        if (mediaItems.length > 0) {
+            logger.info(`[CdpService] Sending message with ${mediaItems.length} media item(s) via LS API`);
+        }
+
+        // Send text + media via LS API (unified path — no DOM attachment needed)
+        return this.injectMessageWithMedia(text, mediaItems, overrideCascadeId);
     }
 
     /**
@@ -1060,6 +1082,56 @@ export class CdpService extends EventEmitter {
     async extractLatestResponseImages(): Promise<ExtractedResponseImage[]> {
         logger.debug('[CdpService] extractLatestResponseImages: not available via LS API, returning []');
         return [];
+    }
+
+    /**
+     * Inject a message with pre-prepared media items via the LS API.
+     * Text and media are sent together in a single SendUserCascadeMessage call.
+     */
+    private async injectMessageWithMedia(
+        text: string,
+        media: import('./grpcCascadeClient').MediaItem[],
+        overrideCascadeId?: string,
+    ): Promise<InjectResult> {
+        const client = await this.getLSClient();
+        if (!client) {
+            return { ok: false, error: this.lsClientManager.lastLSUnavailableReason || 'LS client unavailable' };
+        }
+
+        const cascadeId = overrideCascadeId || this.cachedCascadeId;
+        const modelId = await this.resolveSelectedModelId();
+
+        if (cascadeId) {
+            // Send to existing cascade with media
+            logger.info(`[CdpService] injectWithMedia: sending to cascade=${cascadeId.slice(0, 16)}... with ${media.length} media item(s)`);
+            const result = await client.sendMessage(cascadeId, text, modelId || undefined, media.length > 0 ? media : undefined);
+            if (result.ok) {
+                logger.debug(`[CdpService] sendMessage with media OK`);
+                return { ok: true, method: 'ls-api', cascadeId };
+            }
+            logger.warn(`[CdpService] sendMessage with media failed: ${result.error}`);
+            return { ok: false, error: result.error || 'LS client injection failed', cascadeId };
+        }
+
+        // Create a new cascade, then send the text + media
+        logger.info(`[CdpService] injectWithMedia: creating new cascade, then sending with ${media.length} media item(s)`);
+        const newCascadeId = await client.createCascade(undefined, modelId || undefined);
+        if (newCascadeId) {
+            this.rememberCreatedCascade(newCascadeId);
+            logger.info(`[CdpService] New cascade created: ${newCascadeId.slice(0, 16)}...`);
+
+            const sendResult = await client.sendMessage(newCascadeId, text, modelId || undefined, media.length > 0 ? media : undefined);
+            if (sendResult.ok) {
+                logger.debug(`[CdpService] sendMessage with media to new cascade OK`);
+                return { ok: true, method: 'ls-api', cascadeId: newCascadeId };
+            }
+            logger.warn(`[CdpService] sendMessage with media to new cascade failed: ${sendResult.error}`);
+            return { ok: false, error: sendResult.error || 'LS send failed', cascadeId: newCascadeId };
+        }
+
+        const lastLSError = client.getLastOperationError?.() || null;
+        logger.error(`[CdpService] createCascade returned null — cannot inject${lastLSError ? `: ${lastLSError}` : ''}`);
+        return { ok: false, error: lastLSError || 'LS client injection failed' };
     }
 
     // ─── Mode / Model (LS API-based, no DOM) ─────────────────────────────
