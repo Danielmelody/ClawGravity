@@ -87,8 +87,8 @@ src/database/chatSessionRepository.ts       — SQLite CRUD (chat_sessions table
 src/database/telegramBindingRepository.ts   — SQLite CRUD (telegram_bindings table: chat_id ↔ workspace)
 src/services/workspaceService.ts            — FS operations & path validation (scanWorkspaces, validatePath)
 src/services/channelManager.ts              — Discord category/channel management (ensureCategory, createSessionChannel, renameChannel)
-src/services/titleGeneratorService.ts       — Auto channel name generation (CDP-based + text extraction fallback)
-src/services/chatSessionService.ts          — Antigravity UI operations (new chat & session info via CDP)
+src/services/titleGeneratorService.ts       — Auto channel name generation (LS API-based + text extraction fallback)
+src/services/chatSessionService.ts          — Antigravity (LS / gRPC) session operations (new chat & session info via LS API)
 src/commands/workspaceCommandHandler.ts     — /project command + select menu handling
 src/commands/chatCommandHandler.ts          — /new, /chat commands
 src/bot/telegramMessageHandler.ts           — Telegram message → CDP direct integration handler
@@ -119,7 +119,7 @@ Instructions to the LLM agent and execution results are managed and persisted th
 - Monitors logs and status output (stdout or structured log formats) from backend AI agents like Antigravity via streaming.
 - Discord's message edit API (`message.edit`) is called at most once every few seconds (e.g., 3–5s) with aggressive Debounce/Throttle to avoid hitting rate limits.
 
-> **Details:** See [RESPONSE_MONITOR.md](./RESPONSE_MONITOR.md) for the CDP-based response monitoring and process log extraction mechanism via ResponseMonitor.
+> **Details:** See [RESPONSE_MONITOR.md](./RESPONSE_MONITOR.md) for the gRPC trajectory-based response monitoring and process log extraction mechanism via GrpcResponseMonitor + TrajectoryStreamRouter.
 
 ## 7. Antigravity Process Launch (CLI Spawn) & Resource Control
 - **CLI Spawn:** Antigravity (or the target directory's AI coding tool) is launched as an independent background process via `child_process.spawn`.

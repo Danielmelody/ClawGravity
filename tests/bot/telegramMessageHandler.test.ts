@@ -729,7 +729,7 @@ describe('createTelegramMessageHandler', () => {
         }
     });
 
-    it('serializes messages per workspace until the previous monitor completes', async () => {
+    it('does not block later messages on the previous monitor lifecycle', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         const completions: Array<() => Promise<void>> = [];
 
@@ -760,17 +760,12 @@ describe('createTelegramMessageHandler', () => {
         const p2 = handler(msg2 as any);
         await flushMicrotasks();
 
-        expect(completions).toHaveLength(1);
-        expect(mockCdp.injectMessage).toHaveBeenCalledTimes(1);
-        expect(mockCdp.injectMessage).toHaveBeenCalledWith('first');
-
-        await completions[0]();
-        await flushMicrotasks();
-
         expect(completions).toHaveLength(2);
         expect(mockCdp.injectMessage).toHaveBeenCalledTimes(2);
+        expect(mockCdp.injectMessage).toHaveBeenCalledWith('first');
         expect(mockCdp.injectMessage).toHaveBeenCalledWith('second');
 
+        await completions[0]();
         await completions[1]();
         await Promise.all([p1, p2]);
     });

@@ -586,7 +586,7 @@ async function resolveWorkspaceRuntime(
     deps: TelegramCommandDeps,
     message: PlatformMessage,
     logTag: string,
-): Promise<{ runtime: any; binding: any } | null> {
+): Promise<{ runtime: any; binding: any; projectName: string } | null> {
     const chatId = message.channel.id;
     const binding = deps.telegramBindingRepo?.findByChatId(chatId);
     if (!binding) {
@@ -603,7 +603,7 @@ async function resolveWorkspaceRuntime(
                 ? deps.workspaceService.getWorkspacePath(binding.workspacePath)
                 : binding.workspacePath,
         );
-        return { runtime: runtimePrepared.runtime, binding };
+        return { runtime: runtimePrepared.runtime, binding, projectName: runtimePrepared.projectName };
     } catch (err: any) {
         logger.error(`[TelegramCommand:${logTag}] runtime bootstrap failed:`, err?.message || err);
         await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
@@ -619,7 +619,7 @@ async function resolveWithSessionService(
     deps: TelegramCommandDeps,
     message: PlatformMessage,
     logTag: string,
-): Promise<{ runtime: any; binding: any; chatSessionService: NonNullable<typeof deps.chatSessionService> } | null> {
+): Promise<{ runtime: any; binding: any; projectName: string; chatSessionService: NonNullable<typeof deps.chatSessionService> } | null> {
     if (!deps.chatSessionService) {
         await message.reply({ text: 'Chat session service not available.' }).catch(logger.error);
         return null;
@@ -629,15 +629,38 @@ async function resolveWithSessionService(
     return { ...resolved, chatSessionService: deps.chatSessionService };
 }
 
+async function stopProjectMonitors(
+    activeMonitors: TelegramCommandDeps['activeMonitors'],
+    projectName: string,
+): Promise<void> {
+    if (!activeMonitors) return;
+
+    for (const key of [projectName, `passive:${projectName}`]) {
+        const monitor = activeMonitors.get(key);
+        if (monitor?.isActive()) {
+            await monitor.stop().catch(() => { });
+        }
+        activeMonitors.delete(key);
+    }
+}
+
 async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
     const resolved = await resolveWithSessionService(deps, message, 'new');
     if (!resolved) return;
+    const chatId = message.channel.id;
 
     // Start a new chat session
     try {
         const result = await resolved.runtime.startNewChat(resolved.chatSessionService);
         if (result.ok) {
-            deps.sessionStateStore?.clearSelectedSession(message.channel.id);
+            await stopProjectMonitors(deps.activeMonitors, resolved.projectName);
+            deps.sessionStateStore?.clearSelectedSession(chatId);
+            const newCascadeId = typeof resolved.runtime.getActiveCascadeId === 'function'
+                ? await resolved.runtime.getActiveCascadeId().catch(() => null)
+                : null;
+            if (newCascadeId) {
+                deps.sessionStateStore?.setCurrentCascadeId(chatId, newCascadeId);
+            }
             await message.reply({ text: 'New chat session started.' }).catch(logger.error);
         } else {
             logger.warn('[TelegramCommand:new] startNewChat failed:', result.error);
@@ -660,7 +683,14 @@ async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage):
     try {
         const result = await resolved.runtime.startNewChat(resolved.chatSessionService);
         if (result.ok) {
+            await stopProjectMonitors(deps.activeMonitors, resolved.projectName);
             deps.sessionStateStore?.clearSelectedSession(chatId);
+            const newCascadeId = typeof resolved.runtime.getActiveCascadeId === 'function'
+                ? await resolved.runtime.getActiveCascadeId().catch(() => null)
+                : null;
+            if (newCascadeId) {
+                deps.sessionStateStore?.setCurrentCascadeId(chatId, newCascadeId);
+            }
 
             // Delete tracked bot messages from the Telegram chat (visual clear)
             if (deps.messageTracker && deps.botApi) {

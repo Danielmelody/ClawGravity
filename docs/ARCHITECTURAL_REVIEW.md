@@ -89,10 +89,10 @@ ClawGravity 是一个基于 Antigravity Agent 的远程控制系统，通过 Dis
 |------|-----------|
 | WebSocket 连接管理 | `connect()`, `disconnect()`, `call()`, `callWithRetry()` |
 | CDP target 发现 | `discoverTarget()`, `probeWorkbenchPages()` |
-| Prompt 注入 | `injectPrompt()`, `injectPromptViaGrpc()` |
+| LS API 注入 | `injectMessage()`, `injectViaLS()` |
 | 工作区管理 | `discoverAndConnectForWorkspace()`, `launchAndConnectWorkspace()` |
-| UI 读取/同步 | `extractResponse()`, `syncUiMode()`, `setUiModel()` |
-| gRPC 客户端管理 | `getGrpcClient()`, `ensureGrpcClient()` |
+| gRPC / LS 客户端管理 | `getLSClient()`, `getGrpcClient()` |
+| UI Model/Mode 同步 | `setUiModel()`, `setUiMode()`, `getUiModels()` |
 | 进程启动 | `runCommand()` |
 
 **建议**：按关注点拆分为 `CdpConnection`、`WorkspaceDiscovery`、`PromptInjector`、`UiSyncService`。

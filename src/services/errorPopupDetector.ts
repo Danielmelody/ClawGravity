@@ -160,6 +160,27 @@ export class ErrorPopupDetector {
             'unexpected error',
             'something went wrong',
             'an error occurred',
+            // Network / connectivity errors
+            'network issue',
+            'network error',
+            'connecting to the serv',
+            'connection failed',
+            'connection timed out',
+            'request failed',
+            'request timed out',
+            'failed to fetch',
+            'service unavailable',
+            'server error',
+            'internal server error',
+            // Rate limit / quota errors
+            'rate limit',
+            'too many requests',
+            'quota exceeded',
+            'capacity',
+            // Model / API errors
+            'model is overloaded',
+            'model not available',
+            'temporarily unavailable',
         ];
 
         // Check the last few steps for error information

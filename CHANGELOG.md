@@ -63,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Per-workspace prompt queue to serialize send-response cycles ([#66](https://github.com/Danielmelody/ClawGravity/pull/66))
-- CDP disconnect handling and activity-based timeout in ResponseMonitor ([#50](https://github.com/Danielmelody/ClawGravity/pull/50))
+- CDP disconnect handling and activity-based timeout in response monitoring ([#50](https://github.com/Danielmelody/ClawGravity/pull/50))
 - Cross-platform path extraction in cdpConnectionPool with platform-aware CDP hints ([#45](https://github.com/Danielmelody/ClawGravity/pull/45))
 - Windows path handling and chat casing issues ([#43](https://github.com/Danielmelody/ClawGravity/pull/43))
 - Discord UX quality fixes for embeds and notifications ([#34](https://github.com/Danielmelody/ClawGravity/pull/34))
@@ -90,7 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/autoaccept` command to toggle auto-allow mode for approval dialogs
 - `/cleanup` command to scan and clean up inactive session channels
 - `/help` and `/ping` utility commands
-- Structured DOM extraction and HTML-to-Markdown conversion
+- Structured response extraction and HTML-to-Markdown conversion
 - Planning mode detection with notification quality fixes
 - Secure token management (no hardcoded secrets)
 - `allowedUserIds` whitelist for access control

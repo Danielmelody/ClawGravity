@@ -31,21 +31,15 @@
 - [ ] **Template Import / Export** — Portable prompt templates ([#10](https://github.com/Danielmelody/ClawGravity/issues/10))
 - [ ] **Auto Update Check** — Notify on new npm version at startup ([#11](https://github.com/Danielmelody/ClawGravity/issues/11))
 
-## DOM Extraction Overhaul ([#23](https://github.com/Danielmelody/ClawGravity/issues/23))
+## Response Extraction Architecture ([#23](https://github.com/Danielmelody/ClawGravity/issues/23))
 
-Replace `innerText`-based extraction with structured DOM walking and HTML-to-Discord-Markdown conversion. Improves output fidelity, activity log separation, and resilience to AG DOM updates.
+Migrated from DOM-based extraction to gRPC trajectory-based response monitoring. All detection and response extraction now uses `GetCascadeTrajectory` API calls — zero DOM dependency.
 
-- [x] **Phase 1: Structured DOM Extraction + HTML-to-Markdown** — [PR #27](https://github.com/Danielmelody/ClawGravity/pull/27)
-  - Structured segment extraction (assistant-body / thinking / tool-call / feedback)
-  - HTML → Discord Markdown (headings, lists, code blocks, bold, file mentions)
-  - Broad activity scan with word-boundary matching, content-body exclusion, ancestor dedup
-  - Activity emoji classification (🧠 thinking, 📄 file ops, 🔍 active ops, 🛠️ MCP tools)
-  - Default extraction mode changed to `structured`
-- [ ] **Phase 2: Activity Log Dedicated DOM Selectors** — Target activity containers directly to reduce regex dependency
-- [ ] **Phase 3a: Network Traffic Discovery** — Diagnostic tool to capture AG ↔ LLM API traffic patterns
-- [ ] **Phase 3b: Network Response Capture** — Intercept API responses pre-DOM rendering (based on 3a findings)
-- [x] **Phase 4: Event-Driven DOM Monitoring** — `MutationObserver` + `Runtime.addBinding` to replace polling
-- [ ] **Phase 5: Selector Health Monitoring** — Sliding-window failure tracking and graceful degradation
+- [x] **Phase 1: Structured DOM Extraction + HTML-to-Markdown** — [PR #27](https://github.com/Danielmelody/ClawGravity/pull/27) *(legacy, superseded)*
+- [x] **Phase 2: gRPC Trajectory-Based Detection** — All detectors (approval, planning, error, run command, user message) migrated to trajectory data
+- [x] **Phase 3: LS API Message Injection** — `injectMessage()` uses LS direct API, bypassing DOM entirely
+- [x] **Phase 4: GrpcResponseMonitor** — Response monitoring via `GetCascadeTrajectory` polling (replaces DOM-based `ResponseMonitor`)
+- [ ] **Phase 5: Bundle-Based Trajectory Rendering** — Replace mounted-tree renderer with detached `chat.js` bundle rendering (see `ANTIGRAVITY_TRAJECTORY_RENDERER_HANDOFF.md`)
 
 ## Scalability & Architecture
 
@@ -73,12 +67,12 @@ Replace `innerText`-based extraction with structured DOM walking and HTML-to-Dis
 - [x] `/stop` command — fixed accidental voice recording trigger
 - [x] Channel isolation — messages in old channels no longer leak to latest session
 - [x] Completion detection — improved end-of-response detection (previously timeout-based)
-- [x] Structured DOM extraction — HTML-to-Discord-Markdown conversion with segment classification (Phase 1, [#27](https://github.com/Danielmelody/ClawGravity/pull/27))
+- [x] Structured response extraction — trajectory-based extraction with HTML-to-Markdown conversion
 - [x] Planning mode detection — surface planning decisions in Discord ([#25](https://github.com/Danielmelody/ClawGravity/pull/25))
 - [x] Error popup detection — detect and report Antigravity error popups ([#26](https://github.com/Danielmelody/ClawGravity/pull/26))
 - [x] Quota error detection — improved popup and inline pattern matching ([#22](https://github.com/Danielmelody/ClawGravity/issues/22))
 - [x] Project list pagination — support for >25 projects ([#21](https://github.com/Danielmelody/ClawGravity/pull/21))
 - [x] Dialog exclusion — exclude role="dialog" containers from activity scan ([#32](https://github.com/Danielmelody/ClawGravity/pull/32))
 - [x] Scheduled tasks — `/schedule` command wiring for Discord + Telegram with cron persistence ([#7](https://github.com/Danielmelody/ClawGravity/issues/7))
-- [x] Event-driven DOM monitoring — hybrid polling+push via MutationObserver + Runtime.addBinding (Phase 4)
+- [x] Event-driven trajectory monitoring — gRPC trajectory polling via TrajectoryStreamRouter (replaces DOM MutationObserver)
 - [x] Passive PC→Telegram notifications — mirror locally-typed prompts and AI responses to Telegram

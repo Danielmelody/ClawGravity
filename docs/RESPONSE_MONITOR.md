@@ -1,153 +1,131 @@
 # Response Monitor Architecture
 
-> CDP (Chrome DevTools Protocol) を経由して Antigravity の AI 応答をリアルタイム監視し、
-> Discord に**アウトプット**と**プロセスログ**を分離配信する仕組み。
+> gRPC trajectory API を経由して Antigravity の AI 応答をリアルタイム監視し、
+> Discord / Telegram に**アウトプット**と**プロセスログ**を分離配信する仕組み。
 
 ---
 
 ## 1. System Overview
 
 ```
-Discord User
+Discord / Telegram User
     |  prompt
     v
-bot/index.ts  sendPromptToAntigravity()
-    |  cdp.injectMessage(prompt)
+WorkspaceRuntime.sendPrompt()
+    |  cdpService.injectMessage(prompt)  ← LS direct API (no DOM)
     v
-Antigravity (browser)  --- AI generates response in DOM ---
+Antigravity (Language Server)  --- AI generates response ---
     ^
-    |  CDP evaluate (4 calls / poll)
+    |  gRPC: GetCascadeTrajectory (polled by TrajectoryStreamRouter)
     |
-ResponseMonitor.poll()
+GrpcResponseMonitor
     |
-    +---> onProgress(text)      --> Discord "generating" embed (output)
-    +---> onProcessLog(text)    --> Discord "process log" embed (activity)
+    +---> onProgress(text)      --> Platform "generating" embed (output)
+    +---> onProcessLog(text)    --> Platform "process log" embed (activity)
     +---> onPhaseChange(phase)  --> phase tracking
-    +---> onComplete(text)      --> Discord "complete" embed (final)
+    +---> onComplete(text)      --> Platform "complete" embed (final)
 ```
 
 ### Key Files
 
 | File | Role |
 |------|------|
-| `src/services/responseMonitor.ts` | CDP polling, DOM selectors, phase state machine |
-| `src/bot/index.ts` | Discord embed rendering, callback wiring |
+| `src/services/grpcResponseMonitor.ts` | gRPC trajectory polling, phase state machine, response extraction |
+| `src/services/trajectoryStreamRouter.ts` | Central polling dispatcher — fans out trajectory data to all detectors |
+| `src/services/antigravityTrajectoryRenderer.ts` | Trajectory → HTML rendering for rich output |
 | `src/utils/discordFormatter.ts` | Text formatting for Discord (table/tree code blocks, UI chrome filtering) |
+| `src/utils/htmlToDiscordMarkdown.ts` | HTML → Discord Markdown conversion |
+| `src/utils/htmlToTelegramHtml.ts` | HTML → Telegram HTML conversion |
 | `src/utils/logger.ts` | ANSI colored logger with level-based methods |
+
+> **Legacy file**: `src/services/responseMonitor.ts` was the original CDP DOM-polling implementation.
+> It has been superseded by `GrpcResponseMonitor` + `TrajectoryStreamRouter`.
 
 ---
 
 ## 2. Dual Output Streams
 
-ResponseMonitor produces **two independent streams** from the same DOM:
+GrpcResponseMonitor produces **two independent streams** from cascade trajectory data:
 
-| Stream | Selector | Content | Discord Embed |
-|--------|----------|---------|---------------|
-| **Output** | `RESPONSE_TEXT` | Natural language AI response | "generating" / "complete" |
-| **Process Log** | `PROCESS_LOGS` | Activity messages + tool output | "process log" |
+| Stream | Data Source | Content | Platform Embed |
+|--------|-------------|---------|----------------|
+| **Output** | Trajectory step `assistantMessage` items | Natural language AI response | "generating" / "complete" |
+| **Process Log** | Trajectory step `toolCall` / `toolExecution` items | Activity messages + tool output | "process log" |
 
-This separation happens **at the DOM level** via CDP selectors, not via post-processing.
-The `splitOutputAndLogs()` function in `discordFormatter.ts` is a secondary classifier
-for edge cases but is not the primary separator.
+This separation happens **at the trajectory data level** — each step in the cascade trajectory has a typed classification (`assistantMessage`, `toolCall`, `toolExecution`, `userInput`, etc.). No DOM scraping or CSS selectors are involved.
 
-### Why Two Selectors?
+### Why Trajectory Data?
 
-In Antigravity's DOM, a single conversation turn contains:
-- The AI's natural language response (the "output")
-- MCP tool invocations and results (e.g., search queries, JSON payloads)
-- Activity status messages (e.g., "Initiating Task Execution", "Thought for 38 seconds")
+The gRPC `GetCascadeTrajectory` API returns structured step data:
 
-These are **interleaved in the same DOM tree** with no parent container distinguishing them.
-A single selector cannot extract both; scored filtering classifies each node into one stream.
+```
+trajectory.steps[]
+  ├── assistantMessage   → AI response text (the "output")
+  ├── toolCall           → MCP tool invocations
+  ├── toolExecution      → Tool results and status
+  ├── userInput          → User messages
+  └── plannerResponse    → Planning mode decisions
+```
+
+Each step type is already classified by Antigravity's backend, eliminating the need for heuristic DOM classification.
 
 ---
 
-## 3. CDP Selectors (Scored Approach)
+## 3. Trajectory-Based Detection
 
-### 3.1 RESPONSE_TEXT
+### 3.1 Response Text Extraction
 
-Extracts the **newest AI response text**, filtering out non-response content.
-
-**Algorithm:**
-1. Scope to `.antigravity-agent-side-panel` (fallback: `document`)
-2. Query all nodes matching scored CSS selectors
-3. Iterate in **reverse DOM order** (newest first: index N-1 -> 0)
-4. For each node, apply content filters to skip non-response text
-5. Keep the first (= newest) node with the highest score (`score > bestScore`, strict)
-
-**Scored Selectors (priority descending):**
-
-| Score | Selector | Typical Match |
-|-------|----------|---------------|
-| 10 | `.rendered-markdown` | Final rendered response |
-| 9 | `.leading-relaxed.select-text` | Response text container |
-| 8 | `.flex.flex-col.gap-y-3` | Message block |
-| 7 | `[data-message-author-role="assistant"]` | Role-tagged message |
-| 6 | `[data-message-role="assistant"]` | Alternative role tag |
-| 5-2 | Various `[class*=...]` and `.prose` | Fallback selectors |
-
-**Tie-Breaking Rule:**
-- DOM order is normal: index 0 = oldest, N-1 = newest
-- Reverse iteration visits newest first
-- Strict `>` (not `>=`) keeps the first found = newest element
-- This ensures previous-turn responses never shadow the current response
-
-### 3.2 PROCESS_LOGS
-
-Extracts text from nodes that **would be filtered out** by RESPONSE_TEXT.
+Extracts the **newest AI response text** from trajectory steps.
 
 **Algorithm:**
-1. Same scope and selectors as RESPONSE_TEXT
-2. Forward DOM order (chronological)
-3. Collect text from nodes matching `looksLikeActivityLog()` or `looksLikeToolOutput()`
-4. Truncate each entry to 300 chars
-5. Return as array of strings
+1. Fetch trajectory via `GetCascadeTrajectory` gRPC call
+2. Iterate steps to find `assistantMessage` items
+3. Extract text content from message items
+4. Render via `AntigravityTrajectoryRenderer` for rich HTML output (optional)
 
-### 3.3 Content Filters
+### 3.2 Process Log Extraction
 
-These functions run inside CDP (browser context) to classify DOM text:
+Extracts tool call and execution information.
 
-| Filter | Matches | Examples |
-|--------|---------|----------|
-| `looksLikeActivityLog` | Short status messages | "Analyzing...", "Thought for 38 seconds", "Initiating Task Execution" |
-| `looksLikeToolOutput` | MCP tool names, results, code blocks | "jina-mcp-server / search_web", "title: X url: Y snippet: Z", "json" |
-| `looksLikeFeedbackFooter` | UI feedback buttons | "good", "bad", "good bad" |
-| `isInsideExcludedContainer` | Hidden/feedback containers | Nodes inside `<details>`, `[class*="feedback"]`, `<footer>` |
+**Algorithm:**
+1. Same trajectory data as response text
+2. Scan steps for `toolCall` and `toolExecution` types
+3. Extract tool names, arguments, and results
+4. Format as activity log entries
 
-### 3.4 STOP_BUTTON
+### 3.3 Completion Detection
 
-Detects whether AI generation is in progress:
-1. Check for `[data-tooltip-id="input-send-button-cancel-tooltip"]` (primary)
-2. Fallback: scan all buttons for "stop" / "停止" text
+Detects whether AI generation is complete by checking the cascade run status:
 
-### 3.5 DUMP_ALL_TEXTS (Diagnostic Only)
+```
+GetCascadeTrajectory response includes:
+  - cascadeRunStatus: CASCADE_RUN_STATUS_RUNNING | CASCADE_RUN_STATUS_IDLE
+```
 
-Returns **all** candidate text nodes with metadata (selector, score, filter classification).
-Not called during normal polling. Available for manual debugging via CDP console.
-
-### 3.6 QUOTA_ERROR
-
-Scans for quota/rate-limit error banners outside of message content.
+No stop-button detection or DOM polling needed.
 
 ---
 
 ## 4. Polling & Phase State Machine
 
-### 4.1 Poll Cycle (4 CDP Calls)
+### 4.1 Poll Cycle (TrajectoryStreamRouter)
 
 ```
-poll()
+TrajectoryStreamRouter.fetchAndDispatch()
   |
-  +-- 1. STOP_BUTTON      -> isGenerating (bool)
-  +-- 2. QUOTA_ERROR       -> quotaDetected (bool)
-  +-- 3. RESPONSE_TEXT     -> currentText (string | null)
-  +-- 4. PROCESS_LOGS      -> logEntries (string[])
+  +-- 1. GetCascadeTrajectory  -> trajectory steps + runStatus
   |
-  +-- Handle phase transitions
-  +-- Forward callbacks
+  +-- Fan out to registered detectors:
+       +-- GrpcResponseMonitor.evaluate()
+       +-- ApprovalDetector.evaluate()
+       +-- ErrorPopupDetector.evaluate()
+       +-- PlanningDetector.evaluate()
+       +-- RunCommandDetector.evaluate()
+  |
+  +-- 2. GetAllCascadeTrajectories  -> summaries (for UserMessageDetector)
 ```
 
-Default interval: **2000ms**. Max duration: **300000ms** (5 min).
+Default polling interval: **300ms**. TrajectoryStreamRouter is lazy-connected — it only polls after `connectToCascade(id)` is called.
 
 ### 4.2 Phase Transitions
 
@@ -155,86 +133,38 @@ Default interval: **2000ms**. Max duration: **300000ms** (5 min).
 waiting --> thinking --> generating --> complete
    |           |            |             |
    +--timeout--+--timeout---+--timeout----+
-   |
-   +--quotaReached (immediate, if no text)
 ```
 
 | Transition | Trigger |
 |------------|---------|
-| waiting -> thinking | Stop button appears (`isGenerating = true`) |
-| thinking -> generating | Text changes (non-null, differs from lastText) |
-| generating -> complete | Stop button gone N consecutive times (default: 3) |
-| any -> timeout | `maxDurationMs` elapsed |
-| waiting -> quotaReached | Quota error detected with no existing text |
+| waiting → thinking | `CASCADE_RUN_STATUS_RUNNING` detected |
+| thinking → generating | New assistant message steps appear in trajectory |
+| generating → complete | `CASCADE_RUN_STATUS_IDLE` detected |
+| any → timeout | `maxDurationMs` elapsed |
 
 ### 4.3 Baseline Suppression
 
-At `start()`, the monitor captures the current RESPONSE_TEXT as `baselineText`.
-During polling, if `currentText === baselineText` and no new text has been seen yet (`lastText === null`),
-the text is suppressed — it belongs to the **previous conversation turn**, not the current one.
-
-### 4.4 Process Log Baseline
-
-At `start()`, all current PROCESS_LOGS entries are captured as `baselineProcessLogs` (Set).
-During polling, only entries **not in the baseline** are forwarded to `onProcessLog`.
-This prevents activity messages from previous turns leaking into the current turn's log.
-
-### 4.5 Completion Detection (Stop-Gone Confirmation)
-
-The stop button disappearing does not immediately mean completion — it can flicker.
-
-```
-Stop button gone -> stopGoneCount++
-Stop button back -> stopGoneCount = 0 (reset)
-stopGoneCount >= stopGoneConfirmCount (default: 3) -> complete
-```
-
-**Important:** Text changes do NOT reset `stopGoneCount`. The AI may stream trailing tokens
-after the stop button disappears. Resetting on text change would cause infinite loops.
+At `start()`, the monitor captures the current trajectory step count as the baseline.
+During polling, only steps **beyond the baseline** are processed as new content.
+This prevents previous conversation turns from appearing in the current response.
 
 ---
 
-## 5. Callback Flow (bot/index.ts)
+## 5. Detector Architecture
 
-```
-ResponseMonitor
-  |
-  |-- onPhaseChange(phase, text)
-  |     Logged as: [INFO] phase=thinking textLen=0
-  |
-  |-- onProcessLog(logText)
-  |     Updates lastActivityLogText
-  |     Renders "process log" embed via upsertLiveActivityEmbeds()
-  |
-  |-- onProgress(text)
-  |     Calls splitOutputAndLogs(text) for secondary classification
-  |     Renders "generating" embed via upsertLiveResponseEmbeds()
-  |     Also refreshes activity embed with lastActivityLogText fallback
-  |
-  |-- onComplete(finalText)
-  |     isFinalized = true
-  |     Renders final "complete" embed (output)
-  |     Renders final "process log" embed (lastActivityLogText)
-  |     Handles quota warning, generated images, channel rename
-  |
-  |-- onTimeout(lastText)
-  |     isFinalized = true
-  |     Renders timeout embed with partial text if available
-```
+All detectors follow a **passive evaluation** pattern — they don't poll independently.
+The `TrajectoryStreamRouter` fetches trajectory data once per tick and dispatches to all detectors.
 
-### Embed Queue System
+| Detector | Data Source | Detection Logic |
+|----------|-------------|-----------------|
+| `GrpcResponseMonitor` | Trajectory steps | Assistant message extraction, run status |
+| `ApprovalDetector` | Trajectory steps | `toolCall` steps with approval-required status |
+| `PlanningDetector` | Trajectory steps | `plannerResponse` steps with decision points |
+| `ErrorPopupDetector` | Trajectory steps | Error status in step results |
+| `RunCommandDetector` | Trajectory steps | `runCommand` type steps |
+| `UserMessageDetector` | Trajectory summaries | `lastUserInputTime` changes across cascades |
 
-Discord embed updates go through **three serial queues** to prevent race conditions:
-
-| Queue | Purpose |
-|-------|---------|
-| `general` | One-shot embeds (errors, status, mode info) |
-| `response` | Output embed updates (upsert pattern: create-or-edit) |
-| `activity` | Process log embed updates (upsert pattern: create-or-edit) |
-
-Each queue processes tasks sequentially. Multiple queues run in parallel.
-The `liveResponseUpdateVersion` / `liveActivityUpdateVersion` counters prevent
-stale renders from overwriting newer content.
+> **Zero DOM operations** — all detectors analyze cascade trajectory data exclusively.
 
 ---
 
@@ -257,7 +187,7 @@ stale renders from overwriting newer content.
 A typical successful run produces this structured output:
 
 ```
-[INFO]  ── Monitoring started | poll=2000ms timeout=300s baseline=236ch
+[INFO]  ── Monitoring started | poll=300ms cascade=abc123...
 [PHASE] Thinking
 [PHASE] Generating (186 chars)
 [DONE]  Complete (236 chars)
@@ -272,54 +202,28 @@ title: 東京都の天気 url: ... snippet: ...
 **Design principles:**
 - **3 phases visible**: Monitoring started → Thinking → Generating → Complete
 - **Process Log before Output**: Chronological order (tool use happens before response)
-- **Full content in divider blocks**: Terminal reviewers see exactly what Discord displays
-- **No intermediate noise**: Text change diffs, partial previews, and stop-gone countdown are silent
-
-### 6.3 Finalize Content Blocks
-
-At completion, `bot/index.ts` outputs structured divider blocks via `logger.divider()`:
-
-1. `── Process Log ──` block — Activity messages and tool output (same as Discord's process log embed)
-2. `── Output (N chars) ──` block — Final response text (same as Discord's complete embed)
-3. Closing `──────────` divider
-
-### 6.4 What Is NOT Logged (by design)
-
-To keep logs clean, the following are intentionally omitted from production output:
-
-- Per-poll CDP results (stop button, text extraction, process logs)
-- Text change diffs and partial text previews
-- Stop-gone countdown (1/3, 2/3 — only completion is logged)
-- Baseline text content (only length is shown at start)
-- Process log intermediate updates (content only shown at finalize)
-- Queue version skips and stale render events
-- DUMP diagnostic entries (selector retained for manual debug only)
+- **Full content in divider blocks**: Terminal reviewers see exactly what the platform displays
+- **No intermediate noise**: Trajectory diffs, partial previews, and status polling counts are silent
 
 ---
 
-## 7. DOM Structure Assumptions
+## 7. Message Injection
 
-The selectors assume Antigravity's DOM follows this approximate structure:
+Prompt injection uses the **LS (Language Server) direct API** — zero DOM dependency.
 
 ```
-.antigravity-agent-side-panel
-  |
-  +-- conversation turn 1 (oldest, DOM index 0)
-  |     +-- .rendered-markdown  (previous response text)
-  |     +-- .leading-relaxed    (activity messages)
-  |     +-- .flex.flex-col      (tool output blocks)
-  |
-  +-- conversation turn 2
-  |     +-- ...
-  |
-  +-- conversation turn N (newest, DOM index N-1)
-        +-- .rendered-markdown  (current response text)  <-- RESPONSE_TEXT picks this
-        +-- .leading-relaxed    (current activity)        <-- PROCESS_LOGS picks these
-        +-- .flex.flex-col      (current tool output)     <-- PROCESS_LOGS picks these
+CdpService.injectMessage(text)
+  → getLSClient()         // Discover LS via CDP Runtime.evaluate
+  → client.sendMessage()  // gRPC: SendUserCascadeMessage
+    or
+  → client.createCascade()  // gRPC: CreateCascade (new conversation)
 ```
 
-**Key invariant:** DOM order is chronological (index 0 = oldest).
-The reverse iteration in RESPONSE_TEXT ensures the newest turn's response wins.
+The LS client communicates with Antigravity's Language Server backend directly.
+No DOM input field manipulation, no keyboard simulation, no button clicking.
+
+The only remaining DOM operation in the entire system is **image file attachment**
+(`DOM.setFileInputFiles`), which requires CDP DOM access to locate the `<input type="file">` element.
 
 ---
 
@@ -329,20 +233,16 @@ The reverse iteration in RESPONSE_TEXT ensures the newest turn's response wins.
 
 | File | Tests | Coverage |
 |------|-------|----------|
-| `tests/services/responseMonitor.lean.test.ts` | 16 | Phase state machine, completion, baseline suppression, CDP call structure |
-| `tests/services/responseMonitor.selectors.test.ts` | 15 | Content filter string matching (activity, tool output, feedback) |
-| `tests/utils/discordFormatter.lean.test.ts` | 15 | UI chrome detection, splitOutputAndLogs, formatForDiscord |
+| `tests/services/grpcResponseMonitor.test.ts` | Phase state machine, completion, trajectory evaluation |
+| `tests/services/trajectoryStreamRouter.test.ts` | Polling lifecycle, detector dispatch, cascade switching |
+| `tests/services/approvalDetector.test.ts` | Approval step detection from trajectory data |
+| `tests/services/planningDetector.test.ts` | Planning decision point detection |
+| `tests/utils/discordFormatter.lean.test.ts` | UI chrome detection, splitOutputAndLogs, formatForDiscord |
 
 ### Mock Strategy
 
-Tests use a minimal CDP mock (`call` + `getPrimaryContextId`) with no network event subscription.
-The default mock returns `{ result: { value: null } }` for unmocked CDP calls,
-which gracefully degrades (null is handled as "no data") without breaking tests.
-
-### CDP Call Count Verification
-
-The structural test verifies exactly **4 CDP calls per poll** (stop, quota, text, process_logs)
-and **2 CDP calls at start** (baseline text, baseline process logs).
+Tests mock the `CdpService.getLSClient()` to return a stub `GrpcCascadeClient` that provides
+predetermined trajectory responses. No CDP connection or DOM interaction needed for testing.
 
 ---
 
@@ -350,22 +250,19 @@ and **2 CDP calls at start** (baseline text, baseline process logs).
 
 ### "Collecting Process Logs..." stays forever (logLen=0)
 
-**Cause:** Process logs are extracted by `PROCESS_LOGS` selector and forwarded via `onProcessLog`.
-If this callback never fires, check:
-1. CDP connection is established (`cdp.isConnected()`)
-2. Antigravity DOM has elements matching the selectors
-3. Content filters are not over-filtering (all entries classified as non-activity/non-tool)
+**Cause:** Trajectory data is not being fetched or contains no tool call steps. Check:
+1. gRPC client connection (`cdpService.getLSClient()` returns non-null)
+2. Cascade ID is valid and the cascade is actively running
+3. Trajectory contains `toolCall` / `toolExecution` steps
 
-### Wrong text selected (previous turn's response)
+### Response text is empty despite AI generating
 
-**Cause:** Baseline suppression or tie-breaking issue.
-1. Check that `baselineText` was captured correctly at `start()`
-2. Verify DOM order hasn't changed (column-reverse CSS would break assumptions)
-3. Tie-breaking uses strict `>` — if changed to `>=`, oldest text wins instead
+**Cause:** Trajectory polling may not be connected to the correct cascade. Check:
+1. `TrajectoryStreamRouter.connectToCascade(id)` was called with the correct cascade ID
+2. The cascade run status is `CASCADE_RUN_STATUS_RUNNING` (not `IDLE`)
+3. The LS client can successfully call `GetCascadeTrajectory`
 
-### Old conversation entries appear in process logs
+### Old conversation entries appear in output
 
-**Cause:** `baselineProcessLogs` Set didn't capture them at start.
-1. Entries are compared by first 200 chars of text
-2. If text content changed between baseline capture and poll, the entry won't match
-3. Consider extending the comparison length or using a different identity key
+**Cause:** Baseline step count wasn't captured correctly at `start()`.
+The monitor should skip all steps up to the baseline count captured at initialization.

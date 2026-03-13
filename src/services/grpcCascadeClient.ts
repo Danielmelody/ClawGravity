@@ -77,6 +77,31 @@ export const Models = {
 
 export type ModelId = typeof Models[keyof typeof Models] | number | string;
 
+/**
+ * A media item (image/video) to include in a SendUserCascadeMessage.
+ *
+ * Proto definition (exa.codeium_common_pb.Media contains repeated items of this shape):
+ *   - mimeType: string (e.g. 'image/png')
+ *   - payload: oneof { inlineData: bytes } — base64-encoded in JSON transport
+ *   - thumbnail: bytes (optional, base64)
+ *   - uri: string (optional, set after SaveMediaAsArtifact)
+ *   - durationSeconds: number (optional, for video)
+ *
+ * The SendUserCascadeMessageRequest has a `media` field of type `repeated Media`.
+ * In the JSON-over-Connect transport, bytes fields are base64-encoded strings.
+ */
+export interface MediaItem {
+    mimeType: string;
+    /** Base64-encoded inline image data */
+    inlineData?: string;
+    /** Base64-encoded thumbnail (optional, smaller version) */
+    thumbnail?: string;
+    /** Artifact URI (populated after saveMediaAsArtifact) */
+    uri?: string;
+    /** Duration in seconds (for video) */
+    durationSeconds?: number;
+}
+
 // ---------------------------------------------------------------------------
 // GrpcCascadeClient
 // ---------------------------------------------------------------------------
@@ -184,11 +209,13 @@ export class GrpcCascadeClient extends EventEmitter {
      * @param cascadeId The conversation/session ID
      * @param text The message text
      * @param model Optional model identifier
+     * @param media Optional array of media items (images/videos) to include
      */
     async sendMessage(
         cascadeId: string,
         text: string,
         model?: ModelId,
+        media?: MediaItem[],
     ): Promise<{ ok: boolean; data?: any; error?: string }> {
         // Verified payload format via E2E testing:
         //   items: [{text}]  (NOT chunk/case)
@@ -210,6 +237,30 @@ export class GrpcCascadeClient extends EventEmitter {
             cascadeConfig: { plannerConfig },
         };
 
+        // Attach media items (images/videos) if present.
+        // Proto field: repeated exa.codeium_common_pb.Media media
+        // In JSON transport, bytes fields (inlineData, thumbnail) are base64 strings.
+        if (media && media.length > 0) {
+            payload.media = media.map(item => {
+                const mediaObj: any = {
+                    mimeType: item.mimeType,
+                };
+                if (item.inlineData) {
+                    mediaObj.payload = { inlineData: item.inlineData };
+                }
+                if (item.thumbnail) {
+                    mediaObj.thumbnail = item.thumbnail;
+                }
+                if (item.uri) {
+                    mediaObj.uri = item.uri;
+                }
+                if (item.durationSeconds != null) {
+                    mediaObj.durationSeconds = item.durationSeconds;
+                }
+                return mediaObj;
+            });
+        }
+
         try {
             const result = await this.rpc('SendUserCascadeMessage', payload);
             this.lastOperationError = null;
@@ -217,6 +268,49 @@ export class GrpcCascadeClient extends EventEmitter {
         } catch (err: any) {
             this.lastOperationError = err.message || String(err);
             return { ok: false, error: this.lastOperationError || undefined };
+        }
+    }
+
+    /**
+     * Upload a media item to the LS and get an artifact URI back.
+     * This persists the media so the LS can reference it during processing.
+     *
+     * @param media The media item to upload
+     * @returns The artifact URI or null on failure
+     */
+    async saveMediaAsArtifact(media: MediaItem): Promise<string | null> {
+        const mediaObj: any = {
+            mimeType: media.mimeType,
+        };
+        if (media.inlineData) {
+            mediaObj.payload = { inlineData: media.inlineData };
+        }
+        if (media.thumbnail) {
+            mediaObj.thumbnail = media.thumbnail;
+        }
+        if (media.uri) {
+            mediaObj.uri = media.uri;
+        }
+
+        try {
+            const result = await this.rpc('SaveMediaAsArtifact', { media: mediaObj });
+            return result?.uri || null;
+        } catch (err: any) {
+            logger.warn(`[GrpcCascadeClient] SaveMediaAsArtifact failed: ${err?.message || err}`);
+            return null;
+        }
+    }
+
+    /**
+     * Delete a previously saved media artifact.
+     */
+    async deleteMediaArtifact(uri: string): Promise<boolean> {
+        try {
+            const result = await this.rpc('DeleteMediaArtifact', { uri });
+            return result?.success !== false;
+        } catch (err: any) {
+            logger.warn(`[GrpcCascadeClient] DeleteMediaArtifact failed: ${err?.message || err}`);
+            return false;
         }
     }
 

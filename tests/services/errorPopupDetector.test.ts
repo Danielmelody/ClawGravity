@@ -160,4 +160,22 @@ describe('ErrorPopupDetector', () => {
             }),
         );
     });
+
+    it('detects network error patterns in response text when IDLE', () => {
+        const { detector, onErrorPopup } = createDetector();
+        detector.start();
+
+        detector.evaluate(
+            'cascade-2',
+            [{ plannerResponse: { response: 'There was a network issue connecting to the server.' } }],
+            IDLE,
+        );
+
+        expect(onErrorPopup).toHaveBeenCalledWith(
+            expect.objectContaining({
+                title: 'Agent Error',
+                body: expect.stringContaining('network issue'),
+            }),
+        );
+    });
 });

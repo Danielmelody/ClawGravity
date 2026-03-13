@@ -1099,8 +1099,25 @@ describe('handleTelegramCommand — /new', () => {
 
     it('starts a new chat session successfully', async () => {
         const message = createMockMessage();
+        const activeMonitor = {
+            isActive: jest.fn().mockReturnValue(true),
+            stop: jest.fn().mockResolvedValue(undefined),
+        };
+        const passiveMonitor = {
+            isActive: jest.fn().mockReturnValue(true),
+            stop: jest.fn().mockResolvedValue(undefined),
+        };
+        const activeMonitors = new Map<string, any>([
+            ['TestProject', activeMonitor],
+            ['passive:TestProject', passiveMonitor],
+        ]);
+        const sessionStateStore = {
+            clearSelectedSession: jest.fn(),
+            setCurrentCascadeId: jest.fn(),
+        };
         const mockRuntime = {
             startNewChat: jest.fn().mockResolvedValue({ ok: true }),
+            getActiveCascadeId: jest.fn().mockResolvedValue('cascade-new'),
         };
         const bridge = createMockBridge();
         (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({ runtime: mockRuntime, projectName: 'TestProject', cdp: {} });
@@ -1110,12 +1127,18 @@ describe('handleTelegramCommand — /new', () => {
         } as any;
 
         await handleTelegramCommand(
-            { bridge, chatSessionService, telegramBindingRepo },
+            { bridge, chatSessionService, telegramBindingRepo, activeMonitors, sessionStateStore: sessionStateStore as any },
             message as any,
             { command: 'new', args: '' },
         );
 
         expect(mockRuntime.startNewChat).toHaveBeenCalledWith(chatSessionService);
+        expect(mockRuntime.getActiveCascadeId).toHaveBeenCalledTimes(1);
+        expect(sessionStateStore.clearSelectedSession).toHaveBeenCalledWith('chat-123');
+        expect(sessionStateStore.setCurrentCascadeId).toHaveBeenCalledWith('chat-123', 'cascade-new');
+        expect(activeMonitor.stop).toHaveBeenCalledTimes(1);
+        expect(passiveMonitor.stop).toHaveBeenCalledTimes(1);
+        expect(activeMonitors.size).toBe(0);
         expect(message.reply).toHaveBeenCalledTimes(1);
         const text = message.reply.mock.calls[0][0].text;
         expect(text).toContain('New chat session started');

@@ -48,6 +48,7 @@ import type { TelegramMessageTracker } from '../services/telegramMessageTracker'
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../services/trajectoryStepRenderer';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
+import { sendArtifactsToTelegram } from '../services/artifactSender';
 
 const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
 
@@ -105,30 +106,6 @@ export interface TelegramMessageHandlerDeps {
  * Returns an async function that processes a single PlatformMessage.
  */
 export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
-    // Serialize the full send+monitor lifecycle per workspace so one turn's
-    // monitor cannot be polluted by later user inputs in the same cascade.
-    const workspaceQueues = new Map<string, Promise<void>>();
-
-    function enqueueForWorkspace(
-        workspacePath: string,
-        task: () => Promise<void>,
-    ): Promise<void> {
-        const current = (workspaceQueues.get(workspacePath) ?? Promise.resolve()).catch(() => { });
-        const next = current.then(async () => {
-            try {
-                await task();
-            } catch (err: any) {
-                logger.error('[TelegramQueue] task error:', err?.message || err);
-            }
-        });
-        workspaceQueues.set(workspacePath, next);
-        return next.finally(() => {
-            if (workspaceQueues.get(workspacePath) === next) {
-                workspaceQueues.delete(workspacePath);
-            }
-        });
-    }
-
     return async (message: PlatformMessage): Promise<void> => {
         const handlerEntryTime = Date.now();
         const chatId = message.channel.id;
@@ -210,187 +187,188 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
         // Acknowledge receipt
         await message.react('\u{1F440}').catch(() => { });
 
-        await enqueueForWorkspace(workspacePath, async () => {
-            // Track all bot-sent message IDs so /clear can delete them
-            const tracker = deps.messageTracker;
-            const trackedChannel = tracker
-                ? wrapChannelWithTracking(message.channel, tracker)
-                : message.channel;
-            // Also track the user's own message
-            const userMsgIdNum = Number(message.id);
-            if (tracker && !isNaN(userMsgIdNum)) {
-                tracker.track(chatId, userMsgIdNum);
-            }
+        // Track all bot-sent message IDs so /clear can delete them
+        const tracker = deps.messageTracker;
+        const trackedChannel = tracker
+            ? wrapChannelWithTracking(message.channel, tracker)
+            : message.channel;
+        // Also track the user's own message
+        const userMsgIdNum = Number(message.id);
+        if (tracker && !isNaN(userMsgIdNum)) {
+            tracker.track(chatId, userMsgIdNum);
+        }
 
-            const cdpStartTime = Date.now();
-            logger.debug(`[TelegramHandler] getOrConnect start (elapsed=${cdpStartTime - handlerEntryTime}ms)`);
-            let runtime: WorkspaceRuntime;
-            let cdp: CdpService;
-            let projectName: string;
-            let preparedRuntime: WorkspaceRuntime | null = null;
-            let preparedProjectName = '';
-            try {
-                const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath, {
-                    enableActionDetectors: true,
-                    userMessageSinkKey: `telegram:${chatId}`,
-                    onUserMessage: (info: UserMessageInfo) => {
-                        if (!preparedRuntime || !preparedProjectName) return;
-                        handlePassiveUserMessage(
-                            message.channel,
-                            preparedRuntime,
-                            info,
-                            deps.activeMonitors,
-                            deps.clawInterceptor,
-                            deps.sessionStateStore,
-                        )
-                            .catch((err: any) => logger.error('[TelegramPassive] Error handling PC message:', err));
-                    },
-                });
-                runtime = prepared.runtime;
-                cdp = prepared.cdp;
-                projectName = prepared.projectName;
-                preparedRuntime = runtime;
-                preparedProjectName = projectName;
-            } catch (e: any) {
-                await message.reply({
-                    text: `Failed to connect to workspace: ${e.message}`,
-                }).catch(logger.error);
-                return;
-            }
-            logger.debug(`[TelegramHandler] getOrConnect done (took=${Date.now() - cdpStartTime}ms)`);
+        const cdpStartTime = Date.now();
+        logger.debug(`[TelegramHandler] getOrConnect start (elapsed=${cdpStartTime - handlerEntryTime}ms)`);
+        let runtime: WorkspaceRuntime;
+        let cdp: CdpService;
+        let projectName: string;
+        let preparedRuntime: WorkspaceRuntime | null = null;
+        let preparedProjectName = '';
+        try {
+            const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath, {
+                enableActionDetectors: true,
+                userMessageSinkKey: `telegram:${chatId}`,
+                onUserMessage: (info: UserMessageInfo) => {
+                    if (!preparedRuntime || !preparedProjectName) return;
+                    handlePassiveUserMessage(
+                        message.channel,
+                        preparedRuntime,
+                        info,
+                        deps.activeMonitors,
+                        deps.clawInterceptor,
+                        deps.sessionStateStore,
+                    )
+                        .catch((err: any) => logger.error('[TelegramPassive] Error handling PC message:', err));
+                },
+            });
+            runtime = prepared.runtime;
+            cdp = prepared.cdp;
+            projectName = prepared.projectName;
+            preparedRuntime = runtime;
+            preparedProjectName = projectName;
+        } catch (e: any) {
+            await message.reply({
+                text: `Failed to connect to workspace: ${e.message}`,
+            }).catch(logger.error);
+            return;
+        }
+        logger.debug(`[TelegramHandler] getOrConnect done (took=${Date.now() - cdpStartTime}ms)`);
 
-            deps.bridge.lastActiveWorkspace = projectName;
-            deps.bridge.lastActiveChannel = message.channel;
-            registerApprovalWorkspaceChannel(deps.bridge, projectName, message.channel);
+        deps.bridge.lastActiveWorkspace = projectName;
+        deps.bridge.lastActiveChannel = message.channel;
+        registerApprovalWorkspaceChannel(deps.bridge, projectName, message.channel);
 
-            const selectedSession = deps.sessionStateStore?.getSelectedSession(chatId);
-            const currentCascadeId = deps.sessionStateStore?.getCurrentCascadeId(chatId) || selectedSession?.id || undefined;
-            if (currentCascadeId) {
-                await runtime.setActiveCascade(currentCascadeId);
-            }
+        const selectedSession = deps.sessionStateStore?.getSelectedSession(chatId);
+        const currentCascadeId = deps.sessionStateStore?.getCurrentCascadeId(chatId) || selectedSession?.id || undefined;
+        if (currentCascadeId) {
+            await runtime.setActiveCascade(currentCascadeId);
+        }
 
             // Always push ModeService's mode to Antigravity on CDP connect.
             // ModeService is the source of truth (what the user sees in /mode UI).
             // Without this, Antigravity could be in a different mode (e.g. Planning)
             // while the user believes they're in Fast mode.
-            if (deps.modeService) {
-                const currentMode = deps.modeService.getCurrentMode();
-                const syncRes = await runtime.syncUiMode(currentMode);
-                if (syncRes.ok) {
-                    deps.modeService.markSynced();
-                    logger.debug(`[TelegramHandler] Mode pushed to Antigravity: ${currentMode}`);
-                } else {
-                    logger.warn(`[TelegramHandler] Mode push failed: ${syncRes.error}`);
-                }
+        if (deps.modeService) {
+            const currentMode = deps.modeService.getCurrentMode();
+            const syncRes = await runtime.syncUiMode(currentMode);
+            if (syncRes.ok) {
+                deps.modeService.markSynced();
+                logger.debug(`[TelegramHandler] Mode pushed to Antigravity: ${currentMode}`);
+            } else {
+                logger.warn(`[TelegramHandler] Mode push failed: ${syncRes.error}`);
             }
+        }
 
             // Apply default model preference on CDP connect
-            if (deps.modelService) {
-                const modelResult = await applyDefaultModel(cdp, deps.modelService);
-                if (modelResult.stale && modelResult.staleMessage) {
-                    await message.reply({ text: modelResult.staleMessage }).catch(logger.error);
-                }
+        if (deps.modelService) {
+            const modelResult = await applyDefaultModel(cdp, deps.modelService);
+            if (modelResult.stale && modelResult.staleMessage) {
+                await message.reply({ text: modelResult.staleMessage }).catch(logger.error);
             }
+        }
 
             // Download image attachments if present
-            let inboundImages: InboundImageAttachment[] = [];
-            if (hasImageAttachments && deps.botToken && deps.botApi) {
-                try {
-                    inboundImages = await downloadTelegramPhotos(
-                        message.attachments,
-                        deps.botToken,
-                        deps.botApi,
-                    );
-                } catch (err: any) {
-                    logger.warn('[TelegramHandler] Image download failed:', err?.message || err);
-                }
-
-                if (hasImageAttachments && inboundImages.length === 0) {
-                    await message.reply({
-                        text: 'Failed to retrieve attached images. Please wait and try again.',
-                    }).catch(logger.error);
-                    return;
-                }
-            }
-
-            // Determine the prompt text — use forwarded prompt (from command) if available,
-            // otherwise fall back to regular prompt or default for image-only messages
-            const effectivePrompt = forwardedPrompt || promptText || 'Please review the attached images and respond accordingly.';
-
-            // Inject prompt (with or without images) into Antigravity
-            logger.prompt(effectivePrompt);
-            let injectResult;
-            let initialMonitoringTarget;
+        let inboundImages: InboundImageAttachment[] = [];
+        if (hasImageAttachments && deps.botToken && deps.botApi) {
             try {
-                const sendResult = await runtime.sendPromptWithMonitoringTarget({
-                    text: effectivePrompt,
-                    overrideCascadeId: currentCascadeId,
-                    imageFilePaths: inboundImages.map((img) => img.localPath),
-                });
-                injectResult = sendResult.injectResult;
-                initialMonitoringTarget = sendResult.monitoringTarget;
-            } finally {
-                // Cleanup temp files regardless of outcome
-                if (inboundImages.length > 0) {
-                    await cleanupInboundImageAttachments(inboundImages).catch(() => { });
-                }
+                inboundImages = await downloadTelegramPhotos(
+                    message.attachments,
+                    deps.botToken,
+                    deps.botApi,
+                );
+            } catch (err: any) {
+                logger.warn('[TelegramHandler] Image download failed:', err?.message || err);
             }
 
-            if (!injectResult.ok) {
+            if (hasImageAttachments && inboundImages.length === 0) {
                 await message.reply({
-                    text: `Failed to send message: ${injectResult.error}`,
+                    text: 'Failed to retrieve attached images. Please wait and try again.',
                 }).catch(logger.error);
                 return;
             }
-            if (injectResult.cascadeId) {
-                deps.sessionStateStore?.setCurrentCascadeId(chatId, injectResult.cascadeId);
+        }
+
+            // Determine the prompt text — use forwarded prompt (from command) if available,
+            // otherwise fall back to regular prompt or default for image-only messages
+        const effectivePrompt = forwardedPrompt || promptText || 'Please review the attached images and respond accordingly.';
+
+            // Inject prompt (with or without images) into Antigravity
+        logger.prompt(effectivePrompt);
+        let injectResult;
+        let initialMonitoringTarget;
+        try {
+            const sendResult = await runtime.sendPromptWithMonitoringTarget({
+                text: effectivePrompt,
+                overrideCascadeId: currentCascadeId,
+                imageFilePaths: inboundImages.map((img) => img.localPath),
+            });
+            injectResult = sendResult.injectResult;
+            initialMonitoringTarget = sendResult.monitoringTarget;
+        } finally {
+            // Cleanup temp files regardless of outcome
+            if (inboundImages.length > 0) {
+                await cleanupInboundImageAttachments(inboundImages).catch(() => { });
             }
+        }
+
+        if (!injectResult.ok) {
+            await message.reply({
+                text: `Failed to send message: ${injectResult.error}`,
+            }).catch(logger.error);
+            return;
+        }
+        if (injectResult.cascadeId) {
+            deps.sessionStateStore?.setCurrentCascadeId(chatId, injectResult.cascadeId);
+        }
 
             // Monitor the response
-            const channel = trackedChannel;
-            const startTime = Date.now();
-            const mirror = await createTelegramMirrorSession(channel, 'Generating...');
+        const channel = trackedChannel;
+        const startTime = Date.now();
+        const mirror = await createTelegramMirrorSession(channel, 'Generating...');
 
-            const TIMEOUT_MS = 600_000;
-            const monitorDeferred = createDeferred<void>();
+        const TIMEOUT_MS = 600_000;
 
-            let monitor: GrpcResponseMonitor | null = null;
-            let safetyTimer: NodeJS.Timeout | null = null;
-            let settled = false;
-            const settle = () => {
-                if (settled) return;
-                settled = true;
-                if (safetyTimer) {
-                    clearTimeout(safetyTimer);
-                    safetyTimer = null;
-                }
-                if (monitor && deps.activeMonitors?.get(projectName) === monitor) {
-                    deps.activeMonitors.delete(projectName);
-                }
-                monitorDeferred.resolve();
-            };
-
-            const monitoringTarget = initialMonitoringTarget
-                ?? await runtime.getMonitoringTarget(injectResult.cascadeId || currentCascadeId || null);
-            if (!monitoringTarget) {
-                await channel.send({ text: '❌ LS client unavailable — cannot monitor response.' }).catch(logger.error);
-                settle();
-                return;
+        let monitor: GrpcResponseMonitor | null = null;
+        let safetyTimer: NodeJS.Timeout | null = null;
+        let settled = false;
+        const settle = () => {
+            if (settled) return;
+            settled = true;
+            if (safetyTimer) {
+                clearTimeout(safetyTimer);
+                safetyTimer = null;
             }
-            const { grpcClient, cascadeId } = monitoringTarget;
-            const pipeline = createPipelineSession('tg-active');
-            const monitorConfig = buildMonitorCallbacks({
-                pipeline,
-                mirror,
-                channel,
-                getPhase: () => monitor?.getPhase?.() || 'timeout',
-                renderOnlyOnComplete: true,
-                resolveFinalText: (finalText: string) => finalText,
-                handleEmptyComplete: async () => {
-                    await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
-                    await mirror.clear();
-                },
-                afterComplete: async (_finalText: string, deliveredText: string | null) => {
+            if (monitor && deps.activeMonitors?.get(projectName) === monitor) {
+                deps.activeMonitors.delete(projectName);
+            }
+        };
+
+        const monitoringTarget = initialMonitoringTarget
+            ?? await runtime.getMonitoringTarget(injectResult.cascadeId || currentCascadeId || null);
+        if (!monitoringTarget) {
+            await channel.send({ text: '❌ LS client unavailable — cannot monitor response.' }).catch(logger.error);
+            settle();
+            return;
+        }
+        const { grpcClient, cascadeId } = monitoringTarget;
+        const pipeline = createPipelineSession('tg-active');
+        const monitorConfig = buildMonitorCallbacks({
+            pipeline,
+            mirror,
+            channel,
+            getPhase: () => monitor?.getPhase?.() || 'timeout',
+            renderOnlyOnComplete: true,
+            resolveFinalText: (finalText: string) => finalText,
+            handleEmptyComplete: async () => {
+                await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
+                await mirror.clear();
+            },
+            afterComplete: async (_finalText: string, deliveredText: string | null, steps: any[]) => {
+                    // Send artifact documents inline (expandable blockquotes)
+                    await sendArtifactsToTelegram(steps, channel, deps.botApi).catch((err: any) =>
+                        logger.warn(`[TelegramHandler] Artifact send failed: ${err?.message || err}`),
+                    );
                     // Detect inspect-complete sentinel: LLM confirmed no issues → auto-disable inspect mode.
                     if (deliveredText?.includes(INSPECT_DONE_SENTINEL)) {
                         deps.sessionStateStore?.setInspect(chatId, false);
@@ -434,62 +412,59 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                         delayBeforeInjectMs: 2000,
                         onCascadeIdUpdate: (id) => deps.sessionStateStore?.setCurrentCascadeId(chatId, id),
                     });
-                },
-                handleTimeoutNotice: async (_lastText: string, phase: string) => {
-                    const isError = phase === 'error';
-                    const isQuota = phase === 'quotaReached';
+            },
+            handleTimeoutNotice: async (_lastText: string, phase: string) => {
+                const isError = phase === 'error';
+                const isQuota = phase === 'quotaReached';
 
-                    if (isQuota) {
-                        await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(logger.error);
-                    } else if (isError) {
-                        await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(logger.error);
-                        try {
-                            const { globalTelegramNotifier } = await import('./index');
-                            if (globalTelegramNotifier) {
-                                await globalTelegramNotifier(
-                                    `🚨 <b>Antigravity Generation Error</b>\nAn error occurred while generating the response for project <code>${escapeHtml(projectName)}</code>.`,
-                                );
-                            }
-                        } catch (e) {
-                            // ignore
+                if (isQuota) {
+                    await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(logger.error);
+                } else if (isError) {
+                    await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(logger.error);
+                    try {
+                        const { globalTelegramNotifier } = await import('./index');
+                        if (globalTelegramNotifier) {
+                            await globalTelegramNotifier(
+                                `🚨 <b>Antigravity Generation Error</b>\nAn error occurred while generating the response for project <code>${escapeHtml(projectName)}</code>.`,
+                            );
                         }
-                    } else {
-                        const elapsedSeconds = Math.round((Date.now() - startTime) / 1000);
-                        await channel.send({ text: `Response timed out after ${elapsedSeconds}s.` }).catch(logger.error);
+                    } catch (e) {
+                        // ignore
                     }
-                },
-                cleanup: settle,
-            });
+                } else {
+                    const elapsedSeconds = Math.round((Date.now() - startTime) / 1000);
+                    await channel.send({ text: `Response timed out after ${elapsedSeconds}s.` }).catch(logger.error);
+                }
+            },
+            cleanup: settle,
+        });
 
-            if (!cascadeId) {
-                await channel.send({ text: '❌ No cascade ID — cannot monitor response.' }).catch(logger.error);
-                settle();
-                return;
-            }
-            monitor = new GrpcResponseMonitor({
-                grpcClient,
-                cascadeId,
-                maxDurationMs: TIMEOUT_MS,
-                expectedUserMessage: effectivePrompt,
-                ...monitorConfig
-            });
+        if (!cascadeId) {
+            await channel.send({ text: '❌ No cascade ID — cannot monitor response.' }).catch(logger.error);
+            settle();
+            return;
+        }
+        monitor = new GrpcResponseMonitor({
+            grpcClient,
+            cascadeId,
+            maxDurationMs: TIMEOUT_MS,
+            expectedUserMessage: effectivePrompt,
+            ...monitorConfig
+        });
 
-            safetyTimer = setTimeout(() => {
-                logger.warn(`[TelegramHandler:${projectName}] Safety timeout — releasing queue after idle period`);
-                monitor?.stop().catch(() => { });
-                settle();
-            }, TIMEOUT_MS);
+        safetyTimer = setTimeout(() => {
+            logger.warn(`[TelegramHandler:${projectName}] Safety timeout — stopping monitor after idle period`);
+            monitor?.stop().catch(() => { });
+            settle();
+        }, TIMEOUT_MS);
 
-            // Register the monitor so /stop can access and stop it
-            deps.activeMonitors?.set(projectName, monitor);
+        // Register the monitor so /stop can access and stop it
+        deps.activeMonitors?.set(projectName, monitor);
 
-            Promise.resolve(monitor.start()).catch((err: any) => {
-                logger.error(`[TelegramHandler:${projectName}] monitor.start() failed:`, err?.message || err);
-                mirror.dispose();
-                settle();
-            });
-
-            await monitorDeferred.promise;
+        Promise.resolve(monitor.start()).catch((err: any) => {
+            logger.error(`[TelegramHandler:${projectName}] monitor.start() failed:`, err?.message || err);
+            mirror.dispose();
+            settle();
         });
     };
 }
@@ -931,7 +906,7 @@ interface MonitorCallbackOptions {
     readonly resolveFinalText: (finalText: string) => string | null;
     readonly shouldForward?: () => boolean;
     readonly handleEmptyComplete?: () => Promise<void>;
-    readonly afterComplete?: (finalText: string, deliveredText: string | null) => Promise<void>;
+    readonly afterComplete?: (finalText: string, deliveredText: string | null, steps: any[]) => Promise<void>;
     readonly handleTimeoutNotice: (lastText: string, phase: string) => Promise<void>;
     readonly cleanup: () => void;
 }
@@ -994,6 +969,7 @@ function buildMonitorCallbacks(options: MonitorCallbackOptions) {
 
                 // 3. Freeze state — atomic snapshot, no more state changes matter
                 const snapshot = mirror.snapshot();
+                const artifactSteps = snapshot.stepsData?.steps ?? [];
                 const existingMessages = mirror.getMessages();
                 mirror.dispose(); // stop streaming renderer
 
@@ -1016,8 +992,8 @@ function buildMonitorCallbacks(options: MonitorCallbackOptions) {
                     await executeDelivery(pipeline, plan, channel, existingMessages);
                 }
 
-                // 6. Post-delivery hooks
-                await afterComplete?.(finalText, plan.deliveredText);
+                // 6. Post-delivery hooks (pass steps for artifact extraction)
+                await afterComplete?.(finalText, plan.deliveredText, artifactSteps);
             } finally {
                 pipeline.flush();
                 mirror.dispose(); // idempotent
@@ -1279,7 +1255,13 @@ async function startPassiveResponseMonitor(
                 await mirror.clear();
             }
         },
-        afterComplete: async (_finalText: string, deliveredText: string | null) => {
+        afterComplete: async (_finalText: string, deliveredText: string | null, steps: any[]) => {
+            // Send artifact documents inline (expandable blockquotes)
+            if (isCurrentChatSession()) {
+                await sendArtifactsToTelegram(steps, channel).catch((err: any) =>
+                    logger.warn(`[TelegramPassive] Artifact send failed: ${err?.message || err}`),
+                );
+            }
             // Detect inspect-complete sentinel in passive path: LLM confirmed no issues → auto-disable.
             if (deliveredText?.includes(INSPECT_DONE_SENTINEL) && isCurrentChatSession()) {
                 sessionStateStore?.setInspect(channel.id, false);

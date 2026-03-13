@@ -36,23 +36,6 @@ plans/
 .gemini/
 .claude/
 
-# Manual test checklists (development only)
-manual-tests/
-
-# Debug / inspection scripts (development only)
-inspect_dom.js
-inspect_dom.ts
-scripts/
-tools/
-*.patch
-parse_eslint.js
-patch.js
-rewrite-tests.js
-rewrite-tests2.js
-tmp-diag.*
-ls_strings.txt
-eslint-unused*.json
-
 # Logs
 logs/
 *.log
@@ -61,12 +44,8 @@ npm-debug.log*
 # Coverage
 coverage/
 
-# jscpd reports
-report/
-
 # npm pack artifacts
 *.tgz
-nul
 
-# Third-party analysis (cloned repos for evaluation)
-analysis/
+# Debug artifacts
+*.patch

@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/08eac63e-5ede-469b-ac6c-1c40ec77b0c0
 ClawGravity is a second-generation fork of LazyGravity that implements the **OpenClaw** concept — using Antigravity's publicly available CDP (Chrome DevTools Protocol) debugging interface as an automation bridge. Key principles:
 
 - **TOS Compliant** — Uses only the standard CDP debugging interface (same as Chrome DevTools, Puppeteer, Playwright). No reverse engineering, no binary modification, no proprietary protocol interception.
-- **More Stable** — Improved CDP connection management, automatic reconnection, and structured DOM extraction for reliable long-running sessions.
+- **More Stable** — Improved CDP connection management, automatic reconnection, and gRPC trajectory-based response extraction for reliable long-running sessions.
 - **More Token-Efficient** — Intelligent activity log filtering, structured response extraction, and deduplication reduce unnecessary token consumption.
 - **All-in-One** — Discord + Telegram dual-platform support, project management, session continuity, and scheduled tasks in a single process.
 
@@ -271,8 +271,8 @@ Run `claw-gravity doctor` to diagnose configuration and connectivity issues.
 ## How CDP Connection Works
 
 1. The bot scans debug ports (default: 9222) and auto-detects the Antigravity target
-2. Connects via WebSocket to CDP (`Runtime.evaluate` for DOM operations)
-3. Injects messages into the chat input, monitors Antigravity responses, and captures screenshots
+2. Connects via WebSocket to CDP, discovers the Language Server (LS) client for gRPC communication
+3. Injects messages via LS API (`SendUserCascadeMessage` / `CreateCascade`), monitors responses via gRPC trajectory polling (`GetCascadeTrajectory`), and captures screenshots via CDP
 
 **On disconnect**: automatically retries up to 3 times (`maxReconnectAttempts`). If all retries fail, an error notification is sent to the active chat platform.
 
