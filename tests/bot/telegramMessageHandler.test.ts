@@ -419,7 +419,7 @@ describe('createTelegramMessageHandler', () => {
         );
     });
 
-    it('ignores passive UI messages from a different cascade than the chat-selected session', async () => {
+    it('detects PC-side session switch and updates tracked cascade ID instead of ignoring', async () => {
         const { ensureWorkspaceRuntime } = jest.requireMock('../../src/services/cdpBridgeManager');
         const mockCdp = createMockCdp();
         const pool = createMockPool(mockCdp);
@@ -438,7 +438,11 @@ describe('createTelegramMessageHandler', () => {
         await runtimeOptions.onUserMessage({ text: 'UI typed in another session', cascadeId: 'cascade-other' });
         await Promise.resolve();
 
-        expect(channel.send.mock.calls.length).toBe(sendCountBeforePassive);
+        // The message should be forwarded (session switch detected)
+        expect(channel.send.mock.calls.length).toBe(sendCountBeforePassive + 1);
+        expect(channel.send).toHaveBeenCalledWith({ text: '🖥️ UI typed in another session' });
+        // The tracked cascade ID should be updated
+        expect(sessionStateStore.getCurrentCascadeId('chat-123')).toBe('cascade-other');
     });
 
     it('suppresses passive responses when the chat switches to a different cascade before completion', async () => {

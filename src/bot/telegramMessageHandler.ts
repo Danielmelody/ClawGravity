@@ -1120,15 +1120,17 @@ export async function handlePassiveUserMessage(
     clawInterceptor?: ClawCommandInterceptor,
     sessionStateStore?: TelegramSessionStateStore,
 ): Promise<void> {
-    if (sessionStateStore) {
+    if (sessionStateStore && info.cascadeId) {
         const expectedCascadeId = sessionStateStore.getCurrentCascadeId(channel.id)
             || await runtime.getActiveCascadeId().catch(() => null);
-        if (expectedCascadeId && info.cascadeId && info.cascadeId !== expectedCascadeId) {
-            logger.debug(
-                `[TelegramPassive] Ignoring cross-session user message for chat ${channel.id}: ` +
-                `expected=${expectedCascadeId.slice(0, 12)}..., got=${info.cascadeId.slice(0, 12)}...`,
+        if (expectedCascadeId && info.cascadeId !== expectedCascadeId) {
+            // The user switched sessions in the PC UI — update our tracked cascade ID
+            // so streaming output from the new session is forwarded to Telegram.
+            logger.info(
+                `[TelegramPassive] PC-side session switch detected for chat ${channel.id}: ` +
+                `old=${expectedCascadeId.slice(0, 12)}..., new=${info.cascadeId.slice(0, 12)}... — updating tracked session`,
             );
-            return;
+            sessionStateStore.setCurrentCascadeId(channel.id, info.cascadeId);
         }
     }
 

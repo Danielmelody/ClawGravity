@@ -118,6 +118,12 @@ export class GrpcResponseMonitor {
     private startTime = 0;
     private pendingTerminalAssistantSignature: string | null = null;
 
+    // Diagnostic: poll failure tracking
+    private consecutivePollFailures = 0;
+    private lastSuccessfulPollMs = 0;
+    private anchorEverMatched = false;
+    private anchorLossLogged = false;
+
     // Polling state
     private pollingTimer: NodeJS.Timeout | null = null;
     private activeTrajectoryRPC: Promise<TrajectoryRecoverySnapshot | null> | null = null;
@@ -226,6 +232,9 @@ export class GrpcResponseMonitor {
             if (!this.isRunning) return;
 
             if (snapshot) {
+                this.consecutivePollFailures = 0;
+                this.lastSuccessfulPollMs = Date.now();
+
                 // Update activity tracking from run status
                 if (snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
                     this.hasSeenActivity = true;
@@ -244,18 +253,30 @@ export class GrpcResponseMonitor {
 
                 // Apply snapshot (handles text updates + completion detection)
                 this.applyTrajectorySnapshot(snapshot);
+            } else {
+                this.onPollFailure('null snapshot');
             }
         } catch (err: any) {
             if (!this.isRunning) return;
             const msg = err?.message || String(err);
-            // Silently retry on transient connection errors
-            if (msg.includes('WebSocket is not connected') || msg.includes('Not connected') || msg.includes('ECONNREFUSED')) {
-                logger.debug(`[GrpcMonitor] Polling transient error: ${msg.slice(0, 100)}`);
-                return;
-            }
-            logger.warn(`[GrpcMonitor] Polling error: ${msg.slice(0, 200)}`);
+            this.onPollFailure(msg);
         } finally {
             this.activeTrajectoryRPC = null;
+        }
+    }
+
+    /** Track consecutive poll failures with escalating log levels (not spammy). */
+    private onPollFailure(reason: string): void {
+        this.consecutivePollFailures++;
+        const n = this.consecutivePollFailures;
+        const sinceSuccess = this.lastSuccessfulPollMs
+            ? `${Math.round((Date.now() - this.lastSuccessfulPollMs) / 1000)}s ago`
+            : 'never';
+        // Log on 1st, 5th, 20th, then every 50th failure
+        if (n === 1 || n === 5 || n === 20 || n % 50 === 0) {
+            logger.warn(
+                `[GrpcMonitor] Poll failure #${n} (last success: ${sinceSuccess}): ${reason.slice(0, 150)}`,
+            );
         }
     }
 
@@ -291,10 +312,12 @@ export class GrpcResponseMonitor {
                 }
 
                 if (anchorIndex === -1) {
-                    logger.warn(`[GrpcMonitor] Anchor not matched. Expected: "${this.expectedUserMessage.slice(0, 50)}..."`);
-                    const stepTypes = steps.map((s: any) => s?.type || 'UNKNOWN').join(', ');
-                    logger.warn(`[GrpcMonitor] Available step types: ${stepTypes}`);
-                    logger.warn(`[GrpcMonitor] Full steps payload dump: ${JSON.stringify(steps).slice(0, 3000)}`);
+                    // Only log details on first anchor-miss (avoid flooding)
+                    if (!this.anchorLossLogged) {
+                        this.anchorLossLogged = true;
+                        const prevMatched = this.anchorEverMatched ? ' (was previously matched!)' : '';
+                        logger.warn(`[GrpcMonitor] Anchor not matched${prevMatched}. Expected: "${this.expectedUserMessage.slice(0, 80)}...", steps=${steps.length}`);
+                    }
                     return {
                         steps,
                         renderSteps: steps.slice(0),
@@ -380,7 +403,14 @@ export class GrpcResponseMonitor {
                 },
                 runStatus,
                 hasExplicitRunStatus,
-                anchorMatched: !this.expectedUserMessage || anchorIndex !== -1,
+                anchorMatched: (() => {
+                    const matched = !this.expectedUserMessage || anchorIndex !== -1;
+                    if (matched && this.expectedUserMessage) {
+                        this.anchorEverMatched = true;
+                        this.anchorLossLogged = false; // reset so we log if it's lost again
+                    }
+                    return matched;
+                })(),
                 latestRole,
                 latestResponseText,
                 latestAssistantHasToolCalls,
