@@ -11,9 +11,20 @@ import {
     withTimestamp,
 } from '../platform/richContentBuilder';
 
+export interface QuotaInfo {
+    remainingFraction?: number;
+    resetTime?: string | number | Date;
+}
+
+export interface QuotaData {
+    label: string;
+    model?: string;
+    quotaInfo?: QuotaInfo;
+}
+
 export interface ModelsUiDeps {
     getCurrentCdp: () => CdpService | null;
-    fetchQuota: () => Promise<Array<Record<string, unknown>>>;
+    fetchQuota: () => Promise<QuotaData[]>;
 }
 
 export interface ModelsUiPayload {
@@ -33,7 +44,7 @@ interface QuotaResult {
 }
 
 /** Match a model name against quota data and compute display values. */
-function resolveQuotaInfo(mName: string, quotaData: Array<Record<string, unknown>>): QuotaResult | null {
+function resolveQuotaInfo(mName: string, quotaData: QuotaData[]): QuotaResult | null {
     const nName = normalizeModelName(mName);
     const q = quotaData.find(q => {
         const nLabel = normalizeModelName(q.label);
@@ -62,7 +73,7 @@ function resolveQuotaInfo(mName: string, quotaData: Array<Record<string, unknown
 function formatQuota(
     mName: string,
     current: boolean,
-    quotaData: Array<Record<string, unknown>>,
+    quotaData: QuotaData[],
     richIcons: boolean = false,
 ): string {
     if (!mName) return `${current ? '[x]' : '[ ]'} Unknown`;
@@ -89,7 +100,7 @@ function formatQuota(
 export function buildModelsPayload(
     models: string[],
     currentModel: string | null,
-    quotaData: Array<Record<string, unknown>>,
+    quotaData: QuotaData[],
     defaultModel: string | null = null,
 ): MessagePayload | null {
     if (models.length === 0) return null;
@@ -176,7 +187,7 @@ export function buildModelsPayload(
  */
 export async function buildModelsUI(
     cdp: CdpService,
-    fetchQuota: () => Promise<Array<Record<string, unknown>>>,
+    fetchQuota: () => Promise<QuotaData[]>,
 ): Promise<ModelsUiPayload | null> {
     const models = await cdp.getUiModels();
     const currentModel = await cdp.getCurrentModel();

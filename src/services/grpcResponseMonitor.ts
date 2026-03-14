@@ -296,10 +296,13 @@ export class GrpcResponseMonitor {
     private async readTrajectorySnapshot(): Promise<TrajectoryRecoverySnapshot | null> {
         try {
             const trajectoryResp = await this.client.rawRPC('GetCascadeTrajectory', { cascadeId: this.cascadeId });
-            const stepCount = Array.isArray(trajectoryResp?.trajectory?.steps) ? trajectoryResp.trajectory.steps.length : '?';
-            logger.debug(`[GrpcMonitor] Trajectory fetched: ${stepCount} steps, status=${trajectoryResp?.trajectory?.status ?? trajectoryResp?.status ?? 'unknown'}`);
-            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
-            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
+            const trajectoryRespRecord = trajectoryResp as Record<string, unknown> | null | undefined;
+            const trajectoryData = trajectoryRespRecord?.trajectory as Record<string, unknown> | undefined;
+            const stepCount = Array.isArray(trajectoryData?.steps) ? trajectoryData.steps.length : '?';
+            const status = (trajectoryData as Record<string, unknown> | undefined)?.status ?? trajectoryRespRecord?.status ?? 'unknown';
+            logger.debug(`[GrpcMonitor] Trajectory fetched: ${stepCount} steps, status=${status}`);
+            const trajectory = trajectoryData ?? trajectoryResp;
+            const steps = Array.isArray((trajectory as Record<string, unknown> | null | undefined)?.steps) ? (trajectory as Record<string, unknown>).steps as unknown[] : [];
 
             const runStatus = extractCascadeRunStatus(trajectoryResp);
 
@@ -312,7 +315,8 @@ export class GrpcResponseMonitor {
             let anchorIndex = -1;
             if (this.expectedUserMessage) {
                 for (let i = steps.length - 1; i >= 0; i--) {
-                    if (steps[i]?.type !== 'CORTEX_STEP_TYPE_USER_INPUT') continue;
+                    const stepRecord = steps[i] as Record<string, unknown> | null | undefined;
+                    if (stepRecord?.type !== 'CORTEX_STEP_TYPE_USER_INPUT') continue;
 
                     const stepText = normalizeComparableText(extractUserStepText(steps[i]));
                     if (stepText === this.expectedUserMessage ||
@@ -351,7 +355,8 @@ export class GrpcResponseMonitor {
 
             for (let i = Math.max(anchorIndex, 0); i < steps.length; i++) {
                 const step = steps[i];
-                if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') {
+                const stepRecord = step as Record<string, unknown> | null | undefined;
+                if (stepRecord?.type === 'CORTEX_STEP_TYPE_USER_INPUT') {
                     if (this.expectedUserMessage && i === anchorIndex) {
                         latestRole = 'user';
                         latestResponseText = null;
@@ -367,10 +372,11 @@ export class GrpcResponseMonitor {
                     continue;
                 }
 
-                if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
+                const plannerResponse = stepRecord?.plannerResponse as Record<string, unknown> | undefined;
+                if (stepRecord?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || stepRecord?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
                     latestRole = 'assistant';
 
-                    const thinking = step?.plannerResponse?.thinking;
+                    const thinking = plannerResponse?.thinking;
                     if (typeof thinking === 'string' && thinking.trim().length > 0) {
                         this.emitThinkingDetails(thinking);
                     }
@@ -384,13 +390,14 @@ export class GrpcResponseMonitor {
 
                     // Only count PENDING tool calls (no result yet) as "still working".
                     // Resolved tool calls (with results/output) should not block completion.
-                    if (Array.isArray(step?.plannerResponse?.toolCalls) && step.plannerResponse.toolCalls.length > 0) {
-                        const pendingToolCalls = step.plannerResponse.toolCalls.filter((tc: unknown) => {
+                    if (Array.isArray(plannerResponse?.toolCalls) && (plannerResponse.toolCalls as unknown[]).length > 0) {
+                        const pendingToolCalls = (plannerResponse.toolCalls as unknown[]).filter((tc: unknown) => {
+                            const tcRecord = tc as Record<string, unknown> | null | undefined;
                             // A tool call is pending if it has no result/output
-                            const hasResult = tc?.result !== undefined
-                                || tc?.output !== undefined
-                                || tc?.toolCallResult !== undefined;
-                            const status = tc?.status || tc?.toolCallStatus || '';
+                            const hasResult = tcRecord?.result !== undefined
+                                || tcRecord?.output !== undefined
+                                || tcRecord?.toolCallResult !== undefined;
+                            const status = tcRecord?.status || tcRecord?.toolCallStatus || '';
                             const isCompleted = status === 'completed'
                                 || status === 'done'
                                 || status === 'success'

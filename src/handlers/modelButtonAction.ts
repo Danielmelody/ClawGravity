@@ -13,6 +13,7 @@ import { buildModelsPayload } from '../ui/modelsUi';
 import type { ModelService } from '../services/modelService';
 import type { UserPreferenceRepository } from '../database/userPreferenceRepository';
 import type { ModelQuota } from '../services/quotaService';
+import type { QuotaData } from '../ui/modelsUi';
 import { logger } from '../utils/logger';
 
 export interface ModelButtonActionDeps {
@@ -109,7 +110,7 @@ async function refreshModelsUI(
         const currentModel = await cdp.getCurrentModel();
         const quotaData = await actionDeps.fetchQuota();
         const defaultModel = actionDeps.modelService?.getDefaultModel() ?? null;
-        const payload = buildModelsPayload(models, currentModel, quotaData as unknown as Array<Record<string, unknown>>, defaultModel);
+        const payload = buildModelsPayload(models, currentModel, quotaData as QuotaData[], defaultModel);
         if (payload) {
             await interaction.update(payload);
         }

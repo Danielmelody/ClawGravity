@@ -46,6 +46,7 @@ import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor'
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
 import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
+import type { TrajectoryStep } from '../services/trajectoryToolState';
 import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../services/trajectoryStepRenderer';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 import { sendArtifactsToTelegram } from '../services/artifactSender';
@@ -364,7 +365,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
                 await mirror.clear();
             },
-            afterComplete: async (_finalText: string, deliveredText: string | null, steps: { type?: string; content?: string }[]) => {
+            afterComplete: async (_finalText: string, deliveredText: string | null, steps: TrajectoryStep[]) => {
                     // Send artifact documents inline (expandable blockquotes)
                     await sendArtifactsToTelegram(steps, channel, deps.botApi).catch((err: unknown) =>
                         logger.warn(`[TelegramHandler] Artifact send failed: ${(err as Error)?.message || err}`),
@@ -753,7 +754,7 @@ async function syncStreamingStatusMessages(
             } catch (err: unknown) {
                 logger.warn(`[TelegramStatus] edit failed for msg #${i}: ${(err as Error)?.message || err}`);
                 const shouldPreserveExisting = /(message is too long|too long|text_too_long|message_too_long|caption is too long|entities too long)/i.test(
-                    err instanceof Error ? err.message : String(err || ''),
+                    (err as Error)?.message || String(err || ''),
                 );
                 const replacement = await channel.send({ text: chunks[i] }).catch((sendErr: unknown) => {
                     logger.error(`[TelegramStatus] replacement send failed for chunk #${i}: ${(sendErr as Error)?.message || sendErr}`);
@@ -772,7 +773,7 @@ async function syncStreamingStatusMessages(
         }
 
         const sent = await channel.send({ text: chunks[i] }).catch((err: unknown) => {
-            logger.error(`[TelegramStatus] send failed for chunk #${i}: ${err?.message || err}`);
+            logger.error(`[TelegramStatus] send failed for chunk #${i}: ${(err as Error)?.message || err}`);
             return null;
         });
         if (sent) {
@@ -842,7 +843,7 @@ async function createTelegramMirrorSession(
         if (state.stepsData.clock > 0 && state.stepsData.value !== null
             && Array.isArray(state.stepsData.value.steps) && state.stepsData.value.steps.length > 0) {
             return renderStepsToTelegramHtml(
-                state.stepsData.value.steps,
+                state.stepsData.value.steps as TrajectoryStep[],
                 state.stepsData.value.runStatus,
             ).trim();
         }
@@ -949,7 +950,7 @@ function buildMonitorCallbacks(options: MonitorCallbackOptions) {
             mirror.dispatch({ type: 'TEXT_UPDATE', text });
         },
 
-        onStepsUpdate: (data: { steps: { type?: string; content?: string }[]; runStatus: string | null }) => {
+        onStepsUpdate: (data: { steps: unknown[]; runStatus: string | null }) => {
             if (!shouldForward()) return;
             if (!data.steps || data.steps.length === 0) return;
             mirror.dispatch({ type: 'STEPS_UPDATE', stepsData: data });
@@ -993,7 +994,7 @@ function buildMonitorCallbacks(options: MonitorCallbackOptions) {
                 }
 
                 // 6. Post-delivery hooks (pass steps for artifact extraction)
-                await afterComplete?.(finalText, plan.deliveredText, artifactSteps);
+                await afterComplete?.(finalText, plan.deliveredText, artifactSteps as TrajectoryStep[]);
             } finally {
                 pipeline.flush();
                 mirror.dispose(); // idempotent
@@ -1257,7 +1258,7 @@ async function startPassiveResponseMonitor(
                 await mirror.clear();
             }
         },
-        afterComplete: async (_finalText: string, deliveredText: string | null, steps: { type?: string; content?: string }[]) => {
+        afterComplete: async (_finalText: string, deliveredText: string | null, steps: TrajectoryStep[]) => {
             // Send artifact documents inline (expandable blockquotes)
             if (isCurrentChatSession()) {
                 await sendArtifactsToTelegram(steps, channel).catch((err: unknown) =>

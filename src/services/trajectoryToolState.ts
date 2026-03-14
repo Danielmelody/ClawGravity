@@ -1,5 +1,5 @@
 /** Generic trajectory step with flexible properties */
-interface TrajectoryStep {
+export interface TrajectoryStep {
     type?: string;
     status?: string;
     metadata?: {
@@ -7,13 +7,14 @@ interface TrajectoryStep {
     };
     toolCall?: ToolCall;
     plannerResponse?: {
+        response?: string;
         toolCalls?: ToolCall[];
     };
     [key: string]: unknown;
 }
 
 /** Tool call type */
-interface ToolCall {
+export interface ToolCall {
     id?: string;
     name?: string;
     toolName?: string;

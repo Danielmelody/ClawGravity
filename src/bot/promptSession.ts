@@ -23,9 +23,10 @@ import { buildEmbedDescriptions } from '../utils/discordFormatter';
 import { t } from '../utils/i18n';
 import { LiveEmbedTrack } from './liveEmbedTrack';
 import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
-import { createCoalescedRenderScheduler } from './coalescedRenderScheduler';
+import { createCoalescedRenderScheduler, type RenderScheduler } from './coalescedRenderScheduler';
 import { renderStepsToDiscordMarkdown } from '../services/trajectoryStepRenderer';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
+import type { Logger } from '../utils/logger';
 
 export interface PromptOptions {
     chatSessionService?: ChatSessionService;
@@ -53,7 +54,7 @@ export interface PromptSessionDependencies {
     enqueueActivity: (task: () => Promise<void>, label?: string) => Promise<void>;
     telemetryModeName: string;
     telemetryModelName: string;
-    logger: unknown; // Using unknown for logger to avoid complex typings for now
+    logger: Logger;
     
     // Config values needed for the session
     config: {
@@ -90,8 +91,8 @@ export class PromptSession {
     private outputFormat: OutputFormat = 'embed';
     
     // Schedulers
-    private responseScheduler: unknown;
-    private activityScheduler: unknown;
+    private responseScheduler!: RenderScheduler<{ text: string; force?: boolean }>;
+    private activityScheduler!: RenderScheduler<{ text: string; force?: boolean; isFinal?: boolean }>;
     
     // Grpc
     private monitor: GrpcResponseMonitor | null = null;
@@ -133,7 +134,7 @@ export class PromptSession {
                     : `Phase: Generating... | Model: ${this.currentModel} | Mode: ${this.deps.telemetryModeName}`;
                 
                 await this.responseTrack.upsert(
-                    this.deps.message.channel,
+                    this.deps.message.channel as { send: (...args: unknown[]) => Promise<unknown> },
                     this.outputFormat,
                     this.isFinalized,
                     t('bot.embed.live.title'),
@@ -166,7 +167,7 @@ export class PromptSession {
                 }
 
                 await this.activityTrack.upsert(
-                    this.deps.message.channel,
+                    this.deps.message.channel as { send: (...args: unknown[]) => Promise<unknown> },
                     'embed', // activities are always embeds
                     this.isFinalized,
                     title,
@@ -214,7 +215,7 @@ export class PromptSession {
                         
                         await new Promise<void>((resolve, reject) => {
                             const file = fs.createWriteStream(tmpPath);
-                            https.get(img.url, (response: unknown) => {
+                            https.get(img.url, (response: import('http').IncomingMessage) => {
                                 response.pipe(file);
                                 file.on('finish', () => {
                                     file.close();
@@ -266,8 +267,8 @@ export class PromptSession {
                     // Phase transitions are handled by monitor internally
                 },
                 onProgress: (text: string) => this.handleContentDelta(text),
-                onStepsUpdate: (data: { steps: unknown[]; runStatus: string }) => {
-                    const activityText = renderStepsToDiscordMarkdown(data.steps, data.runStatus);
+                onStepsUpdate: (data: { steps: unknown[]; runStatus: string | null }) => {
+                    const activityText = renderStepsToDiscordMarkdown(data.steps as Array<{ [key: string]: unknown }>, data.runStatus);
                     this.handleActivity(activityText, data.runStatus === 'complete');
                 },
                 onComplete: (finalText: string) => this.handleComplete(finalText),
@@ -278,7 +279,7 @@ export class PromptSession {
 
         } catch (error: unknown) {
             logger.error('Unhandled error in sendPromptToAntigravity:', error);
-            await this.handleInitialError(error.message || String(error));
+            await this.handleInitialError((error as Error).message || String(error));
         }
     }
 

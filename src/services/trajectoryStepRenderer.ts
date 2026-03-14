@@ -53,6 +53,15 @@ interface TrajectoryStep {
     };
     plannerResponse?: {
         toolCalls?: ToolCall[];
+        thinking?: string;
+        response?: string;
+        error?: unknown;
+    };
+    assistantResponse?: {
+        text?: string;
+    };
+    response?: {
+        error?: unknown;
     };
     error?: unknown;
     userInput?: unknown;
@@ -63,6 +72,7 @@ interface TrajectoryStep {
 interface ToolCall {
     id?: string;
     status?: string;
+    toolCallStatus?: string;
     toolCallResult?: unknown;
     name?: string;
     toolName?: string;
@@ -234,7 +244,7 @@ function renderStepError(step: TrajectoryStep, mode: 'telegram' | 'discord'): st
 
     const errorMessage = typeof errorField === 'string'
         ? errorField
-        : errorField?.message || JSON.stringify(errorField);
+        : (errorField as { message?: string })?.message || JSON.stringify(errorField);
 
     if (!errorMessage || !errorMessage.trim()) return null;
 
@@ -345,13 +355,13 @@ interface CompactToolSummary {
 /** Parse tool arguments into a raw object for compact summary extraction. */
 function getToolArgsObject(tc: ToolCall): Record<string, unknown> | null {
     const direct = tc?.arguments || tc?.function?.arguments || tc?.input;
-    if (direct && typeof direct === 'object') return direct;
+    if (direct && typeof direct === 'object') return direct as Record<string, unknown>;
     if (typeof direct === 'string' && direct.trim()) {
-        try { return JSON.parse(direct); } catch { return null; }
+        try { return JSON.parse(direct) as Record<string, unknown>; } catch { return null; }
     }
     const json = tc?.argumentsJson;
     if (typeof json === 'string' && json.trim()) {
-        try { return JSON.parse(json); } catch { return null; }
+        try { return JSON.parse(json) as Record<string, unknown>; } catch { return null; }
     }
     return null;
 }
@@ -421,8 +431,12 @@ function extractDiffFromResult(result: string | null): { diffText: string | null
     }
 
     // Fallback: try to extract from @@ hunk headers
-    const hunkMatches = result.matchAll(/@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/g);
-    const hunks = [...hunkMatches];
+    const hunkPattern = /@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/g;
+    const hunks: RegExpExecArray[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = hunkPattern.exec(result)) !== null) {
+        hunks.push(match);
+    }
     if (hunks.length > 0) {
         return { diffText: null, stats: `${hunks.length} hunks` };
     }
@@ -505,6 +519,7 @@ function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
     const name = (tc.name || tc.toolName || tc.function?.name || '').toLowerCase();
     const args = getToolArgsObject(tc);
     const result = extractToolResult(tc);
+    const argsRecord = args || {} as Record<string, unknown>;
 
     // ── Complete tool mapping from Antigravity SDK CortexStepType ──
     // Handles both snake_case (gRPC/trajectory) and camelCase (SDK) variants.
@@ -513,32 +528,34 @@ function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
         // ── Search tools ────────────────────────────────────────────────
         case 'grep_search':
         case 'grepsearch': {
-            const query = args?.Query || '';
+            const query = (argsRecord.Query as string) || '';
             // Show scope if searching a specific path (not project root)
-            const scope = args?.SearchPath && !args.SearchPath.endsWith('/')
-                ? ` in ${fileBasename(args.SearchPath)}`
+            const searchPath = argsRecord.SearchPath as string | undefined;
+            const scope = searchPath && !searchPath.endsWith('/')
+                ? ` in ${fileBasename(searchPath)}`
                 : '';
             return { icon: '🔍', label: 'Searched', subject: query + scope, resultBrief: extractResultCount(result) };
         }
         case 'find_by_name':
         case 'findbyname': {
-            const pattern = args?.Pattern || '';
-            const dir = args?.SearchDirectory ? ` in ${fileBasename(args.SearchDirectory)}` : '';
+            const pattern = (argsRecord.Pattern as string) || '';
+            const searchDir = argsRecord.SearchDirectory as string | undefined;
+            const dir = searchDir ? ` in ${fileBasename(searchDir)}` : '';
             return { icon: '🔍', label: 'Searched', subject: pattern + dir, resultBrief: extractResultCount(result) };
         }
         case 'codebase_search':
         case 'codebasesearch':
-            return { icon: '🔍', label: 'Searched', subject: args?.query || args?.Query || '', resultBrief: extractResultCount(result) };
+            return { icon: '🔍', label: 'Searched', subject: (argsRecord.query as string) || (argsRecord.Query as string) || '', resultBrief: extractResultCount(result) };
         case 'search_web':
         case 'searchweb':
-            return { icon: '🌐', label: 'Web searched', subject: args?.query || '', resultBrief: '' };
+            return { icon: '🌐', label: 'Web searched', subject: (argsRecord.query as string) || '', resultBrief: '' };
 
         // ── File viewing tools ──────────────────────────────────────────
         case 'view_file':
         case 'viewfile': {
-            const fp = args?.AbsolutePath || args?.path || '';
-            const s = args?.StartLine;
-            const e = args?.EndLine;
+            const fp = (argsRecord.AbsolutePath as string) || (argsRecord.path as string) || '';
+            const s = argsRecord.StartLine;
+            const e = argsRecord.EndLine;
             const range = s && e ? `#L${s}-${e}` : s ? `#L${s}` : '';
             // Extract total lines from result if available
             const linesBrief = extractBriefStatus(result, [/Total Lines:\s*(\d+)/i]);
@@ -551,33 +568,34 @@ function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
         }
         case 'view_file_outline':
         case 'viewfileoutline':
-            return { icon: '📄', label: 'Viewed outline', subject: fileBasename(args?.AbsolutePath || args?.path || ''), resultBrief: '' };
+            return { icon: '📄', label: 'Viewed outline', subject: fileBasename((argsRecord.AbsolutePath as string) || (argsRecord.path as string) || ''), resultBrief: '' };
         case 'view_code_item':
         case 'viewcodeitem': {
-            const sym = args?.node_identifier || args?.symbol || '';
-            const file = args?.file ? fileBasename(args.file) : '';
+            const sym = (argsRecord.node_identifier as string) || (argsRecord.symbol as string) || '';
+            const fileArg = argsRecord.file as string | undefined;
+            const file = fileArg ? fileBasename(fileArg) : '';
             const subj = file ? `${sym} in ${file}` : sym;
             return { icon: '📄', label: 'Viewed symbol', subject: subj, resultBrief: '' };
         }
         case 'view_content_chunk':
-            return { icon: '📄', label: 'Read chunk', subject: `#${args?.position ?? '?'}`, resultBrief: '' };
+            return { icon: '📄', label: 'Read chunk', subject: `#${(argsRecord.position as number) ?? '?'}`, resultBrief: '' };
         case 'read_url_content':
         case 'readurlcontent':
-            return { icon: '🌐', label: 'Read URL', subject: (args?.Url || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
+            return { icon: '🌐', label: 'Read URL', subject: ((argsRecord.Url as string) || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
 
         // ── File modification tools ─────────────────────────────────────
         case 'write_to_file':
         case 'writetofile': {
-            const fn = fileBasename(args?.TargetFile || '');
-            const desc = args?.Description;
+            const fn = fileBasename((argsRecord.TargetFile as string) || '');
+            const desc = argsRecord.Description;
             return { icon: '📝', label: 'Created', subject: fn, resultBrief: typeof desc === 'string' ? desc.slice(0, 60) : '' };
         }
         case 'replace_file_content':
         case 'multi_replace_file_content':
         case 'writecascadeedit':
         case 'write_cascade_edit': {
-            const fn = fileBasename(args?.TargetFile || args?.file || '');
-            const desc = args?.Description;
+            const fn = fileBasename((argsRecord.TargetFile as string) || (argsRecord.file as string) || '');
+            const desc = argsRecord.Description;
             const { diffText, stats } = extractDiffFromResult(result);
             const briefParts: string[] = [];
             if (stats) briefParts.push(stats);
@@ -592,12 +610,12 @@ function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
         }
         case 'propose_code':
         case 'proposecode':
-            return { icon: '✏️', label: 'Proposed edit', subject: fileBasename(args?.TargetFile || args?.file || ''), resultBrief: '' };
+            return { icon: '✏️', label: 'Proposed edit', subject: fileBasename((argsRecord.TargetFile as string) || (argsRecord.file as string) || ''), resultBrief: '' };
 
         // ── Terminal / command tools ─────────────────────────────────────
         case 'run_command':
         case 'runcommand': {
-            const cmdLine = args?.CommandLine || args?.command || '';
+            const cmdLine = String(argsRecord.CommandLine || argsRecord.command || '');
             const isShort = cmdLine.length <= 60 && !cmdLine.includes('\n');
             const exitBrief = extractBriefStatus(result, [
                 /exit code[:\s]+(\d+)/i,
@@ -615,25 +633,27 @@ function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
         }
         case 'shell_exec':
         case 'shellexec':
-            return { icon: '▶️', label: 'Ran shell', subject: '', resultBrief: '', codePreview: args?.command || args?.CommandLine || undefined };
+            return { icon: '▶️', label: 'Ran shell', subject: '', resultBrief: '', codePreview: (argsRecord.command as string) || (argsRecord.CommandLine as string) || undefined };
         case 'command_status': {
             const statusBrief = extractBriefStatus(result, [/status[:\s]+"?(running|done|completed)"?/i]);
-            return { icon: '▶️', label: 'Checked command', subject: args?.CommandId ? `#${args.CommandId}` : '', resultBrief: statusBrief };
+            const commandId = argsRecord.CommandId as string | undefined;
+            return { icon: '▶️', label: 'Checked command', subject: commandId ? `#${commandId}` : '', resultBrief: statusBrief };
         }
         case 'send_command_input':
         case 'sendcommandinput': {
-            const inputPreview = args?.Input ? args.Input.trim().slice(0, 40) : '';
+            const inputVal = argsRecord.Input as string | undefined;
+            const inputPreview = inputVal ? inputVal.trim().slice(0, 40) : '';
             return { icon: '▶️', label: 'Sent input', subject: inputPreview, resultBrief: '' };
         }
         case 'read_terminal':
         case 'readterminal':
-            return { icon: '▶️', label: 'Read terminal', subject: args?.Name || '', resultBrief: '' };
+            return { icon: '▶️', label: 'Read terminal', subject: (argsRecord.Name as string) || '', resultBrief: '' };
 
         // ── Directory tools ─────────────────────────────────────────────
         case 'list_dir':
         case 'list_directory':
         case 'listdirectory': {
-            const dirPath = args?.DirectoryPath || args?.path || '';
+            const dirPath = (argsRecord.DirectoryPath as string) || (argsRecord.path as string) || '';
             const dirSubject = shortenPath(dirPath);
             // Try to extract entry count from result
             const entryCount = extractBriefStatus(result, [/(\d+)\s+(?:children|entries|items|files)/i]);
@@ -643,10 +663,12 @@ function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
         // ── Browser tools ───────────────────────────────────────────────
         case 'open_browser_url':
         case 'openbrowserurl':
-            return { icon: '🌐', label: 'Opened browser', subject: (args?.url || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
+            return { icon: '🌐', label: 'Opened browser', subject: ((argsRecord.url as string) || '').replace(/^https?:\/\//, '').slice(0, 60), resultBrief: '' };
         case 'read_browser_page':
-        case 'readbrowserpage':
-            return { icon: '🌐', label: 'Read browser page', subject: args?.url ? args.url.replace(/^https?:\/\//, '').slice(0, 50) : '', resultBrief: '' };
+        case 'readbrowserpage': {
+            const url = argsRecord.url as string | undefined;
+            return { icon: '🌐', label: 'Read browser page', subject: url ? url.replace(/^https?:\/\//, '').slice(0, 50) : '', resultBrief: '' };
+        }
         case 'list_browser_pages':
         case 'listbrowserpages': {
             const pageCt = extractBriefStatus(result, [/(\d+)\s+pages?/i]);
@@ -656,32 +678,36 @@ function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
         // ── Agent / MCP tools ───────────────────────────────────────────
         case 'mcp_tool':
         case 'mcptool': {
-            const server = args?.server || args?.ServerName || '';
-            const tool = args?.tool || args?.toolName || args?.name || '';
+            const server = (argsRecord.server as string) || (argsRecord.ServerName as string) || '';
+            const tool = (argsRecord.tool as string) || (argsRecord.toolName as string) || (argsRecord.name as string) || '';
             const mcpSubj = server ? `${server}:${tool}` : tool;
             return { icon: '🔌', label: 'MCP tool', subject: mcpSubj, resultBrief: '' };
         }
         case 'invoke_subagent':
         case 'invokesubagent':
-            return { icon: '🤖', label: 'Invoked subagent', subject: args?.agent || args?.name || '', resultBrief: '' };
+            return { icon: '🤖', label: 'Invoked subagent', subject: (argsRecord.agent as string) || (argsRecord.name as string) || '', resultBrief: '' };
 
         // ── Memory / Knowledge tools ────────────────────────────────────
         case 'memory':
-            return { icon: '🧠', label: 'Memory', subject: args?.action || '', resultBrief: '' };
+            return { icon: '🧠', label: 'Memory', subject: (argsRecord.action as string) || '', resultBrief: '' };
         case 'knowledge_generation':
         case 'knowledgegeneration':
             return { icon: '🧠', label: 'Generated knowledge', subject: '', resultBrief: '' };
 
         // ── Miscellaneous ───────────────────────────────────────────────
-        case 'generate_image':
-            return { icon: '🖼️', label: 'Generated image', subject: args?.ImageName || args?.Prompt?.slice(0, 40) || '', resultBrief: '' };
+        case 'generate_image': {
+            const prompt = argsRecord.Prompt as string | undefined;
+            return { icon: '🖼️', label: 'Generated image', subject: (argsRecord.ImageName as string) || (prompt?.slice(0, 40) || ''), resultBrief: '' };
+        }
         case 'read_resource':
-            return { icon: '📦', label: 'Read resource', subject: args?.Uri || '', resultBrief: '' };
-        case 'wait':
-            return { icon: '⏱️', label: 'Waiting', subject: args?.duration ? `${args.duration}ms` : '', resultBrief: '' };
+            return { icon: '📦', label: 'Read resource', subject: (argsRecord.Uri as string) || '', resultBrief: '' };
+        case 'wait': {
+            const duration = argsRecord.duration as number | undefined;
+            return { icon: '⏱️', label: 'Waiting', subject: duration ? `${duration}ms` : '', resultBrief: '' };
+        }
         case 'task_boundary':
         case 'taskboundary':
-            return { icon: '📋', label: 'Task', subject: args?.TaskName || '', resultBrief: args?.TaskStatus || '' };
+            return { icon: '📋', label: 'Task', subject: (argsRecord.TaskName as string) || '', resultBrief: (argsRecord.TaskStatus as string) || '' };
         case 'notify_user':
         case 'notifyuser':
             return { icon: '🔔', label: 'Notified user', subject: '', resultBrief: '' };
@@ -709,9 +735,10 @@ function extractToolResult(tc: ToolCall): string | null {
     if (typeof res === 'string') return res;
     if (typeof res === 'object') {
         // Handle common payload keys from the new SDK structure
-        if (typeof res.summary === 'string') return res.summary;
-        if (typeof res.output === 'string') return res.output;
-        if (typeof res.result === 'string') return res.result;
+        const resObj = res as Record<string, unknown>;
+        if (typeof resObj.summary === 'string') return resObj.summary;
+        if (typeof resObj.output === 'string') return resObj.output;
+        if (typeof resObj.result === 'string') return resObj.result;
         return JSON.stringify(res, null, 2);
     }
     return String(res);

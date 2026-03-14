@@ -1,6 +1,6 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
-import { getPendingToolCallsFromPlannerStep } from './trajectoryToolState';
+import { getPendingToolCallsFromPlannerStep, type TrajectoryStep } from './trajectoryToolState';
 import {
     type NotificationTracker,
     createNotificationTracker,
@@ -119,14 +119,14 @@ export class ApprovalDetector {
 
         // Walk backwards from the last step to find pending approval
         for (let i = steps.length - 1; i >= 0; i--) {
-            const step = steps[i];
+            const step = steps[i] as TrajectoryStep | undefined;
 
             // Skip user input steps
             if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') break;
 
             // Check planner response for tool calls
             if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {
-                let pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
+                let pendingToolCalls = getPendingToolCallsFromPlannerStep(steps as TrajectoryStep[], i);
 
                 // Exclude terminal commands - they are handled exclusively by RunCommandDetector
                 pendingToolCalls = pendingToolCalls.filter((tc: unknown) => {
@@ -177,7 +177,7 @@ export class ApprovalDetector {
      */
     async approveButton(): Promise<boolean> {
         try {
-            const result = await this.cdpService.executeVscodeCommand('antigravity.agent.acceptAgentStep');
+            const result = await this.cdpService.executeVscodeCommand('antigravity.agent.acceptAgentStep') as { ok?: boolean } | undefined;
             if (result?.ok) {
                 logger.debug('[ApprovalDetector] Approved via VS Code command');
                 return true;
@@ -204,7 +204,7 @@ export class ApprovalDetector {
      */
     async denyButton(): Promise<boolean> {
         try {
-            const result = await this.cdpService.executeVscodeCommand('antigravity.agent.rejectAgentStep');
+            const result = await this.cdpService.executeVscodeCommand('antigravity.agent.rejectAgentStep') as { ok?: boolean } | undefined;
             if (result?.ok) {
                 logger.debug('[ApprovalDetector] Denied via VS Code command');
                 return true;

@@ -159,7 +159,7 @@ export class CdpService extends EventEmitter {
         const allPages: Record<string, unknown>[] = [];
         for (const port of this.ports) {
             try {
-                const list = await this.getJson(`http://127.0.0.1:${port}/json/list`);
+                const list = await this.getJson(`http://127.0.0.1:${port}/json/list`) as Record<string, unknown>[];
                 allPages.push(...list);
             } catch {
                 // Ignore port not found
@@ -169,37 +169,38 @@ export class CdpService extends EventEmitter {
         let target = allPages.find(t =>
             t.type === 'page' &&
             t.webSocketDebuggerUrl &&
-            !t.title?.includes('Launchpad') &&
-            !t.url?.includes('workbench-jetski-agent') &&
-            (t.url?.includes('workbench') || t.title?.includes('Antigravity') || t.title?.includes('Cascade'))
+            !(t.title as string | undefined)?.includes('Launchpad') &&
+            !(t.url as string | undefined)?.includes('workbench-jetski-agent') &&
+            ((t.url as string | undefined)?.includes('workbench') || (t.title as string | undefined)?.includes('Antigravity') || (t.title as string | undefined)?.includes('Cascade'))
         );
 
         if (!target) {
             target = allPages.find(t =>
                 t.webSocketDebuggerUrl &&
-                (t.url?.includes('workbench') || t.title?.includes('Antigravity') || t.title?.includes('Cascade')) &&
-                !t.title?.includes('Launchpad')
+                ((t.url as string | undefined)?.includes('workbench') || (t.title as string | undefined)?.includes('Antigravity') || (t.title as string | undefined)?.includes('Cascade')) &&
+                !(t.title as string | undefined)?.includes('Launchpad')
             );
         }
 
         if (!target) {
             target = allPages.find(t =>
                 t.webSocketDebuggerUrl &&
-                (t.url?.includes('workbench') || t.title?.includes('Antigravity') || t.title?.includes('Cascade') || t.title?.includes('Launchpad'))
+                ((t.url as string | undefined)?.includes('workbench') || (t.title as string | undefined)?.includes('Antigravity') || (t.title as string | undefined)?.includes('Cascade') || (t.title as string | undefined)?.includes('Launchpad'))
             );
         }
 
         if (target && target.webSocketDebuggerUrl) {
-            this.targetUrl = target.webSocketDebuggerUrl;
+            this.targetUrl = target.webSocketDebuggerUrl as string;
             this.targetFrameId = typeof target.id === 'string' ? target.id : null;
             // Extract workspace name from title (e.g., "ProjectName — Antigravity")
-            if (target.title && !this.currentWorkspaceName) {
-                const titleParts = target.title.split(/\\s[—–-]\\s/);
+            const title = target.title as string | undefined;
+            if (title && !this.currentWorkspaceName) {
+                const titleParts = title.split(/\\s[—–-]\\s/);
                 if (titleParts.length > 0) {
                     this.currentWorkspaceName = titleParts[0].trim();
                 }
             }
-            return target.webSocketDebuggerUrl;
+            return target.webSocketDebuggerUrl as string;
         }
 
         throw new Error('CDP target not found on any port.');
@@ -237,9 +238,14 @@ export class CdpService extends EventEmitter {
                 
                 // Track contexts here
                 if (event === 'Runtime.executionContextCreated') {
-                     this.contexts.push(args[0].context);
+                     const ctx = (args[0] as { context?: { id: number; name: string; auxData?: Record<string, unknown> } }).context;
+                     if (ctx) {
+                    const ctxWithUrl = ctx as { id: number; name: string; url?: string; auxData?: Record<string, unknown> };
+                    this.contexts.push({ ...ctxWithUrl, url: ctxWithUrl.url || '' });
+                }
                 } else if (event === 'Runtime.executionContextDestroyed') {
-                     const idx = this.contexts.findIndex(c => c.id === args[0].executionContextId);
+                     const execId = (args[0] as { executionContextId?: number }).executionContextId;
+                     const idx = this.contexts.findIndex(c => c.id === execId);
                      if (idx !== -1) this.contexts.splice(idx, 1);
                 }
             }
@@ -350,7 +356,7 @@ export class CdpService extends EventEmitter {
             const titleResult = await this.call('Runtime.evaluate', {
                 expression: 'document.title',
                 returnByValue: true,
-            });
+            }) as { result?: { value?: unknown } };
             const liveTitle = String(titleResult?.result?.value || '');
             if (liveTitle.toLowerCase().includes(projectName.toLowerCase())) {
                 this.currentWorkspaceName = projectName;
@@ -373,7 +379,7 @@ export class CdpService extends EventEmitter {
 
         for (const port of this.ports) {
             try {
-                const list = await this.getJson(`http://127.0.0.1:${port}/json/list`);
+                const list = await this.getJson(`http://127.0.0.1:${port}/json/list`) as Record<string, unknown>[];
                 pages.push(...list);
                 // Prioritize recording ports that contain workbench pages
                 const hasWorkbench = list.some((t: Record<string, unknown>) => (t.url as string | undefined)?.includes('workbench'));
@@ -422,7 +428,7 @@ export class CdpService extends EventEmitter {
         //    a different workspace, launch a new window instead of hijacking it.
         if (workbenchPages.length === 1) {
             const singlePage = workbenchPages[0];
-            const pageTitle = (singlePage.title || '').trim();
+            const pageTitle = String(singlePage.title || '').trim();
             const isFreshOrUntitled = !pageTitle || pageTitle === 'Untitled (Workspace)' || pageTitle.includes('Untitled');
             const belongsToDifferentWorkspace = pageTitle && !isFreshOrUntitled
                 && !pageTitle.toLowerCase().includes(projectName.toLowerCase());
@@ -476,7 +482,7 @@ export class CdpService extends EventEmitter {
         this.recentCreatedCascadeId = null;
         this.recentCreatedCascadeAt = 0;
 
-        this.targetUrl = page.webSocketDebuggerUrl;
+        this.targetUrl = page.webSocketDebuggerUrl as string;
         this.targetFrameId = typeof page?.id === 'string' ? page.id : null;
         await this.connect();
         this.currentWorkspaceName = projectName;
@@ -504,13 +510,13 @@ export class CdpService extends EventEmitter {
             try {
                 // Temporarily connect to retrieve document.title
                 this.disconnectQuietly();
-                this.targetUrl = page.webSocketDebuggerUrl;
+                this.targetUrl = page.webSocketDebuggerUrl as string;
                 await this.connect();
 
                 const result = await this.call('Runtime.evaluate', {
                     expression: 'document.title',
                     returnByValue: true,
-                });
+                }) as { result?: { value?: unknown } };
                 const liveTitle = String(result?.result?.value || '');
                 const normalizedLiveTitle = liveTitle.toLowerCase();
                 const normalizedProject = projectName.toLowerCase();
@@ -581,7 +587,7 @@ export class CdpService extends EventEmitter {
             const res = await this.call('Runtime.evaluate', {
                 expression,
                 returnByValue: true,
-            });
+            }) as { result?: { value?: { found?: boolean; value?: string } } };
 
             const value = res?.result?.value;
             if (value?.found && value?.value) {
@@ -876,14 +882,14 @@ export class CdpService extends EventEmitter {
             callParams.contextId = contextId;
         }
 
-        const locateResult = await this.call('Runtime.evaluate', callParams);
+        const locateResult = await this.call('Runtime.evaluate', callParams) as { result?: { value?: { ok?: boolean; token?: unknown; error?: string } } };
         const locateValue = locateResult?.result?.value;
         if (!locateValue?.ok || !locateValue?.token) {
             return { ok: false, error: locateValue?.error || 'Failed to locate file input' };
         }
 
         const token = String(locateValue.token);
-        const documentResult = await this.call('DOM.getDocument', { depth: 1, pierce: true });
+        const documentResult = await this.call('DOM.getDocument', { depth: 1, pierce: true }) as { root?: { nodeId?: number } };
         const rootNodeId = documentResult?.root?.nodeId;
         if (!rootNodeId) {
             return { ok: false, error: 'Failed to get DOM root' };
@@ -893,7 +899,7 @@ export class CdpService extends EventEmitter {
         const nodeResult = await this.call('DOM.querySelector', {
             nodeId: rootNodeId,
             selector,
-        });
+        }) as { nodeId?: number };
         const nodeId = nodeResult?.nodeId;
         if (!nodeId) {
             return { ok: false, error: 'Failed to get upload input node' };
@@ -933,7 +939,7 @@ export class CdpService extends EventEmitter {
                 returnByValue: true,
                 awaitPromise: true,
                 timeout: 10000,
-            });
+            }) as { result?: { value?: unknown } };
             return res?.result?.value;
         });
         if (!client) {
@@ -1146,24 +1152,28 @@ export class CdpService extends EventEmitter {
     private cachedModelConfigs: Array<{ label: string; model: string; supportsImages?: boolean }> = [];
 
     private extractModelIdentifier(config: Record<string, unknown>): string {
+        const cfg = config || {};
+        const modelOrAlias = cfg.modelOrAlias as Record<string, unknown> | undefined;
+        const requestedModel = cfg.requestedModel as Record<string, unknown> | undefined;
         const direct =
-            config?.modelOrAlias?.model
-            ?? config?.modelOrAlias?.alias
-            ?? config?.model
-            ?? config?.modelId
-            ?? config?.requestedModel?.choice?.value
-            ?? config?.requestedModel?.value;
+            (modelOrAlias?.model as string | undefined)
+            ?? (modelOrAlias?.alias as string | undefined)
+            ?? (cfg.model as string | undefined)
+            ?? (cfg.modelId as string | undefined)
+            ?? ((requestedModel?.choice as Record<string, unknown>)?.value as string | undefined)
+            ?? (requestedModel?.value as string | undefined);
         if (direct !== undefined && direct !== null && String(direct).trim()) {
             return String(direct);
         }
 
         const nestedChoice =
-            config?.modelOrAlias?.choice
-            ?? config?.modelOrAlias;
+            (modelOrAlias?.choice as Record<string, unknown> | undefined)
+            ?? modelOrAlias;
+        const nestedChoiceValue = nestedChoice?.value as Record<string, unknown> | undefined;
         const nestedValue =
-            nestedChoice?.value?.model
-            ?? nestedChoice?.value?.alias
-            ?? nestedChoice?.value;
+            (nestedChoiceValue?.model as string | undefined)
+            ?? (nestedChoiceValue?.alias as string | undefined)
+            ?? (nestedChoice as unknown as string | undefined);
         if (nestedValue !== undefined && nestedValue !== null && String(nestedValue).trim()) {
             return String(nestedValue);
         }
@@ -1206,7 +1216,7 @@ export class CdpService extends EventEmitter {
             const client = await this.getLSClient();
             if (!client) return [];
 
-            const status = await client.getUserStatus();
+            const status = await client.getUserStatus() as { userStatus?: { cascadeModelConfigData?: { clientModelConfigs?: Record<string, unknown>[] } } };
             const configs = status?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
             this.cachedModelConfigs = configs.map((cfg: Record<string, unknown>) => {
                 const label = (cfg.label as string | undefined) || (cfg.displayName as string | undefined) || (cfg.modelName as string | undefined) || (cfg.model as string | undefined) || 'Unknown';
@@ -1296,7 +1306,7 @@ export class CdpService extends EventEmitter {
                     expression: script,
                     returnByValue: true,
                     contextId: ctx.id,
-                });
+                }) as { result?: { value?: unknown } };
                 const value = res?.result?.value;
                 if (typeof value === 'string' && value.length > 0) {
                     logger.debug(`[CdpService] Model from UI: ${value}`);
@@ -1319,7 +1329,7 @@ export class CdpService extends EventEmitter {
             const client = await this.getLSClient();
             if (!client) return;
 
-            const status = await client.getUserStatus();
+            const status = await client.getUserStatus() as { userStatus?: { cascadeModelConfigData?: { clientModelConfigs?: Record<string, unknown>[] } } };
             const data = status?.userStatus?.cascadeModelConfigData;
             const configs = data?.clientModelConfigs || [];
             if (configs.length > 0) {
@@ -1484,7 +1494,7 @@ export class CdpService extends EventEmitter {
                     returnByValue: true,
                     awaitPromise: true,
                     contextId: ctx.id,
-                });
+                }) as { result?: { value?: { ok?: boolean; error?: string } } };
                 const value = res?.result?.value;
                 if (value?.ok) return value;
             } catch {
@@ -1505,7 +1515,7 @@ export class CdpService extends EventEmitter {
             const client = await this.getLSClient();
             if (!client) return null;
 
-            const summaries = await client.listCascades();
+            const summaries = await client.listCascades() as Record<string, unknown>;
             if (!summaries || typeof summaries !== 'object') return null;
 
             const toSessionInfo = (id: string, summary: Record<string, unknown> | undefined) => ({
@@ -1516,9 +1526,9 @@ export class CdpService extends EventEmitter {
 
             // Filter out summaries that don't belong to this workspace
             const workspaceSummaries: Record<string, Record<string, unknown>> = {};
-            for (const [id, summary] of Object.entries(summaries)) {
-                if (this.isCascadeInWorkspace(summary)) {
-                    workspaceSummaries[id] = summary;
+            for (const [id, summary] of Object.entries(summaries as Record<string, unknown>)) {
+                if (this.isCascadeInWorkspace(summary as Record<string, unknown>)) {
+                    workspaceSummaries[id] = summary as Record<string, unknown>;
                 }
             }
 
@@ -1569,11 +1579,11 @@ export class CdpService extends EventEmitter {
             }
 
             // Global fallback only when we are not bound to a workspace.
-            const ids = Object.keys(summaries);
+            const ids = Object.keys(summaries as Record<string, unknown>);
             if (ids.length > 0) {
                 const firstId = ids[0];
                 this.cachedCascadeId = firstId;
-                return toSessionInfo(firstId, summaries[firstId]);
+                return toSessionInfo(firstId, (summaries as Record<string, unknown>)[firstId] as Record<string, unknown> | undefined);
             }
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);

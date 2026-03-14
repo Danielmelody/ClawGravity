@@ -108,20 +108,20 @@ export class LsClientManager {
                 return null;
             })()`;
 
-            const lsUrl = await evaluateFn(perfScript);
+            const lsUrl = await evaluateFn(perfScript) as string;
             if (!lsUrl) {
                 logger.warn('[LsClientManager] No LS requests found in performance entries');
                 return;
             }
 
-            const portMatch = lsUrl.match(/127\.0\.0\.1:(\d+)/);
+            const portMatch = (lsUrl as string).match(/127\.0\.0\.1:(\d+)/);
             if (!portMatch) {
                 logger.warn(`[LsClientManager] Could not extract port from LS URL: ${lsUrl}`);
                 return;
             }
 
             const lsPort = parseInt(portMatch[1], 10);
-            const useTls = lsUrl.startsWith('https');
+            const useTls = (lsUrl as string).startsWith('https');
             logger.info(`[LsClientManager] Found LS port from performance entries: port=${lsPort}, tls=${useTls}`);
 
             let netstatOutput: string;

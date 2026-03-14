@@ -9,6 +9,26 @@ import {
     processDetectorResult,
 } from './detectorStateManager';
 
+/** Generic trajectory step type */
+interface TrajectoryStep {
+    type?: string;
+    status?: string;
+    cascadeRunStatus?: string;
+    error?: unknown;
+    plannerResponse?: {
+        response?: string;
+        error?: unknown;
+    };
+    response?: {
+        text?: string;
+        error?: unknown;
+    };
+    assistantResponse?: {
+        text?: string;
+    };
+    [key: string]: unknown;
+}
+
 /** Error popup information */
 export interface ErrorPopupInfo {
     /** Error popup title text */
@@ -95,7 +115,7 @@ export class ErrorPopupDetector {
      */
     async clickRetryButton(): Promise<boolean> {
         try {
-            const result = await this.cdpService.executeVscodeCommand('antigravity.command.retry');
+            const result = await this.cdpService.executeVscodeCommand('antigravity.command.retry') as { ok?: boolean } | undefined;
             if (result?.ok) {
                 logger.debug('[ErrorPopupDetector] Retried via VS Code command');
                 return true;
@@ -186,7 +206,7 @@ export class ErrorPopupDetector {
         // Check the last few steps for error information
         const checkCount = Math.min(steps.length, 5);
         for (let i = steps.length - 1; i >= steps.length - checkCount; i--) {
-            const step = steps[i];
+            const step = steps[i] as TrajectoryStep | undefined;
             if (!step) continue;
 
             // Check for explicit error field
@@ -194,7 +214,7 @@ export class ErrorPopupDetector {
             if (errorField) {
                 const errorMessage = typeof errorField === 'string'
                     ? errorField
-                    : errorField?.message || JSON.stringify(errorField);
+                    : (errorField as { message?: string })?.message || JSON.stringify(errorField);
 
                 return {
                     title: 'Agent Error',

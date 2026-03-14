@@ -178,6 +178,26 @@ export class JoinCommandHandler {
     }
 
     /**
+     * Ensure workspace runtime is available, replying with an error if connection fails.
+     * Returns null if connection failed (after sending an error reply).
+     */
+    private async ensureRuntime(
+        interaction: ChatInputCommandInteraction | StringSelectMenuInteraction,
+        bridge: CdpBridge,
+        projectPath: string,
+    ): Promise<WorkspaceRuntime | null> {
+        try {
+            const prepared = await ensureWorkspaceRuntime(bridge, projectPath);
+            return prepared.runtime;
+        } catch (e: unknown) {
+            await interaction.editReply({
+                content: t(`⚠️ Failed to connect to project: ${(e as Error).message}`),
+            });
+            return null;
+        }
+    }
+
+    /**
      * /history — Show session picker for the workspace bound to this channel.
      */
     async handleJoin(
@@ -188,16 +208,8 @@ export class JoinCommandHandler {
         if (!resolved) return;
         const { projectPath } = resolved;
 
-        let runtime;
-        try {
-            const prepared = await ensureWorkspaceRuntime(bridge, projectPath);
-            runtime = prepared.runtime;
-        } catch (e: unknown) {
-            await interaction.editReply({
-                content: t(`⚠️ Failed to connect to project: ${(e as Error).message}`),
-            });
-            return;
-        }
+        const runtime = await this.ensureRuntime(interaction, bridge, projectPath);
+        if (!runtime) return;
 
         const sessions = await runtime.listAllSessions(this.chatSessionService);
         const { embeds, components } = buildSessionPickerUI(sessions);
@@ -247,14 +259,8 @@ export class JoinCommandHandler {
         }
 
         // Step 2: Connect to CDP
-        let runtime;
-        try {
-            const prepared = await ensureWorkspaceRuntime(bridge, projectPath);
-            runtime = prepared.runtime;
-        } catch (e: unknown) {
-            await interaction.editReply({ content: t(`⚠️ Failed to connect to project: ${(e as Error).message}`) });
-            return;
-        }
+        const runtime = await this.ensureRuntime(interaction, bridge, projectPath);
+        if (!runtime) return;
 
         // Step 3: Activate the session in Antigravity
         const activateResult = await runtime.activateSessionByTitle(this.chatSessionService, selectedTitle);

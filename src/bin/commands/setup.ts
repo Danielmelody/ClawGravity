@@ -12,8 +12,8 @@ let _select: SelectFn | undefined;
 
 async function getSelect(): Promise<SelectFn> {
     if (_select === undefined) {
-        const mod = await dynamicImport('@inquirer/select');
-        _select = mod.default as SelectFn;
+        const mod = await dynamicImport('@inquirer/select') as { default: SelectFn };
+        _select = mod.default;
     }
     return _select;
 }

@@ -1,9 +1,7 @@
-import { AttachmentBuilder, Message } from 'discord.js';
+import { Message } from 'discord.js';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-
-import { ExtractedResponseImage } from '../services/cdpService';
 import { logger } from './logger';
 
 const MAX_INBOUND_IMAGE_ATTACHMENTS = 4;
@@ -78,7 +76,7 @@ export async function downloadInboundImageAttachments(message: Message): Promise
             });
             index += 1;
         } catch (error: unknown) {
-            logger.warn(`[ImageBridge] Attachment image processing failed (id=${attachment.id || 'unknown'})`, error?.message || error);
+            logger.warn(`[ImageBridge] Attachment image processing failed (id=${attachment.id || 'unknown'})`, (error as Error)?.message || error);
         }
     }
 
@@ -89,34 +87,4 @@ export async function cleanupInboundImageAttachments(attachments: InboundImageAt
     for (const image of attachments) {
         await fs.unlink(image.localPath).catch(() => { });
     }
-}
-
-export async function toDiscordAttachment(image: ExtractedResponseImage, index: number): Promise<AttachmentBuilder | null> {
-    let buffer: Buffer | null = null;
-    let mimeType = image.mimeType || 'image/png';
-
-    if (image.base64Data) {
-        try {
-            buffer = Buffer.from(image.base64Data, 'base64');
-        } catch {
-            buffer = null;
-        }
-    } else if (image.url && /^https?:\/\//i.test(image.url)) {
-        try {
-            const response = await fetch(image.url);
-            if (response.ok) {
-                buffer = Buffer.from(await response.arrayBuffer());
-                mimeType = response.headers.get('content-type') || mimeType;
-            }
-        } catch {
-            buffer = null;
-        }
-    }
-
-    if (!buffer || buffer.length === 0) return null;
-
-    const inferredExt = mimeTypeToExtension(mimeType);
-    const baseName = sanitizeFileName(image.name || `generated-image-${index + 1}.${inferredExt}`);
-    const finalName = IMAGE_EXT_PATTERN.test(baseName) ? baseName : `${baseName}.${inferredExt}`;
-    return new AttachmentBuilder(buffer, { name: finalName });
 }

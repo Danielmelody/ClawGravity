@@ -44,7 +44,7 @@ export class WorkspaceLauncher {
         const knownPageIds: Set<string> = new Set();
         for (const port of ports) {
             try {
-                const preLaunchPages = await cdpService.getJson(`http://127.0.0.1:${port}/json/list`);
+                const preLaunchPages = await cdpService.getJson(`http://127.0.0.1:${port}/json/list`) as Array<{ id?: string }>;
                 preLaunchPages.forEach((p: { id?: string }) => {
                     if (p.id) knownPageIds.add(p.id);
                 });
@@ -59,7 +59,7 @@ export class WorkspaceLauncher {
             const pages: Array<{ id?: string; title?: string }> = [];
             for (const port of ports) {
                 try {
-                    const list = await cdpService.getJson(`http://127.0.0.1:${port}/json/list`);
+                    const list = await cdpService.getJson(`http://127.0.0.1:${port}/json/list`) as Array<{ id?: string; title?: string }>;
                     pages.push(...list);
                 } catch {
                     // Next port

@@ -71,11 +71,11 @@ export async function getCurrentChatTitle(cdp: CdpService): Promise<string | nul
             for (const [, summary] of Object.entries(summaries)) {
                 const s = summary as Record<string, unknown>;
                 const modTime = s.lastModifiedTimestamp
-                    ? new Date(s.lastModifiedTimestamp).getTime()
+                    ? new Date(s.lastModifiedTimestamp as string | number | Date).getTime()
                     : 0;
                 if (modTime > latestTime) {
                     latestTime = modTime;
-                    latestTitle = s.name || s.title || null;
+                    latestTitle = (s.name as string | undefined) || (s.title as string | undefined) || null;
                 }
             }
 

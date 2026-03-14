@@ -1,6 +1,6 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
-import { getPendingToolCallsFromPlannerStep, getToolCallName } from './trajectoryToolState';
+import { getPendingToolCallsFromPlannerStep, getToolCallName, type ToolCall } from './trajectoryToolState';
 import {
     type DetectorState,
     type DetectorStateConfig,
@@ -10,6 +10,25 @@ import {
     processDetectorResult,
     findLastPlannerStep,
 } from './detectorStateManager';
+
+/** Generic trajectory step type */
+interface TrajectoryStep {
+    type?: string;
+    status?: string;
+    plannerResponse?: {
+        response?: string;
+        toolCalls?: ToolCall[];
+    };
+    response?: {
+        text?: string;
+        error?: unknown;
+    };
+    assistantResponse?: {
+        text?: string;
+    };
+    error?: unknown;
+    [key: string]: unknown;
+}
 
 /** Planning mode button information */
 export interface PlanningInfo {
@@ -65,7 +84,7 @@ export class PlanningDetector {
     }
 
     private getToolName(toolCall: unknown): string {
-        return getToolCallName(toolCall);
+        return getToolCallName(toolCall as ToolCall);
     }
 
     private isRunCommandTool(toolCall: unknown): boolean {
@@ -102,7 +121,7 @@ export class PlanningDetector {
      */
     async clickOpenButton(): Promise<boolean> {
         try {
-            const result = await this.cdpService.executeVscodeCommand('antigravity.command.openPlan');
+            const result = await this.cdpService.executeVscodeCommand('antigravity.command.openPlan') as { ok?: boolean } | undefined;
             if (result?.ok) {
                 logger.debug('[PlanningDetector] Opened via VS Code command');
                 return true;
@@ -120,7 +139,7 @@ export class PlanningDetector {
      */
     async clickProceedButton(): Promise<boolean> {
         try {
-            const result = await this.cdpService.executeVscodeCommand('antigravity.command.accept');
+            const result = await this.cdpService.executeVscodeCommand('antigravity.command.accept') as { ok?: boolean } | undefined;
             if (result?.ok) {
                 logger.debug('[PlanningDetector] Proceeded via VS Code command');
                 return true;
@@ -144,15 +163,15 @@ export class PlanningDetector {
             const cascadeId = await this.cdpService.getActiveCascadeId();
             if (!cascadeId) return null;
 
-            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
-            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
-            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
+            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId }) as { trajectory?: { steps?: unknown[] } } | undefined;
+            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp as { steps?: unknown[] } | undefined;
+            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps as TrajectoryStep[] : [];
 
             // Reuse shared backward-walk to find the latest planner response
             const found = findLastPlannerStep(steps);
             if (!found) return null;
 
-            const { step } = found;
+            const { step } = found as { step: TrajectoryStep; index: number };
             const responseText =
                 step?.plannerResponse?.response
                 || step?.response?.text
@@ -204,11 +223,11 @@ export class PlanningDetector {
         const found = findLastPlannerStep(steps, runStatus);
         if (!found) return null;
 
-        const { step, index: i } = found;
+        const { step, index: i } = found as { step: TrajectoryStep; index: number };
         const plannerResponse = step?.plannerResponse;
         if (!plannerResponse) return null;
 
-        const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
+        const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps as TrajectoryStep[], i);
 
         // Planning mode requires actual planned tool calls
         const hasToolPlan = pendingToolCalls.length > 0;

@@ -166,9 +166,9 @@ export class TrajectoryStreamRouter {
             }
 
             // Fetch trajectory for detection (approval, error, planning, run command)
-            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId });
-            const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
-            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps : [];
+            const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId }) as Record<string, unknown>;
+            const trajectory = (trajectoryResp?.trajectory as Record<string, unknown> | undefined) ?? trajectoryResp;
+            const steps = Array.isArray(trajectory?.steps) ? trajectory.steps as unknown[] : [];
             const runStatus = extractCascadeRunStatus(trajectoryResp);
 
             // Dispatch to trajectory-based detectors
@@ -179,8 +179,8 @@ export class TrajectoryStreamRouter {
 
             // Fetch summaries for user message detection
             if (this.userMessageDetector?.isActive()) {
-                const summResp = await client.rawRPC('GetAllCascadeTrajectories', {});
-                const summaries = summResp?.trajectorySummaries || {};
+                const summResp = await client.rawRPC('GetAllCascadeTrajectories', {}) as Record<string, unknown>;
+                const summaries = (summResp?.trajectorySummaries as Record<string, unknown>) || {};
                 await this.userMessageDetector.evaluateSummaries(summaries);
             }
         } catch (error) {

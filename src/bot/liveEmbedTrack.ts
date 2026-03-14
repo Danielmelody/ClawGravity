@@ -18,8 +18,19 @@ export interface LiveEmbedTrackOptions {
     enqueue: (task: () => Promise<void>, label?: string) => Promise<void>;
 }
 
+/** Discord message with edit/delete methods */
+interface DiscordMessage {
+    edit: (options: { content?: string; embeds?: EmbedBuilder[] }) => Promise<unknown>;
+    delete: () => Promise<unknown>;
+}
+
+/** Channel with send capability */
+interface SendableChannel {
+    send: (options: { content?: string; embeds?: EmbedBuilder[] }) => Promise<unknown>;
+}
+
 export class LiveEmbedTrack {
-    private messages: unknown[] = [];
+    private messages: (DiscordMessage | null)[] = [];
     private lastRenderKey = '';
     private _version = 0;
 
@@ -35,7 +46,7 @@ export class LiveEmbedTrack {
     }
 
     async upsert(
-        channel: unknown,
+        channel: SendableChannel | null | undefined,
         outputFormat: OutputFormat,
         isFinalized: boolean,
         title: string,
@@ -63,11 +74,11 @@ export class LiveEmbedTrack {
 
                 for (let i = 0; i < plainChunks.length; i++) {
                     if (!this.messages[i]) {
-                        this.messages[i] = await channel.send({ content: plainChunks[i] }).catch(() => null);
+                        this.messages[i] = await channel.send({ content: plainChunks[i] }).catch(() => null) as DiscordMessage | null;
                         continue;
                     }
-                    await this.messages[i].edit({ content: plainChunks[i] }).catch(async () => {
-                        this.messages[i] = await channel.send({ content: plainChunks[i] }).catch(() => null);
+                    await this.messages[i]!.edit({ content: plainChunks[i] }).catch(async () => {
+                        this.messages[i] = await channel.send({ content: plainChunks[i] }).catch(() => null) as DiscordMessage | null;
                     });
                 }
                 while (this.messages.length > plainChunks.length) {
@@ -94,12 +105,12 @@ export class LiveEmbedTrack {
                     .setTimestamp();
 
                 if (!this.messages[i]) {
-                    this.messages[i] = await channel.send({ embeds: [embed] }).catch(() => null);
+                    this.messages[i] = await channel.send({ embeds: [embed] }).catch(() => null) as DiscordMessage | null;
                     continue;
                 }
 
-                await this.messages[i].edit({ embeds: [embed] }).catch(async () => {
-                    this.messages[i] = await channel.send({ embeds: [embed] }).catch(() => null);
+                await this.messages[i]!.edit({ embeds: [embed] }).catch(async () => {
+                    this.messages[i] = await channel.send({ embeds: [embed] }).catch(() => null) as DiscordMessage | null;
                 });
             }
 

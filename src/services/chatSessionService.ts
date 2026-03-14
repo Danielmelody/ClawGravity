@@ -44,19 +44,19 @@ export class ChatSessionService {
             if (!client) return [];
 
             const activeId = await cdpService.getActiveCascadeId();
-            const resp = await client.rawRPC('GetAllCascadeTrajectories', {});
-            const summaries = resp?.trajectorySummaries || {};
+            const resp = await client.rawRPC('GetAllCascadeTrajectories', {}) as Record<string, unknown>;
+            const summaries = (resp?.trajectorySummaries as Record<string, unknown>) || {};
 
             const list: SessionListItem[] = [];
             for (const [id, t] of Object.entries(summaries)) {
-                if (!cdpService.isCascadeInWorkspace(t)) continue;
+                if (!cdpService.isCascadeInWorkspace(t as Record<string, unknown>)) continue;
 
                 const target = t as Record<string, unknown>;
                 list.push({
-                    title: target.summary || 'Untitled',
+                    title: (target.summary as string) || 'Untitled',
                     isActive: id === activeId,
                     cascadeId: id,
-                    lastModifiedTime: target.lastModifiedTime ? new Date(target.lastModifiedTime).getTime() : 0,
+                    lastModifiedTime: target.lastModifiedTime ? new Date(target.lastModifiedTime as string | number | Date).getTime() : 0,
                 });
             }
 
@@ -88,16 +88,21 @@ export class ChatSessionService {
             const targetId = options?.cascadeId || await cdpService.getActiveCascadeId();
             if (!targetId) return { messages: [], truncated: false };
 
-            const traj = await client.rawRPC('GetCascadeTrajectory', { cascadeId: targetId });
-            const steps = traj?.trajectory?.steps || [];
+            const traj = await client.rawRPC('GetCascadeTrajectory', { cascadeId: targetId }) as Record<string, unknown>;
+            const trajectory = traj?.trajectory as Record<string, unknown> | undefined;
+            const steps = (trajectory?.steps as unknown[]) || [];
 
             const messages: ConversationHistoryEntry[] = [];
             for (const step of steps) {
-                if (step.type === 'CORTEX_STEP_TYPE_USER_INPUT') {
-                    const text = step.userInput?.userResponse || '';
+                const stepObj = step as Record<string, unknown>;
+                if (stepObj.type === 'CORTEX_STEP_TYPE_USER_INPUT') {
+                    const userInput = stepObj.userInput as Record<string, unknown> | undefined;
+                    const text = (userInput?.userResponse as string) || '';
                     if (text) messages.push({ role: 'user', text });
-                } else if (step.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step.type === 'CORTEX_STEP_TYPE_RESPONSE') {
-                    const text = step.plannerResponse?.response || step.assistantResponse?.text || '';
+                } else if (stepObj.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || stepObj.type === 'CORTEX_STEP_TYPE_RESPONSE') {
+                    const plannerResponse = stepObj.plannerResponse as Record<string, unknown> | undefined;
+                    const assistantResponse = stepObj.assistantResponse as Record<string, unknown> | undefined;
+                    const text = (plannerResponse?.response as string) || (assistantResponse?.text as string) || '';
                     if (text) messages.push({ role: 'assistant', text });
                 }
             }
@@ -151,11 +156,11 @@ export class ChatSessionService {
             const activeId = await cdpService.getActiveCascadeId();
             if (!activeId) return { title: '', hasActiveChat: false };
 
-            const resp = await client.rawRPC('GetAllCascadeTrajectories', {});
-            const summaries = resp?.trajectorySummaries || {};
-            const item = summaries[activeId];
+            const resp = await client.rawRPC('GetAllCascadeTrajectories', {}) as Record<string, unknown>;
+            const summaries = (resp?.trajectorySummaries as Record<string, unknown>) || {};
+            const item = summaries[activeId] as Record<string, unknown> | undefined;
             if (item && cdpService.isCascadeInWorkspace(item)) {
-                return { title: item.summary || '(Untitled)', hasActiveChat: true, cascadeId: activeId };
+                return { title: (item.summary as string) || '(Untitled)', hasActiveChat: true, cascadeId: activeId };
             }
             return { title: '(Untitled)', hasActiveChat: true, cascadeId: activeId };
         } catch {

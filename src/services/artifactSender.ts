@@ -59,8 +59,11 @@ function extractArtifactsFromSteps(steps: unknown[]): ExtractedArtifact[] {
     const artifacts: ExtractedArtifact[] = [];
 
     for (const step of steps) {
+        const stepRecord = step as Record<string, unknown> | null | undefined;
+
         // Path 1: PLANNER_RESPONSE with toolCalls array
-        const toolCalls = step?.plannerResponse?.toolCalls;
+        const plannerResponse = stepRecord?.plannerResponse as Record<string, unknown> | undefined;
+        const toolCalls = plannerResponse?.toolCalls;
         if (Array.isArray(toolCalls)) {
             for (const tc of toolCalls) {
                 const artifact = extractFromToolCall(tc);
@@ -72,7 +75,8 @@ function extractArtifactsFromSteps(steps: unknown[]): ExtractedArtifact[] {
         }
 
         // Path 2: CODE_ACTION with metadata.toolCall
-        const metaTc = step?.metadata?.toolCall;
+        const metadata = stepRecord?.metadata as Record<string, unknown> | undefined;
+        const metaTc = metadata?.toolCall;
         if (metaTc) {
             const artifact = extractFromToolCall(metaTc);
             if (artifact && !seen.has(artifact.filePath)) {
@@ -87,7 +91,9 @@ function extractArtifactsFromSteps(steps: unknown[]): ExtractedArtifact[] {
 
 /** Parse a single tool call and return an ExtractedArtifact if it's an artifact write. */
 function extractFromToolCall(tc: unknown): ExtractedArtifact | null {
-    const name = (tc?.name || tc?.toolName || tc?.function?.name || '').toLowerCase();
+    const tcRecord = tc as Record<string, unknown> | null | undefined;
+    const tcFunction = tcRecord?.function as Record<string, unknown> | undefined;
+    const name = String(tcRecord?.name || tcRecord?.toolName || tcFunction?.name || '').toLowerCase();
     if (name !== 'write_to_file' && name !== 'writetofile') return null;
 
     const args = parseToolArgs(tc);
@@ -104,24 +110,27 @@ function extractFromToolCall(tc: unknown): ExtractedArtifact | null {
         ? targetFile.slice(8).replace(/\//g, path.sep)
         : targetFile;
 
-    const metadata = args.ArtifactMetadata || args.artifactMetadata || {};
+    const metadata = args.ArtifactMetadata || args.artifactMetadata || {} as Record<string, unknown>;
+    const metadataRecord = metadata as Record<string, unknown>;
 
     return {
         filePath,
         name: path.basename(filePath),
-        summary: typeof metadata.Summary === 'string' ? metadata.Summary : '',
-        artifactType: typeof metadata.ArtifactType === 'string' ? metadata.ArtifactType : 'other',
+        summary: typeof metadataRecord.Summary === 'string' ? metadataRecord.Summary : '',
+        artifactType: typeof metadataRecord.ArtifactType === 'string' ? metadataRecord.ArtifactType : 'other',
     };
 }
 
 /** Parse tool call arguments from JSON string or object. */
 function parseToolArgs(tc: unknown): Record<string, unknown> | null {
-    const direct = tc?.arguments || tc?.function?.arguments || tc?.input;
-    if (direct && typeof direct === 'object') return direct;
+    const tcRecord = tc as Record<string, unknown> | null | undefined;
+    const tcFunction = tcRecord?.function as Record<string, unknown> | undefined;
+    const direct = tcRecord?.arguments || tcFunction?.arguments || tcRecord?.input;
+    if (direct && typeof direct === 'object') return direct as Record<string, unknown>;
     if (typeof direct === 'string' && direct.trim()) {
         try { return JSON.parse(direct); } catch { return null; }
     }
-    const json = tc?.argumentsJson;
+    const json = tcRecord?.argumentsJson;
     if (typeof json === 'string' && json.trim()) {
         try { return JSON.parse(json); } catch { return null; }
     }

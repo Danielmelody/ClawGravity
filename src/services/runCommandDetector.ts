@@ -117,12 +117,14 @@ export class RunCommandDetector {
         if (!found) return null;
 
         const { index: i } = found;
-        const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps as unknown as any[], i) as unknown[];
         if (pendingToolCalls.length === 0) return null;
 
         // Find terminal command tool calls
         for (const tc of pendingToolCalls) {
-            const toolName = getToolCallName(tc);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const toolName = getToolCallName(tc as any);
             const isTerminal = [
                 'terminal', 'command', 'shell', 'bash', 'exec',
                 'run_command', 'runcommand', 'execute_command',
@@ -130,15 +132,16 @@ export class RunCommandDetector {
             if (!isTerminal) continue;
 
             // Extract command text from tool call arguments
-            const args = this.parseToolCallArgs(tc);
+            const args = this.parseToolCallArgs(tc) as Record<string, unknown> | string;
+            const argsRecord = typeof args === 'object' && args !== null ? args : {};
             const commandText = typeof args === 'string'
                 ? args
-                : args?.command || args?.cmd || args?.script || args?.CommandLine || '';
+                : argsRecord.command || argsRecord.cmd || argsRecord.script || argsRecord.CommandLine || '';
             const workingDirectory =
-                args?.cwd
-                || args?.workingDirectory
-                || args?.directory
-                || args?.Cwd
+                argsRecord.cwd
+                || argsRecord.workingDirectory
+                || argsRecord.directory
+                || argsRecord.Cwd
                 || '';
 
             // Skip if we couldn't extract a meaningful command
@@ -159,12 +162,14 @@ export class RunCommandDetector {
     }
 
     private parseToolCallArgs(toolCall: unknown): unknown {
-        const direct = toolCall?.arguments || toolCall?.function?.arguments || toolCall?.input;
+        const tcRecord = toolCall as Record<string, unknown> | null | undefined;
+        const tcFunction = tcRecord?.function as Record<string, unknown> | undefined;
+        const direct = tcRecord?.arguments || tcFunction?.arguments || tcRecord?.input;
         if (direct && typeof direct === 'object') {
             return direct;
         }
 
-        const json = toolCall?.argumentsJson;
+        const json = tcRecord?.argumentsJson;
         if (typeof json !== 'string' || !json.trim()) {
             return {};
         }
@@ -183,7 +188,8 @@ export class RunCommandDetector {
     async runButton(): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.terminalCommand.run');
-            if (result?.ok) {
+            const resultRecord = result as Record<string, unknown> | null | undefined;
+            if (resultRecord?.ok) {
                 logger.debug('[RunCommandDetector] Ran via VS Code command');
                 return true;
             }
@@ -201,7 +207,8 @@ export class RunCommandDetector {
     async rejectButton(): Promise<boolean> {
         try {
             const result = await this.cdpService.executeVscodeCommand('antigravity.terminalCommand.reject');
-            if (result?.ok) {
+            const resultRecord = result as Record<string, unknown> | null | undefined;
+            if (resultRecord?.ok) {
                 logger.debug('[RunCommandDetector] Rejected via VS Code command');
                 return true;
             }

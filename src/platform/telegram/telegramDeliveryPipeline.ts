@@ -17,6 +17,7 @@ import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../../service
 import type { DeliverySnapshot } from './messageDeliveryState';
 import type { PipelineSession } from '../../utils/pipelineDebugLog';
 import type { PlatformChannel, PlatformSentMessage } from '../types';
+import type { TrajectoryStep } from '../../services/trajectoryToolState';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,7 +97,7 @@ export function planDelivery(
         (): string => {
             if (mode === 'step-rendered' && snapshot.stepsData) {
                 return renderStepsToTelegramHtml(
-                    snapshot.stepsData.steps,
+                    snapshot.stepsData.steps as TrajectoryStep[],
                     snapshot.stepsData.runStatus,
                 ).trim();
             }
@@ -174,11 +175,7 @@ export async function executeDelivery(
                         const errMsg = err instanceof Error ? err.message : String(err);
                         logger.warn(`[DeliveryPipeline] edit failed for msg #${i}: ${errMsg}`);
                         const isLengthError = isTelegramLengthError(err);
-                        const replacement = await channel.send({ text: plan.chunks[i] }).catch((sendErr: unknown) => {
-                            const sendErrMsg = sendErr instanceof Error ? sendErr.message : String(sendErr);
-                            logger.error(`[DeliveryPipeline] send failed for chunk #${i}: ${sendErrMsg}`);
-                            return null;
-                        });
+                        const replacement = await trySendChunk(channel, plan.chunks[i], i);
                         if (replacement) {
                             if (!isLengthError) {
                                 await existing.delete().catch(() => { });
@@ -190,11 +187,7 @@ export async function executeDelivery(
                     continue;
                 }
 
-                const sent = await channel.send({ text: plan.chunks[i] }).catch((sendErr: unknown) => {
-                    const sendErrMsg = sendErr instanceof Error ? sendErr.message : String(sendErr);
-                    logger.error(`[DeliveryPipeline] send failed for chunk #${i}: ${sendErrMsg}`);
-                    return null;
-                });
+                const sent = await trySendChunk(channel, plan.chunks[i], i);
                 if (sent) {
                     nextMessages[i] = sent;
                 }
@@ -217,6 +210,19 @@ export async function executeDelivery(
 function isTelegramLengthError(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error || '');
     return /(message is too long|too long|text_too_long|message_too_long|caption is too long|entities too long)/i.test(message);
+}
+
+/** Try to send a chunk to the channel, logging errors and returning null on failure. */
+async function trySendChunk(
+    channel: PlatformChannel,
+    text: string,
+    index: number,
+): Promise<PlatformSentMessage | null> {
+    return channel.send({ text }).catch((sendErr: unknown) => {
+        const sendErrMsg = sendErr instanceof Error ? sendErr.message : String(sendErr);
+        logger.error(`[DeliveryPipeline] send failed for chunk #${index}: ${sendErrMsg}`);
+        return null;
+    });
 }
 
 /** Strip HTML tags to produce plain text (for afterComplete hooks). */

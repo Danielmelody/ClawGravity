@@ -15,17 +15,6 @@ export function buildModeModelLines(modeName: string, fastModel: string, planMod
 }
 
 /**
- * Generate session info lines.
- */
-export function buildSessionLines(title: string, summary?: string): string[] {
-    const lines = [`Session: ${title}`];
-    if (summary && summary !== title) {
-        lines.push(`Summary: ${summary}`);
-    }
-    return lines;
-}
-
-/**
  * Filter out activity logs that tend to be noise in Discord display.
  */
 export function shouldSkipActivityLog(activity: string, modeName: string, modelName: string): boolean {

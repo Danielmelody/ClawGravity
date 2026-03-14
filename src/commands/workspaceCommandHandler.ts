@@ -190,7 +190,7 @@ export class WorkspaceCommandHandler {
             fullPath = this.workspaceService.validatePath(name);
         } catch (e: unknown) {
             await interaction.editReply({
-                content: t(`❌ Invalid project name: ${e.message}`),
+                content: t(`❌ Invalid project name: ${(e as Error).message}`),
             });
             return;
         }

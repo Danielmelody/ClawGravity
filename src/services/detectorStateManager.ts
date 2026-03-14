@@ -108,7 +108,7 @@ export function findLastPlannerStep(
     if (steps.length === 0) return null;
 
     for (let i = steps.length - 1; i >= 0; i--) {
-        const step = steps[i];
+        const step = steps[i] as Record<string, unknown> | undefined;
         if (step?.type === 'CORTEX_STEP_TYPE_USER_INPUT') break;
 
         if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step?.type === 'CORTEX_STEP_TYPE_RESPONSE') {

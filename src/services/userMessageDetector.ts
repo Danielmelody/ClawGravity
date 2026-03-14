@@ -121,7 +121,7 @@ export class UserMessageDetector {
                 const timeStr = (t as Record<string, unknown>).lastUserInputTime;
                 if (!timeStr) continue;
 
-                const ms = new Date(timeStr).getTime();
+                const ms = new Date(timeStr as string | number | Date).getTime();
                 if (this.isPriming) {
                     if (ms > maxPrimingMs) maxPrimingMs = ms;
                 } else if (ms > this.lastMaxUserInputTimeMs) {
@@ -150,15 +150,17 @@ export class UserMessageDetector {
 
             for (const update of updates) {
                 try {
-                    const traj = await client.rawRPC('GetCascadeTrajectory', { cascadeId: update.id });
-                    const steps = traj?.trajectory?.steps || [];
+                    const traj = await client.rawRPC('GetCascadeTrajectory', { cascadeId: update.id }) as Record<string, unknown>;
+                    const trajectory = traj?.trajectory as Record<string, unknown> | undefined;
+                    const steps = (trajectory?.steps as unknown[]) || [];
 
                     if (!steps[update.stepIndex]) {
                         this.lastMaxUserInputTimeMs = Math.max(this.lastMaxUserInputTimeMs, update.ms);
                         continue;
                     }
 
-                    const items = (steps[update.stepIndex].userInput as Record<string, unknown> | undefined)?.items || [];
+                    const stepObj = steps[update.stepIndex] as Record<string, unknown>;
+                    const items = (stepObj?.userInput as Record<string, unknown> | undefined)?.items || [];
                     const textParts = (items as Array<Record<string, unknown>>).map((i) => i.text).filter(Boolean);
                     const rawText = textParts.join('\n');
 

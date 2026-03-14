@@ -34,15 +34,18 @@ export class QuotaService {
     }
 
     private parseUserStatus(data: unknown): ModelQuota[] {
-        const cascadeData = (data as Record<string, unknown>)?.userStatus?.cascadeModelConfigData;
-        const rawConfigs: unknown[] = cascadeData?.clientModelConfigs || [];
+        const dataRecord = data as Record<string, unknown> | null | undefined;
+        const userStatus = dataRecord?.userStatus as Record<string, unknown> | undefined;
+        const cascadeData = userStatus?.cascadeModelConfigData as Record<string, unknown> | undefined;
+        const rawConfigs = (cascadeData?.clientModelConfigs || []) as unknown[];
         return rawConfigs.map((c: unknown) => {
-            const label = c.label || c.displayName || c.modelName || c.model || '';
-            const model = c.model || c.modelId || '';
-            const qi = c.quotaInfo || c.quota || c.usageInfo;
+            const cRecord = c as Record<string, unknown> | null | undefined;
+            const label = String(cRecord?.label || cRecord?.displayName || cRecord?.modelName || cRecord?.model || '');
+            const model = String(cRecord?.model || cRecord?.modelId || '');
+            const qi = (cRecord?.quotaInfo || cRecord?.quota || cRecord?.usageInfo) as Record<string, unknown> | undefined;
             const quotaInfo = qi ? {
-                remainingFraction: qi.remainingFraction ?? qi.remaining ?? 1,
-                resetTime: qi.resetTime || qi.resetAt || '',
+                remainingFraction: Number(qi.remainingFraction ?? qi.remaining ?? 1),
+                resetTime: String(qi.resetTime || qi.resetAt || ''),
             } : undefined;
             return { label, model, quotaInfo };
         });

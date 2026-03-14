@@ -173,12 +173,13 @@ export class GrpcCascadeClient extends EventEmitter {
             return null;
         }
 
+        const sr = startResp as Record<string, unknown>;
         const cascadeId =
-            startResp?.cascadeId
-            || startResp?.cascade?.cascadeId
-            || startResp?.cascade?.id
-            || startResp?.trajectory?.cascadeId
-            || startResp?.session?.cascadeId
+            (sr.cascadeId as string | undefined)
+            || ((sr.cascade as Record<string, unknown> | undefined)?.cascadeId as string | undefined)
+            || ((sr.cascade as Record<string, unknown> | undefined)?.id as string | undefined)
+            || ((sr.trajectory as Record<string, unknown> | undefined)?.cascadeId as string | undefined)
+            || ((sr.session as Record<string, unknown> | undefined)?.cascadeId as string | undefined)
             || null;
         if (!cascadeId) {
             const responsePreview = JSON.stringify(startResp)?.slice(0, 500) || '{}';
@@ -294,7 +295,8 @@ export class GrpcCascadeClient extends EventEmitter {
 
         try {
             const result = await this.rpc('SaveMediaAsArtifact', { media: mediaObj });
-            return result?.uri || null;
+            const resultRecord = result as Record<string, unknown>;
+            return (resultRecord.uri as string | undefined) || null;
         } catch (err: unknown) {
             logger.warn(`[GrpcCascadeClient] SaveMediaAsArtifact failed: ${err instanceof Error ? err.message : String(err)}`);
             return null;
@@ -307,7 +309,8 @@ export class GrpcCascadeClient extends EventEmitter {
     async deleteMediaArtifact(uri: string): Promise<boolean> {
         try {
             const result = await this.rpc('DeleteMediaArtifact', { uri });
-            return result?.success !== false;
+            const resultRecord = result as Record<string, unknown>;
+            return resultRecord.success !== false;
         } catch (err: unknown) {
             logger.warn(`[GrpcCascadeClient] DeleteMediaArtifact failed: ${err instanceof Error ? err.message : String(err)}`);
             return false;
@@ -333,7 +336,8 @@ export class GrpcCascadeClient extends EventEmitter {
      */
     async listCascades(): Promise<unknown> {
         const resp = await this.rpc('GetAllCascadeTrajectories', {});
-        return resp?.trajectorySummaries ?? {};
+        const respRecord = resp as Record<string, unknown>;
+        return respRecord.trajectorySummaries ?? {};
     }
 
     /**
@@ -400,18 +404,23 @@ export class GrpcCascadeClient extends EventEmitter {
         const result = await this.cdpEvaluate(expression);
 
         // Handle CDP-level errors (expression syntax errors, context destroyed, etc.)
-        if (result?.exceptionDetails) {
-            const errText = result.exceptionDetails.text
-                || result.exceptionDetails.exception?.description
+        const resultRecord = result as Record<string, unknown>;
+        const exceptionDetails = resultRecord.exceptionDetails as Record<string, unknown> | undefined;
+        if (exceptionDetails) {
+            const exception = exceptionDetails.exception as Record<string, unknown> | undefined;
+            const errText = (exceptionDetails.text as string | undefined)
+                || (exception?.description as string | undefined)
                 || 'CDP evaluation error';
             throw new Error(`LS ${method}: CDP error — ${errText}`);
         }
 
-        const value = result?.result?.value;
+        const resultInner = resultRecord.result as Record<string, unknown> | undefined;
+        const value = resultInner?.value;
 
         // Handle application-level errors (fetch failures, non-200 status, etc.)
-        if (value?.__cdpProxyError) {
-            throw new Error(value.message || `LS ${method}: unknown proxy error`);
+        const valueRecord = value as Record<string, unknown> | undefined;
+        if (valueRecord?.__cdpProxyError) {
+            throw new Error((valueRecord.message as string | undefined) || `LS ${method}: unknown proxy error`);
         }
 
         return value;
@@ -452,14 +461,15 @@ export function decodeWorkspaceId(encodedId: string): string {
  * @returns The run status string (e.g. 'CASCADE_RUN_STATUS_RUNNING') or null
  */
 export function extractCascadeRunStatus(trajectoryResp: unknown): string | null {
-    const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
+    const tr = trajectoryResp as Record<string, unknown> | undefined;
+    const trajectory = (tr?.trajectory as Record<string, unknown> | undefined) ?? tr;
     return typeof trajectory?.cascadeRunStatus === 'string'
         ? trajectory.cascadeRunStatus
-        : typeof trajectoryResp?.cascadeRunStatus === 'string'
-            ? trajectoryResp.cascadeRunStatus
+        : typeof tr?.cascadeRunStatus === 'string'
+            ? tr.cascadeRunStatus
             : typeof trajectory?.status === 'string'
                 ? trajectory.status
-                : typeof trajectoryResp?.status === 'string'
-                    ? trajectoryResp.status
+                : typeof tr?.status === 'string'
+                    ? tr.status
                     : null;
 }

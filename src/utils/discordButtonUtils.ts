@@ -1,4 +1,4 @@
-import { ActionRowBuilder, ButtonBuilder } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, APIButtonComponent } from 'discord.js';
 
 /**
  * Disable all buttons in message component rows.
@@ -25,9 +25,9 @@ export function disableAllButtons(components: readonly unknown[]): ActionRowBuil
                 .map((component: ComponentLike) => {
                     const componentType = component?.type ?? component?.data?.type;
                     if (componentType !== 2) return null;
-                    const payload = typeof component?.toJSON === 'function'
+                    const payload = (typeof component?.toJSON === 'function'
                         ? component.toJSON()
-                        : component;
+                        : component) as APIButtonComponent;
                     return ButtonBuilder.from(payload).setDisabled(true);
                 })
                 .filter((button: ButtonBuilder | null): button is ButtonBuilder => button !== null);

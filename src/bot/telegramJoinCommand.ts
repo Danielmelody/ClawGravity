@@ -6,6 +6,7 @@ import type { ChatSessionService, ConversationHistoryEntry } from '../services/c
 import type { CdpBridge } from '../services/cdpBridgeManager';
 import type { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
+import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 import { ensureWorkspaceRuntime } from '../services/cdpBridgeManager';
 import { extractCascadeRunStatus } from '../services/grpcCascadeClient';
 import { startMonitorForActiveSession } from './telegramMessageHandler';
@@ -99,7 +100,7 @@ async function resolveBindingRuntime(
     deps: TelegramJoinCommandDeps,
     chatId: string,
     replyTarget: { reply: (opts: { text: string }) => Promise<unknown> },
-): Promise<{ runtime: unknown } | null> {
+): Promise<{ runtime: WorkspaceRuntime } | null> {
     const binding = deps.telegramBindingRepo.findByChatId(chatId);
     if (!binding) {
         await replyTarget.reply({
@@ -114,7 +115,7 @@ async function resolveBindingRuntime(
 
     try {
         const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath);
-        return { runtime: prepared.runtime };
+        return { runtime: prepared.runtime as WorkspaceRuntime };
     } catch (err: unknown) {
         await replyTarget.reply({
             text: `Failed to connect to project: ${escapeHtml((err as Error)?.message || 'unknown error')}`,

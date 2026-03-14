@@ -21,6 +21,7 @@ import {
     sendOutputUI,
 } from '../ui/outputUi';
 import { UserPreferenceRepository, OutputFormat } from '../database/userPreferenceRepository';
+import type { ModelQuota } from '../services/quotaService';
 import { ChatCommandHandler } from '../commands/chatCommandHandler';
 import {
     CleanupCommandHandler,
@@ -53,7 +54,7 @@ export interface InteractionCreateHandlerDeps {
     sendModeUI: (target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> }, modeService: ModeService, deps?: import('../ui/modeUi').ModeUiDeps) => Promise<void>;
     sendModelsUI: (
         target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> },
-        deps: { getCurrentCdp: () => CdpService | null; fetchQuota: () => Promise<Record<string, unknown>[]> },
+        deps: { getCurrentCdp: () => CdpService | null; fetchQuota: () => Promise<ModelQuota[]> },
     ) => Promise<void>;
     sendAutoAcceptUI: (
         target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> },
@@ -120,7 +121,7 @@ async function refreshModelsUI(
         { editReply: async (data: Record<string, unknown>) => await interaction.editReply(data) },
         {
             getCurrentCdp: () => deps.getCurrentCdp(deps.bridge),
-            fetchQuota: async () => deps.bridge.quota.fetchQuota(),
+            fetchQuota: async () => deps.bridge.quota.fetchQuota() as Promise<ModelQuota[]>,
         },
     );
 }
@@ -147,7 +148,7 @@ async function updateInteractionWithEmbed(
 
 /** Check if a user has permission and reply if not. Returns false if denied. */
 async function checkPermission(
-    interaction: Interaction & { user: { id: string }; reply: (...args: unknown[]) => Promise<unknown> },
+    interaction: { user: { id: string }; reply: (options: { content: string; flags?: number }) => Promise<unknown> },
     allowedUserIds: string[],
 ): Promise<boolean> {
     if (allowedUserIds.includes(interaction.user.id)) return true;

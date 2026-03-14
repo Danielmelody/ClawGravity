@@ -567,7 +567,8 @@ export function wrapTelegramSentMessage(
     api: TelegramBotLike['api'],
     chatId: number | string,
 ): PlatformSentMessage {
-    const msgId = String(msg.message_id ?? msg.id ?? '0');
+    const msgObj = msg as Record<string, unknown>;
+    const msgId = String(msgObj.message_id ?? msgObj.id ?? '0');
 
     return {
         id: msgId,
