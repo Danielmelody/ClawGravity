@@ -114,7 +114,7 @@ export function acquireLock(): () => void {
                     `🚨 <b>Fatal Error (uncaughtException)</b>\n<pre>${escapeHtml(err instanceof Error ? err.stack || err.message : String(err))}</pre>`,
                 );
             }
-        } catch (e) {
+        } catch {
             // ignore
         }
         releaseLock();
@@ -130,7 +130,7 @@ export function acquireLock(): () => void {
                     `🚨 <b>Unhandled Promise Rejection</b>\n<pre>${escapeHtml(reason instanceof Error ? reason.stack || reason.message : String(reason))}</pre>`,
                 );
             }
-        } catch (e) {
+        } catch {
             // ignore
         }
     });

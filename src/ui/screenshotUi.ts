@@ -27,8 +27,9 @@ export async function buildScreenshotPayload(
             return { files: [file] };
         }
         return { text: `Screenshot failed: ${result.error ?? 'Unknown error'}` };
-    } catch (e: any) {
-        return { text: `Screenshot error: ${e.message}` };
+    } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        return { text: `Screenshot error: ${message}` };
     }
 }
 
@@ -67,8 +68,8 @@ export async function handleScreenshot(
                 await target.editReply({ content });
             }
         }
-    } catch (e: any) {
-        const content = `Screenshot error: ${e.message}`;
+    } catch (e: unknown) {
+        const content = `Screenshot error: ${e instanceof Error ? e.message : String(e)}`;
         if (target instanceof Message) {
             await target.reply(content);
         } else {

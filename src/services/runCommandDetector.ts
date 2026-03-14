@@ -89,7 +89,7 @@ export class RunCommandDetector {
      * @param steps      Trajectory steps array
      * @param runStatus  Cascade run status string
      */
-    evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
+    evaluate(cascadeId: string, steps: unknown[], runStatus: string | null): void {
         if (!this.isRunning) return;
 
         try {
@@ -112,7 +112,7 @@ export class RunCommandDetector {
      * Extract run command info from trajectory steps.
      * Looks for terminal/command tool calls when cascade is IDLE.
      */
-    private extractRunCommandFromTrajectory(steps: any[], runStatus: string | null): RunCommandInfo | null {
+    private extractRunCommandFromTrajectory(steps: unknown[], runStatus: string | null): RunCommandInfo | null {
         const found = findLastPlannerStep(steps, runStatus);
         if (!found) return null;
 
@@ -158,7 +158,7 @@ export class RunCommandDetector {
         return null;
     }
 
-    private parseToolCallArgs(toolCall: any): any {
+    private parseToolCallArgs(toolCall: unknown): unknown {
         const direct = toolCall?.arguments || toolCall?.function?.arguments || toolCall?.input;
         if (direct && typeof direct === 'object') {
             return direct;

@@ -4,7 +4,7 @@ type Language = 'en' | 'ja';
 const currentLanguage: Language = 'en';
 const translations: Record<string, Record<string, string>> = {};
 
-export function t(key: string, variables?: Record<string, any>): string {
+export function t(key: string, variables?: Record<string, unknown>): string {
     const langDict = translations[currentLanguage] || translations['en'];
     let text = langDict?.[key] || translations['en']?.[key] || key;
 

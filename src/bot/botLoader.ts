@@ -5,7 +5,7 @@ import { logBuffer } from '../utils/logBuffer';
 import {
     Client, GatewayIntentBits, Events, Message,
     ChatInputCommandInteraction,
-    AttachmentBuilder, EmbedBuilder, MessageFlags,
+    EmbedBuilder, MessageFlags,
 } from 'discord.js';
 import Database from 'better-sqlite3';
 import * as path from 'path';
@@ -22,7 +22,6 @@ import { registerSlashCommands } from '../commands/registerSlashCommands';
 
 import { ModeService, MODE_DISPLAY_NAMES, MODE_UI_NAMES } from '../services/modeService';
 import { ModelService } from '../services/modelService';
-import { applyDefaultModel } from '../services/defaultModelApplicator';
 import { TemplateRepository } from '../database/templateRepository';
 import { WorkspaceBindingRepository } from '../database/workspaceBindingRepository';
 import { ChatSessionRepository } from '../database/chatSessionRepository';
@@ -47,11 +46,9 @@ import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import { AgentRouter } from '../services/agentRouter';
 import { ensureAntigravityRunning } from '../services/antigravityLauncher';
-import { getAntigravityCdpHint } from '../utils/pathUtils';
 import { AutoAcceptService } from '../services/autoAcceptService';
 import { PromptDispatcher } from '../services/promptDispatcher';
 import { ScheduleService } from '../services/scheduleService';
-import { renderStepsToDiscordMarkdown } from '../services/trajectoryStepRenderer';
 import {
     CdpBridge,
     ensureWorkspaceRuntime,
@@ -64,20 +61,17 @@ import {
     registerApprovalSessionChannel,
     registerApprovalWorkspaceChannel,
 } from '../services/cdpBridgeManager';
-import { buildModeModelLines, buildSessionLines, fitForSingleEmbedDescription, splitForEmbedDescription } from '../utils/streamMessageFormatter';
-import { formatForDiscord, splitOutputAndLogs } from '../utils/discordFormatter';
 import {
     InboundImageAttachment,
-    toDiscordAttachment,
 } from '../utils/imageHandler';
 import { sendModeUI } from '../ui/modeUi';
-import { sendModelsUI, buildModelsUI } from '../ui/modelsUi';
+import { sendModelsUI } from '../ui/modelsUi';
 import { sendTemplateUI } from '../ui/templateUi';
 import { sendAutoAcceptUI } from '../ui/autoAcceptUi';
 import { sendOutputUI } from '../ui/outputUi';
 import { handleScreenshot } from '../ui/screenshotUi';
 import { UserPreferenceRepository, OutputFormat } from '../database/userPreferenceRepository';
-import { formatAsPlainText, splitPlainText } from '../utils/plainTextFormatter';
+import { formatAsPlainText } from '../utils/plainTextFormatter';
 import { createInteractionCreateHandler } from '../events/interactionCreateHandler';
 import { createMessageCreateHandler } from '../events/messageCreateHandler';
 
@@ -90,7 +84,7 @@ import { TelegramMessageTracker } from '../services/telegramMessageTracker';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 import { createTelegramMessageHandler, handlePassiveUserMessage, startMonitorForActiveSession } from './telegramMessageHandler';
 import { extractCascadeRunStatus } from '../services/grpcCascadeClient';
-import { wrapTelegramChannel } from '../platform/telegram/wrappers';
+import { wrapTelegramChannel, type TelegramBotLike } from '../platform/telegram/wrappers';
 import { createTelegramSelectHandler } from './telegramProjectCommand';
 import { createTelegramJoinSelectHandler, TelegramSessionStateStore } from './telegramJoinCommand';
 import { EventRouter } from './eventRouter';
@@ -105,33 +99,16 @@ import { createAutoAcceptButtonAction } from '../handlers/autoAcceptButtonAction
 import { createTemplateButtonAction } from '../handlers/templateButtonAction';
 import { createModeSelectAction } from '../handlers/modeSelectAction';
 import { clearShutdownHooks, registerShutdownHook, restartCurrentProcess } from '../services/processRestartService';
-import { PromptSession, PromptOptions } from './promptSession';
+import { PromptSession } from './promptSession';
 
 export let globalTelegramNotifier: ((text: string) => Promise<void>) | null = null;
 
 // =============================================================================
 // Embed color palette (color-coded by phase)
 // =============================================================================
-const PHASE_COLORS = {
-    sending: 0x5865F2,     // Blue
-    thinking: 0x9B59B6,    // Purple
-    generating: 0xF39C12,  // Gold
-    complete: 0x2ECC71,    // Green
-    timeout: 0xE74C3C,     // Red
-    error: 0xC0392B,       // Dark Red
-} as const;
 
-const PHASE_ICONS = {
-    sending: '📡',
-    thinking: '🧠',
-    generating: '✍️',
-    complete: '✅',
-    timeout: '⏰',
-    error: '❌',
-} as const;
 
 const RESPONSE_DELIVERY_MODE = resolveResponseDeliveryMode();
-const DISCORD_STREAM_RENDER_COALESCE_MS = 75;
 const AUTO_RENAME_THRESHOLD = 5; // Placeholder value, adjust as needed
 const COALESCE_PERIOD_MS = 75; // Placeholder value, adjust as needed
 
@@ -154,7 +131,7 @@ function createSerialTaskQueue(queueName: string, traceId: string): { enqueue: (
             queue = queue.then(async () => {
                 try {
                     await task();
-                } catch (err: any) {
+                } catch (err: unknown) {
                     logger.error(`[sendQueue:${traceId}:${queueName}] error #${seq} label=${label}:`, err?.message || err);
                 } finally {
                     queueDepth = Math.max(0, queueDepth - 1);
@@ -197,9 +174,8 @@ async function restoreDiscordSessionsOnStartup(
             });
             const runtime = prepared.runtime;
             const projectName = prepared.projectName;
-            const channelManager = (client.channels as any);
-            const discordChannel = channelManager?.fetch
-                ? await channelManager.fetch(session.channelId).catch(() => null)
+            const discordChannel = client.channels.fetch
+                ? await client.channels.fetch(session.channelId).catch(() => null)
                 : null;
 
             if (!discordChannel || !discordChannel.isTextBased?.()) {
@@ -207,7 +183,7 @@ async function restoreDiscordSessionsOnStartup(
                 continue;
             }
 
-            const platformChannel = wrapDiscordChannel(discordChannel as any);
+            const platformChannel = wrapDiscordChannel(discordChannel);
             bridge.lastActiveWorkspace = projectName;
             bridge.lastActiveChannel = platformChannel;
             registerApprovalWorkspaceChannel(bridge, projectName, platformChannel);
@@ -224,7 +200,7 @@ async function restoreDiscordSessionsOnStartup(
 
             restoredWorkspaces.add(binding.workspacePath);
             logger.info(`[StartupRestore] Restored session "${session.displayName}" for workspace ${binding.workspacePath}`);
-        } catch (error: any) {
+        } catch (error: unknown) {
             logger.warn(`[StartupRestore] Failed to restore workspace ${binding.workspacePath}: ${error?.message || error}`);
         }
     }
@@ -372,7 +348,7 @@ async function sendPromptToAntigravity(
 
         activeDiscordPromptSessions.set(message.channelId, session);
         await session.execute();
-    } catch (e: any) {
+    } catch (e: unknown) {
         activeDiscordPromptSessions.delete(message.channelId);
         options?.onFullCompletion?.();
         logger.error('[sendPromptToAntigravity] Setup failure:', e);
@@ -545,10 +521,10 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         res.on('data', (chunk: string) => (data += chunk));
                         res.on('end', () => {
                             try {
-                                const tabs = JSON.parse(data);
+                                const tabs = JSON.parse(data) as Array<{ type: string; url?: string; title?: string }>;
                                 const hasClaw = tabs
-                                    .filter((t: any) => t.type === 'page' && t.url?.includes('workbench'))
-                                    .some((t: any) => (t.title || '').includes(clawProjectName));
+                                    .filter((t) => t.type === 'page' && t.url?.includes('workbench'))
+                                    .some((t) => (t.title || '').includes(clawProjectName));
                                 resolve({ hasClaw });
                             } catch { resolve({ hasClaw: false }); }
                         });
@@ -604,7 +580,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     logger.warn(`[Claw] Failed to launch Antigravity: ${err?.message || err}`);
                 });
                 logger.info(`[Claw] Antigravity launched for "${clawProjectName}" workspace (port ${freePort})`);
-            } catch (err: any) {
+            } catch (err: unknown) {
                 logger.warn(`[Claw] Failed to auto-launch Antigravity: ${err?.message || err}`);
             }
         })();
@@ -850,7 +826,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         if (telegramNotify) {
                             const header = `🦞 <b>Schedule #${schedule.id}${label}</b>\n\n`;
                             const truncated = outputText.length > 3500 ? outputText.slice(0, 3500) + '...' : outputText;
-                            await (telegramNotify as (text: string) => Promise<void>)(header + truncated).catch((e: any) =>
+                            await (telegramNotify as (text: string) => Promise<void>)(header + truncated).catch((e: unknown) =>
                                 logger.error(`[ScheduleJob] Telegram notify failed:`, e?.message || e)
                             );
                         }
@@ -915,7 +891,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             });
             monitor.start();
 
-        } catch (err: any) {
+        } catch (err: unknown) {
             const msg = err?.message || String(err);
             if (msg.includes('No matching') || msg.includes('ECONNREFUSED') || msg.includes('not found')) {
                 logger.error(`[ScheduleJob] Schedule #${schedule.id}: Cannot connect to "${path.basename(clawWorkspacePath)}" workspace. Please open "${clawWorkspacePath}" in a separate Antigravity window.`);
@@ -969,7 +945,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 } else {
                     logger.warn(`[Claw] Cannot inject sub-agent result from "${fromAgent}": no active CDP connection`);
                 }
-            } catch (err: any) {
+            } catch (err: unknown) {
                 logger.error(`[Claw] Failed to inject sub-agent result: ${err?.message || err}`);
             }
         },
@@ -1160,14 +1136,14 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                             cdp = prepared.cdp;
                             const projectName = prepared.projectName;
                             bridge.lastActiveWorkspace = projectName;
-                            const platformCh = wrapDiscordChannel(interaction.channel as any);
+                            const platformCh = interaction.channel ? wrapDiscordChannel(interaction.channel) : null;
                             bridge.lastActiveChannel = platformCh;
                             registerApprovalWorkspaceChannel(bridge, projectName, platformCh);
                             const session = chatSessionRepo.findByChannelId(channelId);
                             if (session?.displayName) {
                                 registerApprovalSessionChannel(bridge, projectName, session.displayName, platformCh);
                             }
-                        } catch (e: any) {
+                        } catch (e: unknown) {
                             await interaction.followUp({
                                 content: `Failed to connect to workspace: ${e.message}`,
                                 flags: MessageFlags.Ephemeral,
@@ -1253,13 +1229,13 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
         try {
             const telegramBot = new Bot(config.telegramToken);
             // Attach toInputFile so wrappers can convert Buffer to grammY InputFile
-            (telegramBot as any).toInputFile = (data: Buffer, filename?: string) => new InputFile(data, filename);
+            (telegramBot as unknown as { toInputFile: (data: Buffer, filename?: string) => InputFile }).toInputFile = (data: Buffer, filename?: string) => new InputFile(data, filename);
             // Retry getMe() up to 3 times to handle transient network failures
             const botInfo = await (async () => {
                 for (let attempt = 1; attempt <= 3; attempt++) {
                     try {
                         return await telegramBot.api.getMe();
-                    } catch (err: any) {
+                    } catch (err: unknown) {
                         if (attempt === 3) throw err;
                         logger.warn(`[Telegram] getMe() failed (attempt ${attempt}/3): ${err?.message ?? err}. Retrying in 3s...`);
                         await new Promise(r => setTimeout(r, 3000));
@@ -1270,7 +1246,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
 
             const telegramBindingRepo = new TelegramBindingRepository(db);
             const telegramRecentMessageRepo = new TelegramRecentMessageRepository(db);
-            const telegramAdapter = new TelegramAdapter(telegramBot as any, String(botInfo.id));
+            const telegramAdapter = new TelegramAdapter(telegramBot as unknown as Bot, String(botInfo.id));
             const telegramSessionStateStore = new TelegramSessionStateStore(telegramRecentMessageRepo);
 
             const telegramMessageTracker = new TelegramMessageTracker();
@@ -1286,7 +1262,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 fetchQuota: () => bridge.quota.fetchQuota(),
                 activeMonitors,
                 botToken: config.telegramToken,
-                botApi: telegramBot.api as any,
+                botApi: telegramBot.api as unknown as TelegramCommandDeps['botApi'],
                 chatSessionService,
                 sessionStateStore: telegramSessionStateStore,
                 scheduleService,
@@ -1497,7 +1473,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 for (const binding of bindings) {
                     try {
                         const bWorkspacePath = workspaceService.getWorkspacePath(binding.workspacePath);
-                        const tgChannel = wrapTelegramChannel(telegramBot.api as any, binding.chatId, (data: Buffer, filename?: string) => new InputFile(data, filename));
+                        const tgChannel = wrapTelegramChannel(telegramBot.api as unknown as TelegramBotLike['api'], binding.chatId, (data: Buffer, filename?: string) => new InputFile(data, filename));
                         let startupRuntime: WorkspaceRuntime | null = null;
                         const prepared = await ensureWorkspaceRuntime(bridge, bWorkspacePath, {
                             userMessageSinkKey: `telegram:${binding.chatId}`,
@@ -1511,7 +1487,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                                     clawInterceptor,
                                     telegramSessionStateStore,
                                 )
-                                    .catch((err: any) => logger.error('[TelegramPassive:Startup] Error handling PC message:', err?.message || err));
+                                    .catch((err: unknown) => logger.error('[TelegramPassive:Startup] Error handling PC message:', err instanceof Error ? err.message : String(err)));
                             },
                         });
                         startupRuntime = prepared.runtime;
@@ -1534,12 +1510,12 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                                         );
                                     }
                                 }
-                            } catch (err: any) {
+                            } catch (err: unknown) {
                                 logger.debug(`[TelegramPassive:Startup] runStatus check failed for ${startupCascadeId.slice(0, 12)}...: ${err?.message || err}`);
                             }
                         }
                         logger.info(`[TelegramPassive] Eager mirroring started for ${prepared.projectName} → chat ${binding.chatId}`);
-                    } catch (e: any) {
+                    } catch (e: unknown) {
                         logger.warn(`[TelegramPassive] Failed to start eager mirroring for ${binding.workspacePath}: ${e?.message || e}`);
                     }
                 }
@@ -1559,7 +1535,7 @@ async function autoRenameChannel(
     chatSessionRepo: ChatSessionRepository,
     titleGenerator: TitleGeneratorService,
     channelManager: ChannelManager,
-    cdp?: CdpService,
+    _cdp?: CdpService,
 ): Promise<void> {
     const session = chatSessionRepo.findByChannelId(message.channelId);
     if (!session || session.isRenamed) return;
@@ -1850,7 +1826,7 @@ async function handleSlashInteraction(
                     .setColor(0xE74C3C)
                     .setTimestamp();
                 await interaction.editReply({ embeds: [embed] });
-            } catch (e: any) {
+            } catch (e: unknown) {
                 await interaction.editReply({ content: `❌ Error during stop processing: ${e.message}` });
             }
             break;
@@ -1974,7 +1950,7 @@ async function handleSlashInteraction(
                         )
                         .setTimestamp();
                     await interaction.editReply({ embeds: [embed] });
-                } catch (err: any) {
+                } catch (err: unknown) {
                     await interaction.editReply({ content: `❌ Failed to create schedule: ${err?.message || 'unknown error'}` });
                 }
             } else if (scheduleSub === 'remove') {
@@ -2017,7 +1993,7 @@ async function handleSlashInteraction(
                 if (!result.ok) {
                     await interaction.editReply({ content: `❌ Bot restart failed: ${result.error || 'unknown error'}` });
                 }
-            } catch (e: any) {
+            } catch (e: unknown) {
                 await interaction.editReply({ content: `❌ Bot restart failed: ${e.message}` });
             }
             break;

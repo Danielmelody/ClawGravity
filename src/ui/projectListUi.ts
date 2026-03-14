@@ -51,7 +51,7 @@ export function isProjectSelectId(customId: string): boolean {
 export function buildProjectListUI(
     workspaces: string[],
     page: number = 0,
-): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] } {
+): { embeds: EmbedBuilder[]; components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] } {
     const totalPages = Math.max(1, Math.ceil(workspaces.length / ITEMS_PER_PAGE));
     const safePage = Math.max(0, Math.min(page, totalPages - 1));
 
@@ -75,7 +75,7 @@ export function buildProjectListUI(
         });
     }
 
-    const components: ActionRowBuilder<any>[] = [];
+    const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [];
 
     const options = pageItems.map((ws) => ({ label: ws, value: ws }));
     const selectMenu = new StringSelectMenuBuilder()

@@ -42,7 +42,7 @@ export interface MessageCreateHandlerDeps {
     chatSessionRepo: ChatSessionRepository;
     channelManager: ChannelManager;
     titleGenerator: TitleGeneratorService;
-    client: any;
+    client: unknown;
     sendPromptToAntigravity: (
         bridge: CdpBridge,
         message: Message,
@@ -51,7 +51,7 @@ export interface MessageCreateHandlerDeps {
         modeService: ModeService,
         modelService: ModelService,
         inboundImages?: InboundImageAttachment[],
-        options?: any,
+        options?: Record<string, unknown>,
     ) => Promise<void>;
     autoRenameChannel: (
         message: Message,
@@ -268,11 +268,11 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                                     const chatResult = await runtime.startNewChat(deps.chatSessionService);
                                     if (!chatResult.ok) {
                                         logger.warn('[MessageCreate] Failed to start new chat in Antigravity:', chatResult.error);
-                                        (message.channel as any).send(`⚠️ Could not open a new chat in Antigravity. Sending to existing chat.`).catch(() => { });
+                                        (message.channel as { send: (content: string) => Promise<unknown> }).send(`⚠️ Could not open a new chat in Antigravity. Sending to existing chat.`).catch(() => { });
                                     }
                                 } catch (err) {
                                     logger.error('[MessageCreate] startNewChat error:', err);
-                                    (message.channel as any).send(`⚠️ Could not open a new chat in Antigravity. Sending to existing chat.`).catch(() => { });
+                                    (message.channel as { send: (content: string) => Promise<unknown> }).send(`⚠️ Could not open a new chat in Antigravity. Sending to existing chat.`).catch(() => { });
                                 }
                             }
 
@@ -323,23 +323,25 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                                     userPrefRepo: deps.userPrefRepo,
                                     extractionMode: deps.config.extractionMode,
                                     onFullCompletion: settle,
-                                }).catch((err: any) => {
+                                }).catch((err: unknown) => {
                                     // sendPromptToAntigravity rejected before onFullCompletion fired
                                     // (e.g. setup code threw before top-level try/catch).
                                     // Release the queue immediately instead of waiting for safety timeout.
+                                    const errorMessage = err instanceof Error ? err.message : String(err);
                                     logger.error(
                                         `[Queue:${projectName}] sendPromptToAntigravity rejected early ` +
-                                        `(channel: ${message.channelId}):`, err?.message || err,
+                                        `(channel: ${message.channelId}):`, errorMessage,
                                     );
                                     settle();
                                 });
                             });
-                        } catch (e: any) {
+                        } catch (e: unknown) {
+                            const errorMessage = e instanceof Error ? e.message : String(e);
                             logger.error(
                                 `[Queue:${projectLabel}] Task failed (channel: ${message.channelId}):`,
-                                e.message,
+                                errorMessage,
                             );
-                            await message.reply(`Failed to connect to workspace: ${e.message}`);
+                            await message.reply(`Failed to connect to workspace: ${errorMessage}`);
                         } finally {
                             const remainingDepth = promptQueue.decrementDepth(workspacePath);
                             if (remainingDepth > 0) {

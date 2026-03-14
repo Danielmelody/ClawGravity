@@ -106,10 +106,10 @@ export async function downloadTelegramPhotos(
                 name,
                 mimeType,
             });
-        } catch (error: any) {
+        } catch (error: unknown) {
             logger.warn(
                 `[TelegramImageHandler] Failed to download photo (file_id=${fileId}):`,
-                error?.message || error,
+                error instanceof Error ? error.message : String(error),
             );
         }
     }

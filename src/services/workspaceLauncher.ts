@@ -45,7 +45,7 @@ export class WorkspaceLauncher {
         for (const port of ports) {
             try {
                 const preLaunchPages = await cdpService.getJson(`http://127.0.0.1:${port}/json/list`);
-                preLaunchPages.forEach((p: any) => {
+                preLaunchPages.forEach((p: { id?: string }) => {
                     if (p.id) knownPageIds.add(p.id);
                 });
             } catch {
@@ -56,7 +56,7 @@ export class WorkspaceLauncher {
         while (Date.now() - startTime < maxWaitMs) {
             await new Promise(r => setTimeout(r, pollIntervalMs));
 
-            const pages: any[] = [];
+            const pages: Array<{ id?: string; title?: string }> = [];
             for (const port of ports) {
                 try {
                     const list = await cdpService.getJson(`http://127.0.0.1:${port}/json/list`);
@@ -68,10 +68,10 @@ export class WorkspaceLauncher {
 
             if (pages.length === 0) continue;
 
-            const workbenchPages = pages.filter((t: any) => cdpService.isWorkbenchPage(t));
+            const workbenchPages = pages.filter((t: { id?: string; title?: string }) => cdpService.isWorkbenchPage(t));
 
             // Title match
-            const titleMatch = workbenchPages.find((t: any) => t.title?.toLowerCase().includes(projectName.toLowerCase()));
+            const titleMatch = workbenchPages.find((t: { id?: string; title?: string }) => t.title?.toLowerCase().includes(projectName.toLowerCase()));
             if (titleMatch) {
                 return cdpService.connectToPage(titleMatch, projectName);
             }
@@ -86,8 +86,8 @@ export class WorkspaceLauncher {
             // If title update and folder path both fail, treat new page as target
             if (Date.now() - startTime > 10000) {
                 const newUntitledPages = workbenchPages.filter(
-                    (t: any) =>
-                        !knownPageIds.has(t.id) &&
+                    (t: { id?: string; title?: string }) =>
+                        !knownPageIds.has(t.id ?? '') &&
                         (t.title?.includes('Untitled') || t.title === ''),
                 );
                 if (newUntitledPages.length === 1) {

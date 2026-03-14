@@ -54,7 +54,7 @@ export class TelegramMessageTracker {
      */
     async clearChat(
         chatId: string,
-        botApi: { deleteMessage(chatId: number | string, messageId: number): Promise<any> },
+        botApi: { deleteMessage(chatId: number | string, messageId: number): Promise<unknown> },
         clearCommandMessageId?: number,
     ): Promise<number> {
         const messageIds = this.drain(chatId);
@@ -74,10 +74,11 @@ export class TelegramMessageTracker {
             try {
                 await botApi.deleteMessage(chatId, messageIds[i]);
                 deleted++;
-            } catch (err: any) {
+            } catch (err: unknown) {
                 // Silently skip — message may already be deleted, too old, or
                 // the bot may lack permissions in this chat type.
-                logger.debug(`[TelegramMessageTracker] deleteMessage ${messageIds[i]} failed: ${err?.message || err}`);
+                const errMsg = err instanceof Error ? err.message : String(err);
+                logger.debug(`[TelegramMessageTracker] deleteMessage ${messageIds[i]} failed: ${errMsg}`);
             }
         }
 

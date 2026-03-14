@@ -19,8 +19,8 @@ export class WorkspaceQueue {
         const next = current.then(async () => {
             try {
                 await task();
-            } catch (err: any) {
-                logger.error('[WorkspaceQueue] task error:', err?.message || err);
+            } catch (err: unknown) {
+                logger.error('[WorkspaceQueue] task error:', (err as Error)?.message || err);
             }
         }).finally(() => {
             // Clean up if this is still the latest promise in the chain

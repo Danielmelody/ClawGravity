@@ -1,16 +1,45 @@
+/** Generic trajectory step with flexible properties */
+interface TrajectoryStep {
+    type?: string;
+    status?: string;
+    metadata?: {
+        toolCall?: ToolCall;
+    };
+    toolCall?: ToolCall;
+    plannerResponse?: {
+        toolCalls?: ToolCall[];
+    };
+    [key: string]: unknown;
+}
+
+/** Tool call type */
+interface ToolCall {
+    id?: string;
+    name?: string;
+    toolName?: string;
+    function?: {
+        name?: string;
+    };
+    result?: unknown;
+    output?: unknown;
+    toolCallResult?: unknown;
+    status?: string;
+    toolCallStatus?: string;
+}
+
 function normalizeStatusValue(status: unknown): string {
     return typeof status === 'string'
         ? status.trim().toLowerCase()
         : '';
 }
 
-function getConcreteToolCall(step: any): any | null {
+function getConcreteToolCall(step: TrajectoryStep): ToolCall | null {
     return step?.metadata?.toolCall
         || step?.toolCall
         || null;
 }
 
-export function getToolCallName(toolCall: any): string {
+export function getToolCallName(toolCall: ToolCall): string {
     return String(
         toolCall?.name
         || toolCall?.toolName
@@ -19,11 +48,11 @@ export function getToolCallName(toolCall: any): string {
     ).toLowerCase();
 }
 
-function getToolCallId(toolCall: any): string {
+function getToolCallId(toolCall: ToolCall): string {
     return String(toolCall?.id || '').trim();
 }
 
-function isToolCallCompleted(toolCall: any): boolean {
+function isToolCallCompleted(toolCall: ToolCall): boolean {
     const hasResult = toolCall?.result !== undefined
         || toolCall?.output !== undefined
         || toolCall?.toolCallResult !== undefined;
@@ -42,7 +71,7 @@ function isToolCallCompleted(toolCall: any): boolean {
     ].some((value) => status.includes(value));
 }
 
-function isStepTerminal(step: any): boolean {
+function isStepTerminal(step: TrajectoryStep): boolean {
     const status = normalizeStatusValue(step?.status);
     return [
         'done',
@@ -56,7 +85,7 @@ function isStepTerminal(step: any): boolean {
     ].some((value) => status.includes(value));
 }
 
-function isStepActive(step: any): boolean {
+function isStepActive(step: TrajectoryStep): boolean {
     const status = normalizeStatusValue(step?.status);
     return [
         'pending',
@@ -69,10 +98,10 @@ function isStepActive(step: any): boolean {
 }
 
 function findConcreteToolStep(
-    steps: any[],
+    steps: TrajectoryStep[],
     plannerStepIndex: number,
     toolCallId: string,
-): any | null {
+): TrajectoryStep | null {
     if (!toolCallId) return null;
 
     for (let i = plannerStepIndex + 1; i < steps.length; i++) {
@@ -87,9 +116,9 @@ function findConcreteToolStep(
 }
 
 function isToolCallPendingInTrajectory(
-    steps: any[],
+    steps: TrajectoryStep[],
     plannerStepIndex: number,
-    toolCall: any,
+    toolCall: ToolCall,
 ): boolean {
     if (isToolCallCompleted(toolCall)) {
         return false;
@@ -109,14 +138,14 @@ function isToolCallPendingInTrajectory(
 }
 
 export function getPendingToolCallsFromPlannerStep(
-    steps: any[],
+    steps: TrajectoryStep[],
     plannerStepIndex: number,
-): any[] {
+): ToolCall[] {
     const step = steps[plannerStepIndex];
     const toolCalls = step?.plannerResponse?.toolCalls;
     if (!Array.isArray(toolCalls)) return [];
 
-    return toolCalls.filter((toolCall: any) =>
+    return toolCalls.filter((toolCall: ToolCall) =>
         isToolCallPendingInTrajectory(steps, plannerStepIndex, toolCall),
     );
 }

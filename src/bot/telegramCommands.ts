@@ -99,7 +99,7 @@ export interface TelegramCommandDeps {
     readonly templateRepo?: TemplateRepository;
     readonly workspaceService?: WorkspaceService;
     readonly chatSessionService?: ChatSessionService;
-    readonly fetchQuota?: () => Promise<any[]>;
+    readonly fetchQuota?: () => Promise<unknown[]>;
     /** Shared map of active response monitors keyed by project name.
      *  Used by /stop to halt monitoring and prevent stale re-sends. */
     readonly activeMonitors?: Map<string, GrpcResponseMonitor>;
@@ -308,7 +308,7 @@ async function handleStatus(deps: TelegramCommandDeps, message: PlatformMessage)
                     }
                 }
             }
-        } catch (err: any) {
+        } catch (err: unknown) {
             lines.push('');
             lines.push(`<i>Quota fetch failed: ${escapeHtml(err?.message || 'unknown')}</i>`);
         }
@@ -348,7 +348,7 @@ async function handleStop(deps: TelegramCommandDeps, message: PlatformMessage): 
 
         logger.done('[TelegramCommand:stop] Cancelled via gRPC');
         await message.reply({ text: 'Generation stopped.' }).catch(logger.error);
-    } catch (err: any) {
+    } catch (err: unknown) {
         logger.error('[TelegramCommand:stop]', err?.message || err);
         await message.reply({ text: 'Failed to stop generation.' }).catch(logger.error);
     }
@@ -365,7 +365,7 @@ async function handleRestart(deps: TelegramCommandDeps, message: PlatformMessage
         }
 
         logger.done(`[TelegramCommand:restart] Replacement process launched (pid=${result.pid ?? 'unknown'})`);
-    } catch (err: any) {
+    } catch (err: unknown) {
         logger.error('[TelegramCommand:restart]', err?.message || err);
         await message.reply({ text: `❌ Restart failed:\n<pre>${escapeHtml(err?.message || 'unknown error')}</pre>` }).catch(logger.error);
     }
@@ -412,7 +412,7 @@ async function handleModel(deps: TelegramCommandDeps, message: PlatformMessage):
     let runtimePrepared: Awaited<ReturnType<typeof ensureWorkspaceRuntime>> | null;
     try {
         runtimePrepared = await ensureTelegramRuntimeForChat(deps, message);
-    } catch (err: any) {
+    } catch (err: unknown) {
         logger.error('[TelegramCommand:model] runtime bootstrap failed:', err?.message || err);
         await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
         return;
@@ -495,7 +495,7 @@ async function handleTemplateAdd(deps: TelegramCommandDeps, message: PlatformMes
     try {
         deps.templateRepo.create({ name, prompt });
         await message.reply({ text: `Template '${escapeHtml(name)}' created.` }).catch(logger.error);
-    } catch (err: any) {
+    } catch (err: unknown) {
         if (err?.message?.includes('UNIQUE constraint')) {
             await message.reply({ text: `Template '${escapeHtml(name)}' already exists.` }).catch(logger.error);
         } else {
@@ -551,7 +551,7 @@ async function handleProjectCreate(deps: TelegramCommandDeps, message: PlatformM
 
         fs.mkdirSync(safePath, { recursive: true });
         await message.reply({ text: `Workspace '${escapeHtml(name)}' created.` }).catch(logger.error);
-    } catch (err: any) {
+    } catch (err: unknown) {
         logger.error('[TelegramCommand:project_create]', err?.message || err);
         await message.reply({ text: `Failed to create workspace: ${escapeHtml(err?.message || 'unknown error')}` }).catch(logger.error);
     }
@@ -586,7 +586,7 @@ async function resolveWorkspaceRuntime(
     deps: TelegramCommandDeps,
     message: PlatformMessage,
     logTag: string,
-): Promise<{ runtime: any; binding: any; projectName: string } | null> {
+): Promise<{ runtime: unknown; binding: unknown; projectName: string } | null> {
     const chatId = message.channel.id;
     const binding = deps.telegramBindingRepo?.findByChatId(chatId);
     if (!binding) {
@@ -604,7 +604,7 @@ async function resolveWorkspaceRuntime(
                 : binding.workspacePath,
         );
         return { runtime: runtimePrepared.runtime, binding, projectName: runtimePrepared.projectName };
-    } catch (err: any) {
+    } catch (err: unknown) {
         logger.error(`[TelegramCommand:${logTag}] runtime bootstrap failed:`, err?.message || err);
         await message.reply({ text: 'Failed to connect to Antigravity.' }).catch(logger.error);
         return null;
@@ -619,7 +619,7 @@ async function resolveWithSessionService(
     deps: TelegramCommandDeps,
     message: PlatformMessage,
     logTag: string,
-): Promise<{ runtime: any; binding: any; projectName: string; chatSessionService: NonNullable<typeof deps.chatSessionService> } | null> {
+): Promise<{ runtime: unknown; binding: unknown; projectName: string; chatSessionService: NonNullable<typeof deps.chatSessionService> } | null> {
     if (!deps.chatSessionService) {
         await message.reply({ text: 'Chat session service not available.' }).catch(logger.error);
         return null;
@@ -644,31 +644,45 @@ async function stopProjectMonitors(
     }
 }
 
+/**
+ * Shared helper: start a new backend chat session, stop monitors, and reset
+ * session state. Returns `{ ok: true }` or `{ ok: false, error }`.
+ */
+async function resetChatSession(
+    deps: TelegramCommandDeps,
+    resolved: { runtime: unknown; projectName: string; chatSessionService: NonNullable<typeof deps.chatSessionService> },
+    chatId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+    const result = await resolved.runtime.startNewChat(resolved.chatSessionService);
+    if (!result.ok) return { ok: false, error: result.error || 'unknown error' };
+
+    await stopProjectMonitors(deps.activeMonitors, resolved.projectName);
+    deps.sessionStateStore?.clearSelectedSession(chatId);
+    const newCascadeId = typeof resolved.runtime.getActiveCascadeId === 'function'
+        ? await resolved.runtime.getActiveCascadeId().catch(() => null)
+        : null;
+    if (newCascadeId) {
+        deps.sessionStateStore?.setCurrentCascadeId(chatId, newCascadeId);
+    }
+    return { ok: true };
+}
+
 async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
     const resolved = await resolveWithSessionService(deps, message, 'new');
     if (!resolved) return;
     const chatId = message.channel.id;
 
-    // Start a new chat session
     try {
-        const result = await resolved.runtime.startNewChat(resolved.chatSessionService);
+        const result = await resetChatSession(deps, resolved, chatId);
         if (result.ok) {
-            await stopProjectMonitors(deps.activeMonitors, resolved.projectName);
-            deps.sessionStateStore?.clearSelectedSession(chatId);
-            const newCascadeId = typeof resolved.runtime.getActiveCascadeId === 'function'
-                ? await resolved.runtime.getActiveCascadeId().catch(() => null)
-                : null;
-            if (newCascadeId) {
-                deps.sessionStateStore?.setCurrentCascadeId(chatId, newCascadeId);
-            }
             await message.reply({ text: 'New chat session started.' }).catch(logger.error);
         } else {
             logger.warn('[TelegramCommand:new] startNewChat failed:', result.error);
             await message.reply({
-                text: `Failed to start new chat: ${escapeHtml(result.error || 'unknown error')}`,
+                text: `Failed to start new chat: ${escapeHtml(result.error)}`,
             }).catch(logger.error);
         }
-    } catch (err: any) {
+    } catch (err: unknown) {
         logger.error('[TelegramCommand:new] startNewChat threw:', err?.message || err);
         await message.reply({ text: 'Failed to start new chat.' }).catch(logger.error);
     }
@@ -679,19 +693,9 @@ async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage):
     if (!resolved) return;
     const chatId = message.channel.id;
 
-    // Start a new chat session (effectively clearing the backend history)
     try {
-        const result = await resolved.runtime.startNewChat(resolved.chatSessionService);
+        const result = await resetChatSession(deps, resolved, chatId);
         if (result.ok) {
-            await stopProjectMonitors(deps.activeMonitors, resolved.projectName);
-            deps.sessionStateStore?.clearSelectedSession(chatId);
-            const newCascadeId = typeof resolved.runtime.getActiveCascadeId === 'function'
-                ? await resolved.runtime.getActiveCascadeId().catch(() => null)
-                : null;
-            if (newCascadeId) {
-                deps.sessionStateStore?.setCurrentCascadeId(chatId, newCascadeId);
-            }
-
             // Delete tracked bot messages from the Telegram chat (visual clear)
             if (deps.messageTracker && deps.botApi) {
                 const userMsgId = Number(message.id);
@@ -706,10 +710,10 @@ async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage):
         } else {
             logger.warn('[TelegramCommand:clear] startNewChat failed:', result.error);
             await message.reply({
-                text: `Failed to clear history: ${escapeHtml(result.error || 'unknown error')}`,
+                text: `Failed to clear history: ${escapeHtml(result.error)}`,
             }).catch(logger.error);
         }
-    } catch (err: any) {
+    } catch (err: unknown) {
         logger.error('[TelegramCommand:clear] startNewChat threw:', err?.message || err);
         await message.reply({ text: 'Failed to clear conversation history.' }).catch(logger.error);
     }
@@ -843,7 +847,7 @@ async function handleScheduleAdd(deps: TelegramCommandDeps, message: PlatformMes
         await message.reply({
             text: `✅ Schedule #${record.id} created.\n<code>${escapeHtml(cronExpression)}</code> → ${escapeHtml(prompt.slice(0, 100))}`,
         }).catch(logger.error);
-    } catch (err: any) {
+    } catch (err: unknown) {
         logger.error('[TelegramCommand:schedule_add]', err?.message || err);
         await message.reply({
             text: `Failed to add schedule: ${escapeHtml(err?.message || 'unknown error')}`,

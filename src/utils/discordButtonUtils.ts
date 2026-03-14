@@ -4,15 +4,25 @@ import { ActionRowBuilder, ButtonBuilder } from 'discord.js';
  * Disable all buttons in message component rows.
  * Shared utility used by interaction handlers and detector callbacks.
  */
-export function disableAllButtons(components: readonly any[]): ActionRowBuilder<ButtonBuilder>[] {
+interface ComponentLike {
+    type?: number;
+    data?: { type?: number };
+    toJSON?: () => Record<string, unknown>;
+}
+
+interface RowLike {
+    components?: ComponentLike[];
+}
+
+export function disableAllButtons(components: readonly unknown[]): ActionRowBuilder<ButtonBuilder>[] {
     return components
         .map((row) => {
-            const rowAny = row as any;
+            const rowAny = row as RowLike;
             if (!Array.isArray(rowAny.components)) return null;
 
             const nextRow = new ActionRowBuilder<ButtonBuilder>();
             const disabledButtons = rowAny.components
-                .map((component: any) => {
+                .map((component: ComponentLike) => {
                     const componentType = component?.type ?? component?.data?.type;
                     if (componentType !== 2) return null;
                     const payload = typeof component?.toJSON === 'function'

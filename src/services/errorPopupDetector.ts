@@ -124,7 +124,7 @@ export class ErrorPopupDetector {
      * @param steps      Trajectory steps array
      * @param runStatus  Cascade run status string
      */
-    evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
+    evaluate(cascadeId: string, steps: unknown[], runStatus: string | null): void {
         if (!this.state.isRunning) return;
 
         try {
@@ -148,7 +148,7 @@ export class ErrorPopupDetector {
      * Extract error info from trajectory steps.
      * Returns ErrorPopupInfo if the cascade has encountered an error.
      */
-    private extractErrorFromTrajectory(steps: any[], runStatus: string | null): ErrorPopupInfo | null {
+    private extractErrorFromTrajectory(steps: unknown[], runStatus: string | null): ErrorPopupInfo | null {
         if (steps.length === 0) return null;
 
         // Error patterns in step content

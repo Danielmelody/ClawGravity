@@ -39,11 +39,49 @@ const PRE_BLOCK_PLACEHOLDER = '@@PRE_BLOCK_';
 const CODE_SPAN_PLACEHOLDER = '@@CODE_SPAN_';
 const TAG_SLOT_PLACEHOLDER = '@@TAG_SLOT_';
 
+/** Generic trajectory step type */
+interface TrajectoryStep {
+    type?: string;
+    status?: string;
+    metadata?: {
+        toolCall?: {
+            id?: string;
+        };
+        internalMetadata?: {
+            statusTransitions?: Array<{ updatedStatus?: string }>;
+        };
+    };
+    plannerResponse?: {
+        toolCalls?: ToolCall[];
+    };
+    error?: unknown;
+    userInput?: unknown;
+    [key: string]: unknown;
+}
+
+/** Tool call type */
+interface ToolCall {
+    id?: string;
+    status?: string;
+    toolCallResult?: unknown;
+    name?: string;
+    toolName?: string;
+    function?: {
+        name?: string;
+        arguments?: unknown;
+    };
+    arguments?: unknown;
+    input?: unknown;
+    argumentsJson?: string;
+    result?: unknown;
+    output?: unknown;
+}
+
 /**
  * Pre-process the trajectory steps to enrich plannerResponse tool calls
  * with their runtime execution results from subsequent tool steps.
  */
-function enrichToolCallsWithResults(steps: any[]) {
+function enrichToolCallsWithResults(steps: TrajectoryStep[]) {
     for (let i = 0; i < steps.length; i++) {
         const step = steps[i];
         if (step?.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' && Array.isArray(step.plannerResponse?.toolCalls)) {
@@ -89,7 +127,7 @@ function enrichToolCallsWithResults(steps: any[]) {
  * Only renders steps after the LAST user input step (current turn).
  */
 export function renderStepsToTelegramHtml(
-    steps: any[],
+    steps: TrajectoryStep[],
     runStatus: string | null,
     options?: StepRenderOptions,
 ): string {
@@ -134,7 +172,7 @@ export function renderStepsToTelegramHtml(
 // Per-step rendering
 // ---------------------------------------------------------------------------
 
-function renderStep(step: any, opts: Required<StepRenderOptions>): string | null {
+function renderStep(step: TrajectoryStep, opts: Required<StepRenderOptions>): string | null {
     const type = step?.type;
 
     if (type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || type === 'CORTEX_STEP_TYPE_RESPONSE') {
@@ -149,7 +187,7 @@ function renderStep(step: any, opts: Required<StepRenderOptions>): string | null
     return null;
 }
 
-function renderAssistantStep(step: any, opts: Required<StepRenderOptions>): string | null {
+function renderAssistantStep(step: TrajectoryStep, opts: Required<StepRenderOptions>): string | null {
     const parts: string[] = [];
     const planner = step?.plannerResponse;
 
@@ -190,7 +228,7 @@ function renderAssistantStep(step: any, opts: Required<StepRenderOptions>): stri
  * Checks step.error, step.plannerResponse.error, and step.response.error.
  * Returns null if no error is found.
  */
-function renderStepError(step: any, mode: 'telegram' | 'discord'): string | null {
+function renderStepError(step: TrajectoryStep, mode: 'telegram' | 'discord'): string | null {
     const errorField = step?.error || step?.plannerResponse?.error || step?.response?.error;
     if (!errorField) return null;
 
@@ -238,7 +276,7 @@ function renderThinking(thinking: string, maxChars: number): string | null {
  *   ✅ <b>Ran command</b>
  *   <blockquote expandable><pre>npx jscpd src/ 2>&1</pre></blockquote>
  */
-function renderToolCalls(toolCalls: any[], showArgs: boolean, showResults: boolean): string | null {
+function renderToolCalls(toolCalls: ToolCall[], showArgs: boolean, showResults: boolean): string | null {
     const lines: string[] = [];
 
     for (const tc of toolCalls) {
@@ -272,7 +310,7 @@ function renderToolCalls(toolCalls: any[], showArgs: boolean, showResults: boole
     return lines.length > 0 ? lines.join('\n') : null;
 }
 
-function resolveToolStatus(tc: any): 'pending' | 'success' | 'error' {
+function resolveToolStatus(tc: ToolCall): 'pending' | 'success' | 'error' {
     const status = tc?.status || tc?.toolCallStatus || '';
     if (status === 'completed' || status === 'done' || status === 'success') return 'success';
     if (status === 'error') return 'error';
@@ -305,7 +343,7 @@ interface CompactToolSummary {
 }
 
 /** Parse tool arguments into a raw object for compact summary extraction. */
-function getToolArgsObject(tc: any): Record<string, any> | null {
+function getToolArgsObject(tc: ToolCall): Record<string, unknown> | null {
     const direct = tc?.arguments || tc?.function?.arguments || tc?.input;
     if (direct && typeof direct === 'object') return direct;
     if (typeof direct === 'string' && direct.trim()) {
@@ -463,7 +501,7 @@ function extractCommandResultBrief(cmdLine: string, result: string | null, exitB
  * Build a compact Antigravity-style summary for a tool call.
  * Maps raw tool names to human-readable labels and extracts key details.
  */
-function buildCompactToolSummary(tc: any): CompactToolSummary {
+function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
     const name = (tc.name || tc.toolName || tc.function?.name || '').toLowerCase();
     const args = getToolArgsObject(tc);
     const result = extractToolResult(tc);
@@ -665,7 +703,7 @@ function buildCompactToolSummary(tc: any): CompactToolSummary {
  * Extract tool call result/output. No truncation — the caller wraps
  * long content in expandable blockquotes.
  */
-function extractToolResult(tc: any): string | null {
+function extractToolResult(tc: ToolCall): string | null {
     const res = tc?.result ?? tc?.output ?? tc?.toolCallResult;
     if (res == null) return null;
     if (typeof res === 'string') return res;
@@ -1074,7 +1112,7 @@ export function escapeHtml(text: string): string {
  * Render trajectory steps into Discord Markdown.
  */
 export function renderStepsToDiscordMarkdown(
-    steps: any[],
+    steps: TrajectoryStep[],
     runStatus: string | null,
     options?: StepRenderOptions,
 ): string {
@@ -1111,7 +1149,7 @@ export function renderStepsToDiscordMarkdown(
     return fragments.join('\n\n').trim();
 }
 
-function renderDiscordStep(step: any, opts: Required<StepRenderOptions>): string | null {
+function renderDiscordStep(step: TrajectoryStep, opts: Required<StepRenderOptions>): string | null {
     const type = step?.type;
 
     if (type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || type === 'CORTEX_STEP_TYPE_RESPONSE') {

@@ -170,11 +170,13 @@ export async function executeDelivery(
                     try {
                         nextMessages[i] = await existing.edit({ text: plan.chunks[i] });
                         continue;
-                    } catch (err: any) {
-                        logger.warn(`[DeliveryPipeline] edit failed for msg #${i}: ${err?.message || err}`);
+                    } catch (err: unknown) {
+                        const errMsg = err instanceof Error ? err.message : String(err);
+                        logger.warn(`[DeliveryPipeline] edit failed for msg #${i}: ${errMsg}`);
                         const isLengthError = isTelegramLengthError(err);
-                        const replacement = await channel.send({ text: plan.chunks[i] }).catch((sendErr: any) => {
-                            logger.error(`[DeliveryPipeline] send failed for chunk #${i}: ${sendErr?.message || sendErr}`);
+                        const replacement = await channel.send({ text: plan.chunks[i] }).catch((sendErr: unknown) => {
+                            const sendErrMsg = sendErr instanceof Error ? sendErr.message : String(sendErr);
+                            logger.error(`[DeliveryPipeline] send failed for chunk #${i}: ${sendErrMsg}`);
                             return null;
                         });
                         if (replacement) {
@@ -188,8 +190,9 @@ export async function executeDelivery(
                     continue;
                 }
 
-                const sent = await channel.send({ text: plan.chunks[i] }).catch((sendErr: any) => {
-                    logger.error(`[DeliveryPipeline] send failed for chunk #${i}: ${sendErr?.message || sendErr}`);
+                const sent = await channel.send({ text: plan.chunks[i] }).catch((sendErr: unknown) => {
+                    const sendErrMsg = sendErr instanceof Error ? sendErr.message : String(sendErr);
+                    logger.error(`[DeliveryPipeline] send failed for chunk #${i}: ${sendErrMsg}`);
                     return null;
                 });
                 if (sent) {

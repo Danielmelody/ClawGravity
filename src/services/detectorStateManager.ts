@@ -101,9 +101,9 @@ export function processDetectorResult<TInfo>(
  * Shared between PlanningDetector and RunCommandDetector.
  */
 export function findLastPlannerStep(
-    steps: any[],
+    steps: unknown[],
     runStatus?: string | null,
-): { step: any; index: number } | null {
+): { step: unknown; index: number } | null {
     if (runStatus !== undefined && (!runStatus || runStatus !== 'CASCADE_RUN_STATUS_IDLE')) return null;
     if (steps.length === 0) return null;
 

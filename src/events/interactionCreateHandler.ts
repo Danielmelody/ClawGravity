@@ -49,17 +49,17 @@ export interface InteractionCreateHandlerDeps {
     slashCommandHandler: SlashCommandHandler;
     wsHandler: WorkspaceCommandHandler;
     chatHandler: ChatCommandHandler;
-    client: any;
-    sendModeUI: (target: { editReply: (opts: any) => Promise<any> }, modeService: ModeService, deps?: import('../ui/modeUi').ModeUiDeps) => Promise<void>;
+    client: unknown;
+    sendModeUI: (target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> }, modeService: ModeService, deps?: import('../ui/modeUi').ModeUiDeps) => Promise<void>;
     sendModelsUI: (
-        target: { editReply: (opts: any) => Promise<any> },
-        deps: { getCurrentCdp: () => CdpService | null; fetchQuota: () => Promise<any[]> },
+        target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> },
+        deps: { getCurrentCdp: () => CdpService | null; fetchQuota: () => Promise<Record<string, unknown>[]> },
     ) => Promise<void>;
     sendAutoAcceptUI: (
-        target: { editReply: (opts: any) => Promise<any> },
+        target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> },
         autoAcceptService: AutoAcceptService,
     ) => Promise<void>;
-    handleScreenshot?: (...args: any[]) => Promise<void>;
+    handleScreenshot?: (...args: unknown[]) => Promise<void>;
     getCurrentCdp: (bridge: CdpBridge) => CdpService | null;
     parseApprovalCustomId: (customId: string) => { action: 'approve' | 'always_allow' | 'deny'; projectName: string | null; channelId: string | null } | null;
     parsePlanningCustomId: (customId: string) => { action: 'open' | 'proceed'; projectName: string | null; channelId: string | null } | null;
@@ -75,7 +75,7 @@ export interface InteractionCreateHandlerDeps {
         modeService: ModeService,
         modelService: ModelService,
         autoAcceptService: AutoAcceptService,
-        client: any,
+        client: unknown,
     ) => Promise<void>;
     handleTemplateUse?: (interaction: ButtonInteraction, templateId: number) => Promise<void>;
     joinHandler?: JoinCommandHandler;
@@ -87,8 +87,9 @@ export interface InteractionCreateHandlerDeps {
 // ---------------------------------------------------------------------------
 
 /** Check if a Discord API error indicates an expired interaction. */
-function isInteractionExpired(err: any): boolean {
-    return err?.code === 10062 || err?.code === 40060;
+function isInteractionExpired(err: unknown): boolean {
+    const error = err as { code?: number };
+    return error?.code === 10062 || error?.code === 40060;
 }
 
 /** Build an updated embed with action history for interaction updates. */
@@ -116,7 +117,7 @@ async function refreshModelsUI(
     deps: InteractionCreateHandlerDeps,
 ): Promise<void> {
     await deps.sendModelsUI(
-        { editReply: async (data: any) => await interaction.editReply(data) },
+        { editReply: async (data: Record<string, unknown>) => await interaction.editReply(data) },
         {
             getCurrentCdp: () => deps.getCurrentCdp(deps.bridge),
             fetchQuota: async () => deps.bridge.quota.fetchQuota(),
@@ -138,7 +139,7 @@ async function updateInteractionWithEmbed(
             embeds: [updatedEmbed],
             components: disableAllButtons(interaction.message.components),
         });
-    } catch (interactionError: any) {
+    } catch (interactionError: unknown) {
         if (!isInteractionExpired(interactionError)) throw interactionError;
         logger.warn(`[${logTag}] Interaction expired.`);
     }
@@ -146,7 +147,7 @@ async function updateInteractionWithEmbed(
 
 /** Check if a user has permission and reply if not. Returns false if denied. */
 async function checkPermission(
-    interaction: Interaction & { user: { id: string }; reply: (...args: any[]) => Promise<any> },
+    interaction: Interaction & { user: { id: string }; reply: (...args: unknown[]) => Promise<unknown> },
     allowedUserIds: string[],
 ): Promise<boolean> {
     if (allowedUserIds.includes(interaction.user.id)) return true;
@@ -156,13 +157,13 @@ async function checkPermission(
 
 /** Defer an update, returning false (so caller can bail) on expiry or error. */
 async function safeDeferUpdate(
-    interaction: { deferUpdate: () => Promise<any> },
+    interaction: { deferUpdate: () => Promise<unknown> },
     logTag: string,
 ): Promise<boolean> {
     try {
         await interaction.deferUpdate();
         return true;
-    } catch (deferError: any) {
+    } catch (deferError: unknown) {
         if (isInteractionExpired(deferError)) {
             logger.warn(`[${logTag}] deferUpdate expired. Skipping.`);
         } else {
@@ -225,7 +226,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                         } else {
                             await interaction.reply({ content: 'Approval button not found.', flags: MessageFlags.Ephemeral });
                         }
-                    } catch (interactionError: any) {
+                    } catch (interactionError: unknown) {
                         if (!isInteractionExpired(interactionError)) throw interactionError;
                         logger.warn('[Approval] Interaction expired.');
                     }
@@ -294,7 +295,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                                     .setColor(0x3498DB)
                                     .setTimestamp();
 
-                                await (interaction.channel as any).send({ embeds: [planEmbed] }).catch(logger.error);
+                                await (interaction.channel as { send: (opts: Record<string, unknown>) => Promise<unknown> }).send({ embeds: [planEmbed] }).catch(logger.error);
                             } else if (!planContent) {
                                 await interaction.followUp({
                                     content: t('Could not extract plan content from the editor.'),
@@ -311,13 +312,14 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                             );
                             await updateInteractionWithEmbed(interaction, updatedEmbed, 'Planning');
                         }
-                    } catch (planError: any) {
+                    } catch (planError: unknown) {
                         if (isInteractionExpired(planError)) {
                             logger.warn('[Planning] Interaction expired.');
                         } else {
                             logger.error('[Planning] Error handling planning button:', planError);
                             try {
-                                if (!(interaction as any).replied && !(interaction as any).deferred) {
+                                const interactionWithState = interaction as { replied?: boolean; deferred?: boolean };
+                                if (!interactionWithState.replied && !interactionWithState.deferred) {
                                     await interaction.reply({ content: t('An error occurred while processing the planning action.'), flags: MessageFlags.Ephemeral });
                                 } else {
                                     await interaction.followUp({ content: t('An error occurred while processing the planning action.'), flags: MessageFlags.Ephemeral }).catch(logger.error);
@@ -396,7 +398,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                                     .setColor(0x3498DB)
                                     .setTimestamp();
 
-                                await (interaction.channel as any).send({ embeds: [debugEmbed] }).catch(logger.error);
+                                await (interaction.channel as { send: (opts: Record<string, unknown>) => Promise<unknown> }).send({ embeds: [debugEmbed] }).catch(logger.error);
                             } else if (!clipboardContent) {
                                 await interaction.followUp({
                                     content: t('Could not read debug info from clipboard.'),
@@ -413,13 +415,14 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                             );
                             await updateInteractionWithEmbed(interaction, updatedEmbed, 'ErrorPopup');
                         }
-                    } catch (errorPopupError: any) {
+                    } catch (errorPopupError: unknown) {
                         if (isInteractionExpired(errorPopupError)) {
                             logger.warn('[ErrorPopup] Interaction expired.');
                         } else {
                             logger.error('[ErrorPopup] Error handling error popup button:', errorPopupError);
                             try {
-                                if (!(interaction as any).replied && !(interaction as any).deferred) {
+                                const interactionWithState = interaction as { replied?: boolean; deferred?: boolean };
+                                if (!interactionWithState.replied && !interactionWithState.deferred) {
                                     await interaction.reply({ content: t('An error occurred while processing the error popup action.'), flags: MessageFlags.Ephemeral });
                                 } else {
                                     await interaction.followUp({ content: t('An error occurred while processing the error popup action.'), flags: MessageFlags.Ephemeral }).catch(logger.error);
@@ -472,7 +475,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                         } else {
                             await interaction.reply({ content: t('Run command button not found.'), flags: MessageFlags.Ephemeral });
                         }
-                    } catch (interactionError: any) {
+                    } catch (interactionError: unknown) {
                         if (!isInteractionExpired(interactionError)) throw interactionError;
                         logger.warn('[RunCommand] Interaction expired.');
                     }
@@ -555,7 +558,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                 if (interaction.customId === AUTOACCEPT_BTN_REFRESH) {
                     await interaction.deferUpdate();
                     await deps.sendAutoAcceptUI(
-                        { editReply: async (data: any) => await interaction.editReply(data) },
+                        { editReply: async (data: Record<string, unknown>) => await interaction.editReply(data) },
                         deps.bridge.autoAccept,
                     );
                     return;
@@ -568,7 +571,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                     const result = deps.bridge.autoAccept.handle(action);
 
                     await deps.sendAutoAcceptUI(
-                        { editReply: async (data: any) => await interaction.editReply(data) },
+                        { editReply: async (data: Record<string, unknown>) => await interaction.editReply(data) },
                         deps.bridge.autoAccept,
                     );
 
@@ -587,7 +590,7 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                         deps.userPrefRepo.setOutputFormat(interaction.user.id, format);
 
                         await sendOutputUI(
-                            { editReply: async (data: any) => await interaction.editReply(data) },
+                            { editReply: async (data: Record<string, unknown>) => await interaction.editReply(data) },
                             format,
                         );
 
@@ -620,7 +623,8 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                 logger.error('Error during button interaction handling:', error);
 
                 try {
-                    if (!(interaction as any).replied && !(interaction as any).deferred) {
+                    const interactionWithState = interaction as { replied?: boolean; deferred?: boolean };
+                    if (!interactionWithState.replied && !interactionWithState.deferred) {
                         await interaction.reply({ content: 'An error occurred while processing the button action.', flags: MessageFlags.Ephemeral });
                     } else {
                         await interaction.followUp({ content: 'An error occurred while processing the button action.', flags: MessageFlags.Ephemeral }).catch(logger.error);
@@ -649,9 +653,9 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
                     }
                 }
 
-                await deps.sendModeUI({ editReply: async (data: any) => await interaction.editReply(data) }, deps.modeService);
+                await deps.sendModeUI({ editReply: async (data: Record<string, unknown>) => await interaction.editReply(data) }, deps.modeService);
                 await interaction.followUp({ content: `Mode changed to **${MODE_DISPLAY_NAMES[selectedMode] || selectedMode}**!`, flags: MessageFlags.Ephemeral });
-            } catch (error: any) {
+            } catch (error: unknown) {
                 logger.error('Error during mode dropdown handling:', error);
                 try {
                     if (interaction.deferred || interaction.replied) {
@@ -713,8 +717,9 @@ export function createInteractionCreateHandler(deps: InteractionCreateHandlerDep
             } else {
                 await commandInteraction.deferReply();
             }
-        } catch (deferError: any) {
-            if (deferError?.code === 10062) {
+        } catch (deferError: unknown) {
+            const error = deferError as { code?: number };
+            if (error?.code === 10062) {
                 logger.warn('[SlashCommand] Interaction expired (deferReply failed). Skipping.');
                 return;
             }

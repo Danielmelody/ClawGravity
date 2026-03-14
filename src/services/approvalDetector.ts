@@ -90,7 +90,7 @@ export class ApprovalDetector {
      * @param steps      Trajectory steps array
      * @param runStatus  Cascade run status string
      */
-    evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
+    evaluate(cascadeId: string, steps: unknown[], runStatus: string | null): void {
         if (!this.isRunning) return;
 
         try {
@@ -113,7 +113,7 @@ export class ApprovalDetector {
      * Extract approval info from trajectory steps.
      * Returns ApprovalInfo if the cascade is waiting for tool-use approval, null otherwise.
      */
-    private extractApprovalFromTrajectory(steps: any[], runStatus: string | null): ApprovalInfo | null {
+    private extractApprovalFromTrajectory(steps: unknown[], runStatus: string | null): ApprovalInfo | null {
         if (!runStatus || runStatus !== 'CASCADE_RUN_STATUS_IDLE') return null;
         if (steps.length === 0) return null;
 
@@ -129,8 +129,9 @@ export class ApprovalDetector {
                 let pendingToolCalls = getPendingToolCallsFromPlannerStep(steps, i);
 
                 // Exclude terminal commands - they are handled exclusively by RunCommandDetector
-                pendingToolCalls = pendingToolCalls.filter((tc: any) => {
-                    const tName = tc?.name || tc?.toolName || tc?.function?.name;
+                pendingToolCalls = pendingToolCalls.filter((tc: unknown) => {
+                    const tcObj = tc as Record<string, unknown>;
+                    const tName = tcObj?.name || (tcObj as { toolName?: string })?.toolName || (tcObj as { function?: { name?: string } })?.function?.name;
                     return tName !== 'antigravity.terminalCommand.run' &&
                            tName !== 'run_terminal_command' &&
                            tName !== 'run_command';
@@ -150,9 +151,10 @@ export class ApprovalDetector {
                 }
 
                 // Build description from tool call details
-                const toolNames = pendingToolCalls.map((tc: any) =>
-                    tc?.name || tc?.toolName || tc?.function?.name || 'tool'
-                );
+                const toolNames = pendingToolCalls.map((tc: unknown) => {
+                    const tcObj = tc as Record<string, unknown>;
+                    return tcObj?.name || (tcObj as { toolName?: string })?.toolName || (tcObj as { function?: { name?: string } })?.function?.name || 'tool';
+                });
                 const description = toolNames.length === 1
                     ? `Tool: ${toolNames[0]}`
                     : `Tools: ${toolNames.join(', ')}`;

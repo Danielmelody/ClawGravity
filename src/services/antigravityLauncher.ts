@@ -69,8 +69,9 @@ function launchAntigravity(port: number, workspacePath?: string): Promise<void> 
                     reject(new Error(`Failed to launch Antigravity: ${err.message}`));
                 });
                 setTimeout(() => resolve(), 500);
-            } catch (err: any) {
-                reject(new Error(`Failed to launch Antigravity: ${err?.message || err}`));
+            } catch (err: unknown) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                reject(new Error(`Failed to launch Antigravity: ${errMsg}`));
             }
         });
     }
@@ -135,8 +136,9 @@ export async function ensureAntigravityRunning(workspacePath?: string): Promise<
         logger.warn('='.repeat(70));
         logger.warn('');
 
-    } catch (err: any) {
-        logger.error(`[AntigravityLauncher] Auto-launch failed: ${err?.message || err}`);
+    } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`[AntigravityLauncher] Auto-launch failed: ${errMsg}`);
         logger.warn('');
         logger.warn('='.repeat(70));
         logger.warn('  Failed to auto-launch Antigravity.');

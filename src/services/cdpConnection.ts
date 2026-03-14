@@ -2,8 +2,8 @@ import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 
 export interface CdpCallResult {
-    resolve: (value: any) => void;
-    reject: (reason?: NodeJS.ErrnoException | Error | string | null | any) => void;
+    resolve: (value: unknown) => void;
+    reject: (reason?: NodeJS.ErrnoException | Error | string | null | unknown) => void;
     timeoutId: NodeJS.Timeout;
 }
 
@@ -57,7 +57,7 @@ export class CdpConnection extends EventEmitter {
         });
     }
 
-    async call(method: string, params: any = {}): Promise<any> {
+    async call(method: string, params: unknown = {}): Promise<unknown> {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
             throw new Error('WebSocket is not connected');
         }

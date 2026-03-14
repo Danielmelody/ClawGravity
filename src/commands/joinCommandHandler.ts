@@ -109,9 +109,9 @@ export class JoinCommandHandler {
         return `${JoinCommandHandler.DISCORD_MIRROR_SINK_PREFIX}${projectName}`;
     }
 
-    private getSendableChannel(channelId: string): { send: (...args: any[]) => Promise<any> } | null {
+    private getSendableChannel(channelId: string): { send: (...args: unknown[]) => Promise<unknown> } | null {
         const channel = this.client.channels.cache.get(channelId);
-        return channel && 'send' in channel ? channel as { send: (...args: any[]) => Promise<any> } : null;
+        return channel && 'send' in channel ? channel as { send: (...args: unknown[]) => Promise<unknown> } : null;
     }
 
     private async getRecentMessagesToReplay(
@@ -192,9 +192,9 @@ export class JoinCommandHandler {
         try {
             const prepared = await ensureWorkspaceRuntime(bridge, projectPath);
             runtime = prepared.runtime;
-        } catch (e: any) {
+        } catch (e: unknown) {
             await interaction.editReply({
-                content: t(`⚠️ Failed to connect to project: ${e.message}`),
+                content: t(`⚠️ Failed to connect to project: ${(e as Error).message}`),
             });
             return;
         }
@@ -251,8 +251,8 @@ export class JoinCommandHandler {
         try {
             const prepared = await ensureWorkspaceRuntime(bridge, projectPath);
             runtime = prepared.runtime;
-        } catch (e: any) {
-            await interaction.editReply({ content: t(`⚠️ Failed to connect to project: ${e.message}`) });
+        } catch (e: unknown) {
+            await interaction.editReply({ content: t(`⚠️ Failed to connect to project: ${(e as Error).message}`) });
             return;
         }
 
@@ -352,9 +352,9 @@ export class JoinCommandHandler {
             // Turn ON
             try {
                 await this.startMirroring(bridge, projectPath, projectName);
-            } catch (e: any) {
+            } catch (e: unknown) {
                 await interaction.editReply({
-                    content: t(`⚠️ Failed to connect to project: ${e.message}`),
+                    content: t(`⚠️ Failed to connect to project: ${(e as Error).message}`),
                 });
                 return;
             }
@@ -431,7 +431,7 @@ export class JoinCommandHandler {
 
         const channel = this.client.channels.cache.get(session.channelId);
         if (!channel || !('send' in channel)) return;
-        const sendable = channel as { send: (...args: any[]) => Promise<any> };
+        const sendable = channel as { send: (...args: unknown[]) => Promise<unknown> };
 
         // Mirror the user message
         const userEmbed = new EmbedBuilder()
@@ -455,7 +455,7 @@ export class JoinCommandHandler {
     private async startResponseMirror(
         cdp: CdpService,
         projectName: string,
-        channel: { send: (...args: any[]) => Promise<any> },
+        channel: { send: (...args: unknown[]) => Promise<unknown> },
         chatTitle: string,
         promptText: string,
     ): Promise<void> {

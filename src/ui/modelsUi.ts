@@ -13,7 +13,7 @@ import {
 
 export interface ModelsUiDeps {
     getCurrentCdp: () => CdpService | null;
-    fetchQuota: () => Promise<any[]>;
+    fetchQuota: () => Promise<Array<Record<string, unknown>>>;
 }
 
 export interface ModelsUiPayload {
@@ -33,7 +33,7 @@ interface QuotaResult {
 }
 
 /** Match a model name against quota data and compute display values. */
-function resolveQuotaInfo(mName: string, quotaData: any[]): QuotaResult | null {
+function resolveQuotaInfo(mName: string, quotaData: Array<Record<string, unknown>>): QuotaResult | null {
     const nName = normalizeModelName(mName);
     const q = quotaData.find(q => {
         const nLabel = normalizeModelName(q.label);
@@ -62,7 +62,7 @@ function resolveQuotaInfo(mName: string, quotaData: any[]): QuotaResult | null {
 function formatQuota(
     mName: string,
     current: boolean,
-    quotaData: any[],
+    quotaData: Array<Record<string, unknown>>,
     richIcons: boolean = false,
 ): string {
     if (!mName) return `${current ? '[x]' : '[ ]'} Unknown`;
@@ -89,7 +89,7 @@ function formatQuota(
 export function buildModelsPayload(
     models: string[],
     currentModel: string | null,
-    quotaData: any[],
+    quotaData: Array<Record<string, unknown>>,
     defaultModel: string | null = null,
 ): MessagePayload | null {
     if (models.length === 0) return null;
@@ -176,7 +176,7 @@ export function buildModelsPayload(
  */
 export async function buildModelsUI(
     cdp: CdpService,
-    fetchQuota: () => Promise<any[]>,
+    fetchQuota: () => Promise<Array<Record<string, unknown>>>,
 ): Promise<ModelsUiPayload | null> {
     const models = await cdp.getUiModels();
     const currentModel = await cdp.getCurrentModel();
@@ -239,7 +239,7 @@ export async function buildModelsUI(
  * Build and send the interactive UI for the /models command
  */
 export async function sendModelsUI(
-    target: { editReply: (opts: any) => Promise<any> },
+    target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> },
     deps: ModelsUiDeps,
 ): Promise<void> {
     const cdp = deps.getCurrentCdp();

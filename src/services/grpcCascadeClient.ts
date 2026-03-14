@@ -39,7 +39,7 @@ export interface LSConnection {
  * CDP evaluation callback — executes a JavaScript expression in the
  * renderer process via Runtime.evaluate and returns the raw CDP result.
  */
-export type CdpEvaluateFn = (expression: string) => Promise<any>;
+export type CdpEvaluateFn = (expression: string) => Promise<unknown>;
 
 /** Cascade config for SendUserCascadeMessage */
 export interface CascadeConfig {
@@ -62,7 +62,7 @@ export interface CascadeStreamEvent {
     type: 'text' | 'tool_call' | 'status' | 'complete' | 'error' | 'thinking';
     text?: string;
     toolName?: string;
-    raw?: any;
+    raw?: unknown;
 }
 
 /** Known legacy numeric model IDs (from older antigravity-sdk payloads) */
@@ -152,23 +152,23 @@ export class GrpcCascadeClient extends EventEmitter {
     async createCascade(text?: string, model?: ModelId): Promise<string | null> {
         this.lastOperationError = null;
 
-        const plannerConfig: any = {
+        const plannerConfig: Record<string, unknown> = {
             conversational: {},
         };
         if (model != null) {
             plannerConfig.planModel = model;
         }
 
-        const startPayload: any = { source: 0 };
+        const startPayload: Record<string, unknown> = { source: 0 };
         if (model != null) {
             startPayload.cascadeConfig = { plannerConfig };
         }
 
-        let startResp: any;
+        let startResp: unknown;
         try {
             startResp = await this.rpc('StartCascade', startPayload);
-        } catch (err: any) {
-            this.lastOperationError = err?.message || String(err);
+        } catch (err: unknown) {
+            this.lastOperationError = err instanceof Error ? err.message : String(err);
             logger.error(`[GrpcCascadeClient] StartCascade failed: ${this.lastOperationError}`);
             return null;
         }
@@ -216,7 +216,7 @@ export class GrpcCascadeClient extends EventEmitter {
         text: string,
         model?: ModelId,
         media?: MediaItem[],
-    ): Promise<{ ok: boolean; data?: any; error?: string }> {
+    ): Promise<{ ok: boolean; data?: unknown; error?: string }> {
         // Verified payload format via E2E testing:
         //   items: [{text}]  (NOT chunk/case)
         //   planModel: model identifier string or legacy numeric ID
@@ -224,14 +224,14 @@ export class GrpcCascadeClient extends EventEmitter {
         //
         // When model is NOT specified, omit planModel entirely so the
         // server uses the user's UI-selected model (not a hardcoded default).
-        const plannerConfig: any = {
+        const plannerConfig: Record<string, unknown> = {
             conversational: {},
         };
         if (model != null) {
             plannerConfig.planModel = model;
         }
 
-        const payload: any = {
+        const payload: Record<string, unknown> = {
             cascadeId,
             items: [{ text }],
             cascadeConfig: { plannerConfig },
@@ -242,7 +242,7 @@ export class GrpcCascadeClient extends EventEmitter {
         // In JSON transport, bytes fields (inlineData, thumbnail) are base64 strings.
         if (media && media.length > 0) {
             payload.media = media.map(item => {
-                const mediaObj: any = {
+                const mediaObj: Record<string, unknown> = {
                     mimeType: item.mimeType,
                 };
                 if (item.inlineData) {
@@ -265,8 +265,8 @@ export class GrpcCascadeClient extends EventEmitter {
             const result = await this.rpc('SendUserCascadeMessage', payload);
             this.lastOperationError = null;
             return { ok: true, data: result };
-        } catch (err: any) {
-            this.lastOperationError = err.message || String(err);
+        } catch (err: unknown) {
+            this.lastOperationError = err instanceof Error ? err.message : String(err);
             return { ok: false, error: this.lastOperationError || undefined };
         }
     }
@@ -279,7 +279,7 @@ export class GrpcCascadeClient extends EventEmitter {
      * @returns The artifact URI or null on failure
      */
     async saveMediaAsArtifact(media: MediaItem): Promise<string | null> {
-        const mediaObj: any = {
+        const mediaObj: Record<string, unknown> = {
             mimeType: media.mimeType,
         };
         if (media.inlineData) {
@@ -295,8 +295,8 @@ export class GrpcCascadeClient extends EventEmitter {
         try {
             const result = await this.rpc('SaveMediaAsArtifact', { media: mediaObj });
             return result?.uri || null;
-        } catch (err: any) {
-            logger.warn(`[GrpcCascadeClient] SaveMediaAsArtifact failed: ${err?.message || err}`);
+        } catch (err: unknown) {
+            logger.warn(`[GrpcCascadeClient] SaveMediaAsArtifact failed: ${err instanceof Error ? err.message : String(err)}`);
             return null;
         }
     }
@@ -308,8 +308,8 @@ export class GrpcCascadeClient extends EventEmitter {
         try {
             const result = await this.rpc('DeleteMediaArtifact', { uri });
             return result?.success !== false;
-        } catch (err: any) {
-            logger.warn(`[GrpcCascadeClient] DeleteMediaArtifact failed: ${err?.message || err}`);
+        } catch (err: unknown) {
+            logger.warn(`[GrpcCascadeClient] DeleteMediaArtifact failed: ${err instanceof Error ? err.message : String(err)}`);
             return false;
         }
     }
@@ -331,7 +331,7 @@ export class GrpcCascadeClient extends EventEmitter {
     /**
      * Get all cascade trajectories (conversation list).
      */
-    async listCascades(): Promise<any> {
+    async listCascades(): Promise<unknown> {
         const resp = await this.rpc('GetAllCascadeTrajectories', {});
         return resp?.trajectorySummaries ?? {};
     }
@@ -339,14 +339,14 @@ export class GrpcCascadeClient extends EventEmitter {
     /**
      * Get user status (tier, models, etc.)
      */
-    async getUserStatus(): Promise<any> {
+    async getUserStatus(): Promise<unknown> {
         return this.rpc('GetUserStatus', {});
     }
 
     /**
      * Make a raw RPC call to any LS method.
      */
-    async rawRPC(method: string, payload: any): Promise<any> {
+    async rawRPC(method: string, payload: unknown): Promise<unknown> {
         return this.rpc(method, payload);
     }
 
@@ -359,7 +359,7 @@ export class GrpcCascadeClient extends EventEmitter {
      * Proxied through CDP Runtime.evaluate + fetch() in the renderer process.
      * Uses x-codeium-csrf-token header (NOT OAuth tokens).
      */
-    private async rpc(method: string, payload: any): Promise<any> {
+    private async rpc(method: string, payload: unknown): Promise<unknown> {
         if (!this.connection) {
             throw new Error('Not connected');
         }
@@ -451,7 +451,7 @@ export function decodeWorkspaceId(encodedId: string): string {
  * @param trajectoryResp Raw response from GetCascadeTrajectory RPC
  * @returns The run status string (e.g. 'CASCADE_RUN_STATUS_RUNNING') or null
  */
-export function extractCascadeRunStatus(trajectoryResp: any): string | null {
+export function extractCascadeRunStatus(trajectoryResp: unknown): string | null {
     const trajectory = trajectoryResp?.trajectory ?? trajectoryResp;
     return typeof trajectory?.cascadeRunStatus === 'string'
         ? trajectory.cascadeRunStatus

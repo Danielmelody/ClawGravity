@@ -130,7 +130,7 @@ export class UserPreferenceRepository {
     public findByUserId(userId: string): UserPreferenceRecord | undefined {
         const row = this.db.prepare(
             'SELECT * FROM user_preferences WHERE user_id = ?'
-        ).get(userId) as any;
+        ).get(userId) as Record<string, unknown> | undefined;
 
         if (!row) return undefined;
         return this.mapRow(row);
@@ -139,14 +139,14 @@ export class UserPreferenceRepository {
     /**
      * Map a DB row to UserPreferenceRecord
      */
-    private mapRow(row: any): UserPreferenceRecord {
+    private mapRow(row: Record<string, unknown>): UserPreferenceRecord {
         return {
-            id: row.id,
-            userId: row.user_id,
+            id: row.id as number,
+            userId: row.user_id as string,
             outputFormat: row.output_format as OutputFormat,
-            defaultModel: row.default_model ?? null,
-            createdAt: row.created_at,
-            updatedAt: row.updated_at,
+            defaultModel: row.default_model as string | null ?? null,
+            createdAt: row.created_at as string,
+            updatedAt: row.updated_at as string,
         };
     }
 }

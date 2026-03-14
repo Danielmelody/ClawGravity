@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 // @inquirer/select is ESM-only — use native import() that tsc won't rewrite to require()
 
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<unknown>;
 
 type SelectFn = typeof import('@inquirer/select')['default'];
 let _select: SelectFn | undefined;

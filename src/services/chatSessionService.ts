@@ -51,7 +51,7 @@ export class ChatSessionService {
             for (const [id, t] of Object.entries(summaries)) {
                 if (!cdpService.isCascadeInWorkspace(t)) continue;
 
-                const target = t as any;
+                const target = t as Record<string, unknown>;
                 list.push({
                     title: target.summary || 'Untitled',
                     isActive: id === activeId,

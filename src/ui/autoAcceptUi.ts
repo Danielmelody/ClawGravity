@@ -64,7 +64,7 @@ export function buildAutoAcceptPayload(enabled: boolean): MessagePayload {
 }
 
 export async function sendAutoAcceptUI(
-    target: { editReply: (opts: any) => Promise<any> },
+    target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> },
     autoAcceptService: AutoAcceptService,
 ): Promise<void> {
     const enabled = autoAcceptService.isEnabled();

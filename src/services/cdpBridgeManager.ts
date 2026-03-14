@@ -69,7 +69,7 @@ export async function getCurrentChatTitle(cdp: CdpService): Promise<string | nul
             let latestTime = 0;
 
             for (const [, summary] of Object.entries(summaries)) {
-                const s = summary as any;
+                const s = summary as Record<string, unknown>;
                 const modTime = s.lastModifiedTimestamp
                     ? new Date(s.lastModifiedTimestamp).getTime()
                     : 0;
@@ -273,7 +273,7 @@ export function initCdpBridge(autoApproveDefault: boolean): CdpBridge {
         const cdp = getCurrentCdp(bridge);
         if (!cdp) return null;
         const client = await cdp.getLSClient();
-        return client ? (method: string, payload: any) => client.rawRPC(method, payload) : null;
+        return client ? (method: string, payload: unknown) => client.rawRPC(method, payload) : null;
     });
 
     return bridge;
@@ -335,7 +335,7 @@ async function sendAndTrackNotification(
     channel: PlatformChannel,
     payload: MessagePayload,
 ): Promise<void> {
-    const sent = await channel.send(payload).catch((err: any) => {
+    const sent = await channel.send(payload).catch((err: unknown) => {
         logger.error(err);
         return null;
     });

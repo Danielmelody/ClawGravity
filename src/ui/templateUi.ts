@@ -112,8 +112,10 @@ export function buildTemplatePayload(
  * Build and send the template list UI with clickable buttons.
  * Follows the same pattern as modelsUi.ts.
  */
+type EditReplyOptions = { content?: string; embeds?: unknown[]; components?: unknown[] };
+
 export async function sendTemplateUI(
-    target: { editReply: (opts: any) => Promise<any> },
+    target: { editReply: (opts: EditReplyOptions) => Promise<unknown> },
     templates: TemplateRecord[],
 ): Promise<void> {
     if (templates.length === 0) {

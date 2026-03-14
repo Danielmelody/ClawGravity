@@ -52,7 +52,7 @@ const INLINE_MAX_CHARS = 3500;
  *
  * PURE FUNCTION — no side effects.
  */
-function extractArtifactsFromSteps(steps: any[]): ExtractedArtifact[] {
+function extractArtifactsFromSteps(steps: unknown[]): ExtractedArtifact[] {
     if (!Array.isArray(steps)) return [];
 
     const seen = new Set<string>();
@@ -86,7 +86,7 @@ function extractArtifactsFromSteps(steps: any[]): ExtractedArtifact[] {
 }
 
 /** Parse a single tool call and return an ExtractedArtifact if it's an artifact write. */
-function extractFromToolCall(tc: any): ExtractedArtifact | null {
+function extractFromToolCall(tc: unknown): ExtractedArtifact | null {
     const name = (tc?.name || tc?.toolName || tc?.function?.name || '').toLowerCase();
     if (name !== 'write_to_file' && name !== 'writetofile') return null;
 
@@ -115,7 +115,7 @@ function extractFromToolCall(tc: any): ExtractedArtifact | null {
 }
 
 /** Parse tool call arguments from JSON string or object. */
-function parseToolArgs(tc: any): Record<string, any> | null {
+function parseToolArgs(tc: unknown): Record<string, unknown> | null {
     const direct = tc?.arguments || tc?.function?.arguments || tc?.input;
     if (direct && typeof direct === 'object') return direct;
     if (typeof direct === 'string' && direct.trim()) {
@@ -143,7 +143,7 @@ function parseToolArgs(tc: any): Record<string, any> | null {
  *      full file as document attachment
  */
 export async function sendArtifactsToTelegram(
-    steps: any[],
+    steps: unknown[],
     channel: PlatformChannel,
     botApi?: TelegramBotLike['api'],
 ): Promise<void> {
@@ -189,8 +189,9 @@ export async function sendArtifactsToTelegram(
             // Send inline expandable message (may need splitting)
             const chunks = splitTelegramText(message);
             for (const chunk of chunks) {
-                await channel.send({ text: chunk }).catch((err: any) => {
-                    logger.warn(`[ArtifactSender] Failed to send inline chunk: ${err?.message || err}`);
+                await channel.send({ text: chunk }).catch((err: unknown) => {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    logger.warn(`[ArtifactSender] Failed to send inline chunk: ${msg}`);
                 });
             }
 
@@ -203,14 +204,16 @@ export async function sendArtifactsToTelegram(
                     await botApi.sendDocument(chatId, inputFile, {
                         caption: `${icon} ${artifact.name} (full document)`,
                     });
-                } catch (docErr: any) {
-                    logger.warn(`[ArtifactSender] Failed to send document fallback: ${docErr?.message || docErr}`);
+                } catch (docErr: unknown) {
+                    const msg = docErr instanceof Error ? docErr.message : String(docErr);
+                    logger.warn(`[ArtifactSender] Failed to send document fallback: ${msg}`);
                 }
             }
 
             logger.info(`[ArtifactSender] Sent artifact: ${artifact.name} → chat ${chatId} (inline=${isShort})`);
-        } catch (err: any) {
-            logger.warn(`[ArtifactSender] Failed to send artifact ${artifact.name}: ${err?.message || err}`);
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.warn(`[ArtifactSender] Failed to send artifact ${artifact.name}: ${msg}`);
         }
     }
 }

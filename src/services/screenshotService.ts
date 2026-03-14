@@ -48,8 +48,8 @@ export class ScreenshotService {
     }
 
     /** Build common CDP captureScreenshot params from capture options. */
-    private buildCaptureParams(options: CaptureOptions): Record<string, any> {
-        const params: Record<string, any> = {
+    private buildCaptureParams(options: CaptureOptions): Record<string, unknown> {
+        const params: Record<string, unknown> = {
             format: options.format ?? 'png',
         };
         if (options.quality !== undefined) {

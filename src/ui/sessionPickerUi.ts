@@ -29,7 +29,7 @@ export function isSessionSelectId(customId: string): boolean {
  */
 export function buildSessionPickerUI(
     sessions: SessionListItem[],
-): { embeds: EmbedBuilder[]; components: ActionRowBuilder<any>[] } {
+): { embeds: EmbedBuilder[]; components: ActionRowBuilder<StringSelectMenuBuilder>[] } {
     const embed = new EmbedBuilder()
         .setTitle(t('🔗 Join Session'))
         .setColor(0x5865F2)
@@ -62,7 +62,7 @@ export function buildSessionPickerUI(
         .setPlaceholder(t('Select a session...'))
         .addOptions(options);
 
-    const components: ActionRowBuilder<any>[] = [
+    const components: ActionRowBuilder<StringSelectMenuBuilder>[] = [
         new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu),
     ];
 

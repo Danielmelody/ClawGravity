@@ -1,6 +1,18 @@
 import Database from 'better-sqlite3';
 
 /**
+ * Database row type for schedules table
+ */
+interface ScheduleRow {
+    id: number;
+    cron_expression: string;
+    prompt: string;
+    workspace_path: string;
+    enabled: number;
+    created_at: string;
+}
+
+/**
  * Schedule record type definition
  */
 export interface ScheduleRecord {
@@ -95,7 +107,7 @@ export class ScheduleRepository {
      * Get all schedules
      */
     public findAll(): ScheduleRecord[] {
-        const rows = this.db.prepare('SELECT * FROM schedules ORDER BY id ASC').all() as any[];
+        const rows = this.db.prepare('SELECT * FROM schedules ORDER BY id ASC').all() as ScheduleRow[];
         return rows.map(this.mapRow);
     }
 
@@ -103,7 +115,7 @@ export class ScheduleRepository {
      * Get a schedule by ID
      */
     public findById(id: number): ScheduleRecord | undefined {
-        const row = this.db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as any;
+        const row = this.db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow | undefined;
         if (!row) return undefined;
         return this.mapRow(row);
     }
@@ -114,7 +126,7 @@ export class ScheduleRepository {
     public findEnabled(): ScheduleRecord[] {
         const rows = this.db.prepare(
             'SELECT * FROM schedules WHERE enabled = 1 ORDER BY id ASC'
-        ).all() as any[];
+        ).all() as ScheduleRow[];
         return rows.map(this.mapRow);
     }
 
@@ -131,7 +143,7 @@ export class ScheduleRepository {
      */
     public update(id: number, input: UpdateScheduleInput): boolean {
         const sets: string[] = [];
-        const values: any[] = [];
+        const values: (string | number)[] = [];
 
         if (input.cronExpression !== undefined) {
             sets.push('cron_expression = ?');
@@ -161,7 +173,7 @@ export class ScheduleRepository {
     /**
      * Map a DB row to ScheduleRecord
      */
-    private mapRow(row: any): ScheduleRecord {
+    private mapRow(row: ScheduleRow): ScheduleRecord {
         return {
             id: row.id,
             cronExpression: row.cron_expression,

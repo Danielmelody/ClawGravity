@@ -53,7 +53,7 @@ export interface PromptSessionDependencies {
     enqueueActivity: (task: () => Promise<void>, label?: string) => Promise<void>;
     telemetryModeName: string;
     telemetryModelName: string;
-    logger: any; // Using any for logger to avoid complex typings for now
+    logger: unknown; // Using unknown for logger to avoid complex typings for now
     
     // Config values needed for the session
     config: {
@@ -63,7 +63,7 @@ export interface PromptSessionDependencies {
     
     // Actions
     autoRenameChannel: (newTitle: string) => Promise<void>;
-    tryEmergencyExtractText: (cdp: CdpService, currentFinal: string, logger: any) => Promise<string>;
+    tryEmergencyExtractText: (cdp: CdpService, currentFinal: string, logger: unknown) => Promise<string>;
     userStopRequestedChannels: Set<string>;
     
     // Global notification
@@ -90,8 +90,8 @@ export class PromptSession {
     private outputFormat: OutputFormat = 'embed';
     
     // Schedulers
-    private responseScheduler: any;
-    private activityScheduler: any;
+    private responseScheduler: unknown;
+    private activityScheduler: unknown;
     
     // Grpc
     private monitor: GrpcResponseMonitor | null = null;
@@ -181,7 +181,7 @@ export class PromptSession {
     }
 
     async execute() {
-        const { message, prompt, cdp, options, logger } = this.deps;
+        const { message, prompt, cdp, logger } = this.deps;
         
         try {
             await message.react('🚀').catch(() => { });
@@ -214,13 +214,13 @@ export class PromptSession {
                         
                         await new Promise<void>((resolve, reject) => {
                             const file = fs.createWriteStream(tmpPath);
-                            https.get(img.url, (response: any) => {
+                            https.get(img.url, (response: unknown) => {
                                 response.pipe(file);
                                 file.on('finish', () => {
                                     file.close();
                                     resolve();
                                 });
-                            }).on('error', (err: any) => {
+                            }).on('error', (err: unknown) => {
                                 fs.unlink(tmpPath, () => {});
                                 reject(err);
                             });
@@ -266,7 +266,7 @@ export class PromptSession {
                     // Phase transitions are handled by monitor internally
                 },
                 onProgress: (text: string) => this.handleContentDelta(text),
-                onStepsUpdate: (data: any) => {
+                onStepsUpdate: (data: { steps: unknown[]; runStatus: string }) => {
                     const activityText = renderStepsToDiscordMarkdown(data.steps, data.runStatus);
                     this.handleActivity(activityText, data.runStatus === 'complete');
                 },
@@ -276,7 +276,7 @@ export class PromptSession {
 
             await this.monitor.start();
 
-        } catch (error: any) {
+        } catch (error: unknown) {
             logger.error('Unhandled error in sendPromptToAntigravity:', error);
             await this.handleInitialError(error.message || String(error));
         }

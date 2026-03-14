@@ -90,8 +90,9 @@ export class AgentRouter {
             for (const name of this.workspaceService.scanWorkspaces()) {
                 connected.add(name);
             }
-        } catch (err: any) {
-            logger.debug(`[AgentRouter] Workspace scan failed: ${err?.message}`);
+        } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            logger.debug(`[AgentRouter] Workspace scan failed: ${errMsg}`);
         }
         return [...connected].sort();
     }
@@ -112,8 +113,9 @@ export class AgentRouter {
         let targetPath: string;
         try {
             targetPath = this.workspaceService.getWorkspacePath(targetAgent);
-        } catch (err: any) {
-            return { ok: false, error: `Cannot resolve workspace for "${targetAgent}": ${err?.message}` };
+        } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            return { ok: false, error: `Cannot resolve workspace for "${targetAgent}": ${errMsg}` };
         }
 
         if (!this.workspaceService.exists(targetAgent)) {
@@ -125,10 +127,11 @@ export class AgentRouter {
         try {
             runtime = this.pool.getOrCreateRuntime(targetPath);
             await runtime.ready();
-        } catch (err: any) {
+        } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
             return {
                 ok: false,
-                error: `Cannot connect to sub-agent "${targetAgent}". Is Antigravity open? Error: ${err?.message}`,
+                error: `Cannot connect to sub-agent "${targetAgent}". Is Antigravity open? Error: ${errMsg}`,
             };
         }
 
@@ -141,8 +144,9 @@ export class AgentRouter {
             } else {
                 logger.warn(`[AgentRouter] Could not open new session on "${targetAgent}": ${newChat.error}`);
             }
-        } catch (err: any) {
-            logger.warn(`[AgentRouter] New session failed on "${targetAgent}": ${err?.message}`);
+        } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            logger.warn(`[AgentRouter] New session failed on "${targetAgent}": ${errMsg}`);
         }
 
         // 4. Build task prompt (instructs sub-agent to end with ## Summary)
@@ -174,8 +178,9 @@ export class AgentRouter {
                 outputPath,
                 outputLength: fullResponse.length,
             };
-        } catch (err: any) {
-            return { ok: false, error: `Task execution failed for "${targetAgent}": ${err?.message}` };
+        } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            return { ok: false, error: `Task execution failed for "${targetAgent}": ${errMsg}` };
         }
     }
 

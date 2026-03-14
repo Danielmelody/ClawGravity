@@ -64,11 +64,11 @@ export class PlanningDetector {
         this.onResolved = options.onResolved;
     }
 
-    private getToolName(toolCall: any): string {
+    private getToolName(toolCall: unknown): string {
         return getToolCallName(toolCall);
     }
 
-    private isRunCommandTool(toolCall: any): boolean {
+    private isRunCommandTool(toolCall: unknown): boolean {
         const toolName = this.getToolName(toolCall);
         if (!toolName) return false;
 
@@ -176,7 +176,7 @@ export class PlanningDetector {
      * @param steps      Trajectory steps array
      * @param runStatus  Cascade run status string
      */
-    evaluate(cascadeId: string, steps: any[], runStatus: string | null): void {
+    evaluate(cascadeId: string, steps: unknown[], runStatus: string | null): void {
         if (!this.state.isRunning) return;
 
         try {
@@ -200,7 +200,7 @@ export class PlanningDetector {
      * Extract planning info from trajectory steps.
      * Returns PlanningInfo if there's an active plan awaiting user decision.
      */
-    private extractPlanningFromTrajectory(steps: any[], runStatus: string | null): PlanningInfo | null {
+    private extractPlanningFromTrajectory(steps: unknown[], runStatus: string | null): PlanningInfo | null {
         const found = findLastPlannerStep(steps, runStatus);
         if (!found) return null;
 
@@ -214,13 +214,13 @@ export class PlanningDetector {
         const hasToolPlan = pendingToolCalls.length > 0;
 
         if (!hasToolPlan) return null;
-        if (pendingToolCalls.some((tc: any) => this.isRunCommandTool(tc))) return null;
+        if (pendingToolCalls.some((tc: unknown) => this.isRunCommandTool(tc))) return null;
 
         const responseText = plannerResponse?.response || '';
 
         // Build plan summary from pending tool calls
         const toolNames = hasToolPlan
-            ? pendingToolCalls.map((tc: any) => tc?.name || tc?.toolName || 'action').join(', ')
+            ? pendingToolCalls.map((tc: unknown) => (tc as Record<string, unknown>)?.name || (tc as Record<string, unknown>)?.toolName || 'action').join(', ')
             : '';
 
         const planTitle = 'Implementation Plan';

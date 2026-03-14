@@ -81,7 +81,7 @@ export interface TelegramMessageHandlerDeps {
     readonly modeService?: ModeService;
     readonly modelService?: ModelService;
     readonly templateRepo?: import('../database/templateRepository').TemplateRepository;
-    readonly fetchQuota?: () => Promise<any[]>;
+    readonly fetchQuota?: () => Promise<unknown[]>;
     /** Shared map of active response monitors keyed by project name.
      *  Used by /stop to halt monitoring and prevent stale re-sends. */
     readonly activeMonitors?: Map<string, GrpcResponseMonitor>;
@@ -131,7 +131,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     templateRepo: deps.templateRepo,
                     workspaceService: deps.workspaceService,
                     fetchQuota: deps.fetchQuota,
-                    activeMonitors: deps.activeMonitors as any,
+                    activeMonitors: deps.activeMonitors as Map<string, GrpcResponseMonitor> | undefined,
                     chatSessionService: deps.chatSessionService,
                     sessionStateStore: deps.sessionStateStore,
                     scheduleService: deps.scheduleService,
@@ -219,7 +219,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                         deps.clawInterceptor,
                         deps.sessionStateStore,
                     )
-                        .catch((err: any) => logger.error('[TelegramPassive] Error handling PC message:', err));
+                        .catch((err: unknown) => logger.error('[TelegramPassive] Error handling PC message:', err));
                 },
             });
             runtime = prepared.runtime;
@@ -227,9 +227,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             projectName = prepared.projectName;
             preparedRuntime = runtime;
             preparedProjectName = projectName;
-        } catch (e: any) {
+        } catch (e: unknown) {
             await message.reply({
-                text: `Failed to connect to workspace: ${e.message}`,
+                text: `Failed to connect to workspace: ${(e as Error).message}`,
             }).catch(logger.error);
             return;
         }
@@ -277,8 +277,8 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     deps.botToken,
                     deps.botApi,
                 );
-            } catch (err: any) {
-                logger.warn('[TelegramHandler] Image download failed:', err?.message || err);
+            } catch (err: unknown) {
+                logger.warn('[TelegramHandler] Image download failed:', (err as Error)?.message || err);
             }
 
             if (hasImageAttachments && inboundImages.length === 0) {
@@ -364,10 +364,10 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
                 await mirror.clear();
             },
-            afterComplete: async (_finalText: string, deliveredText: string | null, steps: any[]) => {
+            afterComplete: async (_finalText: string, deliveredText: string | null, steps: { type?: string; content?: string }[]) => {
                     // Send artifact documents inline (expandable blockquotes)
-                    await sendArtifactsToTelegram(steps, channel, deps.botApi).catch((err: any) =>
-                        logger.warn(`[TelegramHandler] Artifact send failed: ${err?.message || err}`),
+                    await sendArtifactsToTelegram(steps, channel, deps.botApi).catch((err: unknown) =>
+                        logger.warn(`[TelegramHandler] Artifact send failed: ${(err as Error)?.message || err}`),
                     );
                     // Detect inspect-complete sentinel: LLM confirmed no issues → auto-disable inspect mode.
                     if (deliveredText?.includes(INSPECT_DONE_SENTINEL)) {
@@ -391,8 +391,8 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                             overrideCascadeId: inspectCascadeId,
                         }).then(() => {
                             logger.info(`[TelegramHandler:inspect] Inspect prompt injected (chat=${chatId})`);
-                        }).catch((err: any) => {
-                            logger.warn(`[TelegramHandler:inspect] Failed to inject inspect prompt: ${err?.message || err}`);
+                        }).catch((err: unknown) => {
+                            logger.warn(`[TelegramHandler:inspect] Failed to inject inspect prompt: ${(err as Error)?.message || err}`);
                         });
                     }
 
@@ -428,7 +428,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                                 `🚨 <b>Antigravity Generation Error</b>\nAn error occurred while generating the response for project <code>${escapeHtml(projectName)}</code>.`,
                             );
                         }
-                    } catch (e) {
+                    } catch {
                         // ignore
                     }
                 } else {
@@ -461,8 +461,8 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
         // Register the monitor so /stop can access and stop it
         deps.activeMonitors?.set(projectName, monitor);
 
-        Promise.resolve(monitor.start()).catch((err: any) => {
-            logger.error(`[TelegramHandler:${projectName}] monitor.start() failed:`, err?.message || err);
+        Promise.resolve(monitor.start()).catch((err: unknown) => {
+            logger.error(`[TelegramHandler:${projectName}] monitor.start() failed:`, (err as Error)?.message || err);
             mirror.dispose();
             settle();
         });
@@ -615,8 +615,8 @@ async function executeClawChain(opts: ClawChainOptions): Promise<void> {
         });
 
         opts.onFollowUpMonitor?.(followUpMonitor);
-        followUpMonitor.start().catch((err: any) => {
-            logger.error(`${logPrefix} follow-up monitor.start() failed:`, err?.message || err);
+        followUpMonitor.start().catch((err: unknown) => {
+            logger.error(`${logPrefix} follow-up monitor.start() failed:`, (err as Error)?.message || err);
             deferred.resolve('');
         });
 
@@ -750,13 +750,13 @@ async function syncStreamingStatusMessages(
             try {
                 nextMessages[i] = await existing.edit({ text: chunks[i] });
                 continue;
-            } catch (err: any) {
-                logger.warn(`[TelegramStatus] edit failed for msg #${i}: ${err?.message || err}`);
+            } catch (err: unknown) {
+                logger.warn(`[TelegramStatus] edit failed for msg #${i}: ${(err as Error)?.message || err}`);
                 const shouldPreserveExisting = /(message is too long|too long|text_too_long|message_too_long|caption is too long|entities too long)/i.test(
                     err instanceof Error ? err.message : String(err || ''),
                 );
-                const replacement = await channel.send({ text: chunks[i] }).catch((sendErr: any) => {
-                    logger.error(`[TelegramStatus] replacement send failed for chunk #${i}: ${sendErr?.message || sendErr}`);
+                const replacement = await channel.send({ text: chunks[i] }).catch((sendErr: unknown) => {
+                    logger.error(`[TelegramStatus] replacement send failed for chunk #${i}: ${(sendErr as Error)?.message || sendErr}`);
                     return null;
                 });
                 if (replacement) {
@@ -771,7 +771,7 @@ async function syncStreamingStatusMessages(
             continue;
         }
 
-        const sent = await channel.send({ text: chunks[i] }).catch((err: any) => {
+        const sent = await channel.send({ text: chunks[i] }).catch((err: unknown) => {
             logger.error(`[TelegramStatus] send failed for chunk #${i}: ${err?.message || err}`);
             return null;
         });
@@ -906,7 +906,7 @@ interface MonitorCallbackOptions {
     readonly resolveFinalText: (finalText: string) => string | null;
     readonly shouldForward?: () => boolean;
     readonly handleEmptyComplete?: () => Promise<void>;
-    readonly afterComplete?: (finalText: string, deliveredText: string | null, steps: any[]) => Promise<void>;
+    readonly afterComplete?: (finalText: string, deliveredText: string | null, steps: { type?: string; content?: string }[]) => Promise<void>;
     readonly handleTimeoutNotice: (lastText: string, phase: string) => Promise<void>;
     readonly cleanup: () => void;
 }
@@ -949,7 +949,7 @@ function buildMonitorCallbacks(options: MonitorCallbackOptions) {
             mirror.dispatch({ type: 'TEXT_UPDATE', text });
         },
 
-        onStepsUpdate: (data: { steps: any[]; runStatus: string | null }) => {
+        onStepsUpdate: (data: { steps: { type?: string; content?: string }[]; runStatus: string | null }) => {
             if (!shouldForward()) return;
             if (!data.steps || data.steps.length === 0) return;
             mirror.dispatch({ type: 'STEPS_UPDATE', stepsData: data });
@@ -1257,11 +1257,11 @@ async function startPassiveResponseMonitor(
                 await mirror.clear();
             }
         },
-        afterComplete: async (_finalText: string, deliveredText: string | null, steps: any[]) => {
+        afterComplete: async (_finalText: string, deliveredText: string | null, steps: { type?: string; content?: string }[]) => {
             // Send artifact documents inline (expandable blockquotes)
             if (isCurrentChatSession()) {
-                await sendArtifactsToTelegram(steps, channel).catch((err: any) =>
-                    logger.warn(`[TelegramPassive] Artifact send failed: ${err?.message || err}`),
+                await sendArtifactsToTelegram(steps, channel).catch((err: unknown) =>
+                    logger.warn(`[TelegramPassive] Artifact send failed: ${(err as Error)?.message || err}`),
                 );
             }
             // Detect inspect-complete sentinel in passive path: LLM confirmed no issues → auto-disable.
@@ -1324,8 +1324,8 @@ async function startPassiveResponseMonitor(
     passiveMonitorCreatedAt.set(projectName, Date.now());
     ensurePassiveMonitorCleanup();
     activeMonitors?.set(`passive:${projectName}`, monitor);
-    monitor.startPassive().catch((err: any) => {
-        logger.error('[TelegramPassive] Failed to start response monitor:', err?.message || err);
+    monitor.startPassive().catch((err: unknown) => {
+        logger.error('[TelegramPassive] Failed to start response monitor:', (err as Error)?.message || err);
         clearPassiveMonitorState(projectName, activeMonitors);
         mirror.dispose();
     });

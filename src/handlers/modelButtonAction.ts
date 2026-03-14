@@ -12,11 +12,12 @@ import { getCurrentCdp } from '../services/cdpBridgeManager';
 import { buildModelsPayload } from '../ui/modelsUi';
 import type { ModelService } from '../services/modelService';
 import type { UserPreferenceRepository } from '../database/userPreferenceRepository';
+import type { ModelQuota } from '../services/quotaService';
 import { logger } from '../utils/logger';
 
 export interface ModelButtonActionDeps {
     readonly bridge: CdpBridge;
-    readonly fetchQuota: () => Promise<any[]>;
+    readonly fetchQuota: () => Promise<ModelQuota[]>;
     readonly modelService?: ModelService;
     readonly userPrefRepo?: UserPreferenceRepository;
 }
@@ -101,18 +102,18 @@ export function createModelButtonAction(deps: ModelButtonActionDeps): ButtonActi
 async function refreshModelsUI(
     cdp: NonNullable<ReturnType<typeof getCurrentCdp>>,
     actionDeps: ModelButtonActionDeps,
-    interaction: { update(payload: any): Promise<void> },
+    interaction: { update(payload: unknown): Promise<void> },
 ): Promise<void> {
     try {
         const models = await cdp.getUiModels();
         const currentModel = await cdp.getCurrentModel();
         const quotaData = await actionDeps.fetchQuota();
         const defaultModel = actionDeps.modelService?.getDefaultModel() ?? null;
-        const payload = buildModelsPayload(models, currentModel, quotaData, defaultModel);
+        const payload = buildModelsPayload(models, currentModel, quotaData as unknown as Array<Record<string, unknown>>, defaultModel);
         if (payload) {
             await interaction.update(payload);
         }
-    } catch (err: any) {
-        logger.warn('[ModelButton] Failed to refresh models UI:', err?.message || err);
+    } catch (err: unknown) {
+        logger.warn('[ModelButton] Failed to refresh models UI:', err instanceof Error ? err.message : String(err));
     }
 }

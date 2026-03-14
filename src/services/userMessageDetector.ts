@@ -110,7 +110,7 @@ export class UserMessageDetector {
      *
      * @param summaries  The trajectorySummaries object from GetAllCascadeTrajectories
      */
-    async evaluateSummaries(summaries: Record<string, any>): Promise<void> {
+    async evaluateSummaries(summaries: Record<string, unknown>): Promise<void> {
         if (!this.isRunning) return;
 
         try {
@@ -118,14 +118,14 @@ export class UserMessageDetector {
             let maxPrimingMs = this.lastMaxUserInputTimeMs;
 
             for (const [id, t] of Object.entries(summaries)) {
-                const timeStr = (t as any).lastUserInputTime;
+                const timeStr = (t as Record<string, unknown>).lastUserInputTime;
                 if (!timeStr) continue;
 
                 const ms = new Date(timeStr).getTime();
                 if (this.isPriming) {
                     if (ms > maxPrimingMs) maxPrimingMs = ms;
                 } else if (ms > this.lastMaxUserInputTimeMs) {
-                    updates.push({ id, ms, stepIndex: (t as any).lastUserInputStepIndex });
+                    updates.push({ id, ms, stepIndex: (t as Record<string, unknown>).lastUserInputStepIndex as number });
                 }
             }
 
@@ -158,8 +158,8 @@ export class UserMessageDetector {
                         continue;
                     }
 
-                    const items = steps[update.stepIndex].userInput?.items || [];
-                    const textParts = items.map((i: any) => i.text).filter(Boolean);
+                    const items = (steps[update.stepIndex].userInput as Record<string, unknown> | undefined)?.items || [];
+                    const textParts = (items as Array<Record<string, unknown>>).map((i) => i.text).filter(Boolean);
                     const rawText = textParts.join('\n');
 
                     if (rawText.trim()) {

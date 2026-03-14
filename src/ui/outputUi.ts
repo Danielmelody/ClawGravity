@@ -6,7 +6,7 @@ export const OUTPUT_BTN_EMBED = 'output_btn_embed';
 export const OUTPUT_BTN_PLAIN = 'output_btn_plain';
 
 export async function sendOutputUI(
-    target: { editReply: (opts: any) => Promise<any> },
+    target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> },
     currentFormat: OutputFormat,
 ): Promise<void> {
     const isEmbed = currentFormat === 'embed';

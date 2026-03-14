@@ -19,7 +19,7 @@ export interface UserStatusData {
  * A callback that performs a gRPC-over-CDP RPC call.
  * Signature matches `GrpcCascadeClient.rawRPC`.
  */
-export type RawRPCCallback = (method: string, payload: any) => Promise<any>;
+export type RawRPCCallback = (method: string, payload: Record<string, unknown>) => Promise<unknown>;
 
 export class QuotaService {
     private getRawRPC: (() => Promise<RawRPCCallback | null>) | null = null;
@@ -33,10 +33,10 @@ export class QuotaService {
         this.getRawRPC = resolver;
     }
 
-    private parseUserStatus(data: any): ModelQuota[] {
-        const cascadeData = data?.userStatus?.cascadeModelConfigData;
-        const rawConfigs: any[] = cascadeData?.clientModelConfigs || [];
-        return rawConfigs.map((c: any) => {
+    private parseUserStatus(data: unknown): ModelQuota[] {
+        const cascadeData = (data as Record<string, unknown>)?.userStatus?.cascadeModelConfigData;
+        const rawConfigs: unknown[] = cascadeData?.clientModelConfigs || [];
+        return rawConfigs.map((c: unknown) => {
             const label = c.label || c.displayName || c.modelName || c.model || '';
             const model = c.model || c.modelId || '';
             const qi = c.quotaInfo || c.quota || c.usageInfo;

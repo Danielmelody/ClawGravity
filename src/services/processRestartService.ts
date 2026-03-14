@@ -55,8 +55,8 @@ export async function runShutdownHooks(): Promise<void> {
         for (const [name, hook] of Array.from(shutdownHooks.entries()).reverse()) {
             try {
                 await hook();
-            } catch (err: any) {
-                logger.warn(`[ProcessRestart] Shutdown hook "${name}" failed: ${err?.message || err}`);
+            } catch (err: unknown) {
+                logger.warn(`[ProcessRestart] Shutdown hook "${name}" failed: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
     })();
@@ -172,10 +172,10 @@ export function spawnReplacementProcess(options?: {
             pid: child.pid ?? undefined,
             launchSpec,
         };
-    } catch (err: any) {
+    } catch (err: unknown) {
         return {
             ok: false,
-            error: err?.message || String(err),
+            error: err instanceof Error ? err.message : String(err),
         };
     }
 }
@@ -202,11 +202,11 @@ function buildProject(): string | null {
         });
         logger.done('[ProcessRestart] Build completed successfully.');
         return null;
-    } catch (err: any) {
-        const output = (err?.stdout?.toString() || '') + (err?.stderr?.toString() || '');
+    } catch (err: unknown) {
+        const output = (err as Record<string, unknown>)?.stdout?.toString() || '' + (err as Record<string, unknown>)?.stderr?.toString() || '';
         const trimmed = output.trim().slice(0, 2000);
         logger.error('[ProcessRestart] Build failed:\n' + trimmed);
-        return trimmed || err?.message || 'Unknown build error';
+        return trimmed || (err instanceof Error ? err.message : 'Unknown build error');
     }
 }
 

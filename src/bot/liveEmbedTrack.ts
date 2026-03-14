@@ -19,7 +19,7 @@ export interface LiveEmbedTrackOptions {
 }
 
 export class LiveEmbedTrack {
-    private messages: any[] = [];
+    private messages: unknown[] = [];
     private lastRenderKey = '';
     private _version = 0;
 
@@ -35,7 +35,7 @@ export class LiveEmbedTrack {
     }
 
     async upsert(
-        channel: any,
+        channel: unknown,
         outputFormat: OutputFormat,
         isFinalized: boolean,
         title: string,

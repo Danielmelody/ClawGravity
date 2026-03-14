@@ -25,11 +25,11 @@ export class LsClientManager {
      * Get the active LS client if available.
      * Attempts discovery if not already attempted.
      */
-    public async getClient(currentWorkspacePath: string | null, evaluateFn: (expression: string) => Promise<any>): Promise<GrpcCascadeClient | null> {
+    public async getClient(currentWorkspacePath: string | null, evaluateFn: (expression: string) => Promise<unknown>): Promise<GrpcCascadeClient | null> {
         return this.ensureClient(currentWorkspacePath, evaluateFn);
     }
 
-    private async ensureClient(currentWorkspacePath: string | null, evaluateFn: (expression: string) => Promise<any>): Promise<GrpcCascadeClient | null> {
+    private async ensureClient(currentWorkspacePath: string | null, evaluateFn: (expression: string) => Promise<unknown>): Promise<GrpcCascadeClient | null> {
         if (this.lsClient?.isReady()) {
             this.lastLSUnavailableReason = null;
             return this.lsClient;
@@ -83,8 +83,8 @@ export class LsClientManager {
                 this.lastLSUnavailableReason = null;
                 logger.info(`[LsClientManager] LS client initialized: port=${this.sniffedLSCredentials.port}, tls=${this.sniffedLSCredentials.useTls}`);
                 return this.lsClient;
-            } catch (err: any) {
-                this.lastLSUnavailableReason = `LS client unavailable: ${err?.message || String(err)}`;
+            } catch (err: unknown) {
+                this.lastLSUnavailableReason = `LS client unavailable: ${err instanceof Error ? err.message : String(err)}`;
                 logger.error(`[LsClientManager] LS client init failed: ${this.lastLSUnavailableReason}`);
                 return null;
             } finally {
@@ -95,7 +95,7 @@ export class LsClientManager {
         return this.lsClientInitPromise;
     }
 
-    private async discoverFromProcess(evaluateFn: (expression: string) => Promise<any>): Promise<void> {
+    private async discoverFromProcess(evaluateFn: (expression: string) => Promise<unknown>): Promise<void> {
         try {
             logger.info('[LsClientManager] Starting port-first credential discovery...');
             const perfScript = `(() => {
@@ -131,8 +131,8 @@ export class LsClientManager {
                     { encoding: 'utf8', timeout: 5000 }
                 );
                 netstatOutput = stdout;
-            } catch (err: any) {
-                logger.warn(`[LsClientManager] netstat failed for port ${lsPort}: ${err.message}`);
+            } catch (err: unknown) {
+                logger.warn(`[LsClientManager] netstat failed for port ${lsPort}: ${err instanceof Error ? err.message : String(err)}`);
                 return;
             }
 
@@ -160,8 +160,8 @@ export class LsClientManager {
                     { encoding: 'utf8', timeout: 5000 }
                 );
                 wmicOutput = stdout;
-            } catch (err: any) {
-                logger.warn(`[LsClientManager] wmic failed for PID ${lsPid}: ${err.message}`);
+            } catch (err: unknown) {
+                logger.warn(`[LsClientManager] wmic failed for PID ${lsPid}: ${err instanceof Error ? err.message : String(err)}`);
                 return;
             }
 
@@ -188,8 +188,8 @@ export class LsClientManager {
             } else {
                 logger.warn(`[LsClientManager] ❌ Port ${lsPort} validation returned status=${status}`);
             }
-        } catch (err: any) {
-            logger.error(`[LsClientManager] Port-first discovery failed: ${err.message}`);
+        } catch (err: unknown) {
+            logger.error(`[LsClientManager] Port-first discovery failed: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
 
@@ -204,7 +204,7 @@ export class LsClientManager {
         return `file_${encoded}`;
     }
 
-    private async discoverFromWorkspaceProcess(currentWorkspacePath: string, evaluateFn: (expression: string) => Promise<any>): Promise<void> {
+    private async discoverFromWorkspaceProcess(currentWorkspacePath: string, evaluateFn: (expression: string) => Promise<unknown>): Promise<void> {
         try {
             const expectedWorkspaceId = LsClientManager.encodeWorkspaceId(currentWorkspacePath);
             logger.info(`[LsClientManager] Workspace-process fallback: looking for workspace_id containing "${expectedWorkspaceId}"`);
@@ -216,8 +216,8 @@ export class LsClientManager {
                     { encoding: 'utf8', timeout: 10000 }
                 );
                 wmicOutput = stdout;
-            } catch (err: any) {
-                logger.warn(`[LsClientManager] wmic process scan failed: ${err.message}`);
+            } catch (err: unknown) {
+                logger.warn(`[LsClientManager] wmic process scan failed: ${err instanceof Error ? err.message : String(err)}`);
                 return;
             }
 
@@ -256,8 +256,8 @@ export class LsClientManager {
                     { encoding: 'utf8', timeout: 5000 }
                 );
                 netstatOutput = stdout;
-            } catch (err: any) {
-                logger.warn(`[LsClientManager] netstat failed: ${err.message}`);
+            } catch (err: unknown) {
+                logger.warn(`[LsClientManager] netstat failed: ${err instanceof Error ? err.message : String(err)}`);
                 return;
             }
 
@@ -306,8 +306,8 @@ export class LsClientManager {
             }
 
             logger.warn(`[LsClientManager] Workspace-process fallback: no ports validated for PID ${matchedPid}`);
-        } catch (err: any) {
-            logger.error(`[LsClientManager] Workspace-process fallback failed: ${err.message}`);
+        } catch (err: unknown) {
+            logger.error(`[LsClientManager] Workspace-process fallback failed: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
 }

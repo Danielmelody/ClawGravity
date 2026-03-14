@@ -93,9 +93,9 @@ export class ChatCommandHandler {
             try {
                 runtime = this.pool.getOrCreateRuntime(workspacePath);
                 await runtime.ready();
-            } catch (e: any) {
+            } catch (e: unknown) {
                 await interaction.editReply({
-                    content: t(`⚠️ Failed to switch project: ${e.message}`),
+                    content: t(`⚠️ Failed to switch project: ${(e as Error).message}`),
                 });
                 return;
             }
@@ -163,9 +163,9 @@ export class ChatCommandHandler {
         if (this.pool) {
             try {
                 runtime = this.pool.getOrCreateRuntime(workspacePath);
-            } catch (e: any) {
+            } catch (e: unknown) {
                 await interaction.editReply({
-                    content: t(`⚠️ Failed to connect: ${e.message}`),
+                    content: t(`⚠️ Failed to connect: ${(e as Error).message}`),
                 });
                 return;
             }
@@ -195,9 +195,9 @@ export class ChatCommandHandler {
                     content: t(`⚠️ Failed to clear history: ${result.error || 'unknown error'}`),
                 });
             }
-        } catch (e: any) {
+        } catch (e: unknown) {
             await interaction.editReply({
-                content: t(`⚠️ Failed to clear history: ${e.message}`),
+                content: t(`⚠️ Failed to clear history: ${(e as Error).message}`),
             });
         }
     }

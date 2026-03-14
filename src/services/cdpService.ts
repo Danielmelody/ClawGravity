@@ -4,11 +4,11 @@ import { EventEmitter } from 'events';
 import * as http from 'http';
 import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
-import { getAntigravityCliPath, extractProjectNameFromPath } from '../utils/pathUtils';
+import { extractProjectNameFromPath } from '../utils/pathUtils';
 import { CdpConnection } from './cdpConnection';
 import { WorkspaceLauncher } from './workspaceLauncher';
 import { LsClientManager } from './lsClientManager';
-import { GrpcCascadeClient, ModelId, LSConnection, extractCascadeRunStatus } from './grpcCascadeClient';
+import { GrpcCascadeClient, ModelId, extractCascadeRunStatus } from './grpcCascadeClient';
 
 
 export interface CdpServiceOptions {
@@ -59,7 +59,7 @@ export interface UiSyncResult {
 }
 
 const RECENT_CASCADE_PROPAGATION_GRACE_MS = 15_000;
-const execAsync = promisify(exec);
+const _execAsync = promisify(exec);
 
 export class CdpService extends EventEmitter {
     private ports: number[];
@@ -80,7 +80,7 @@ export class CdpService extends EventEmitter {
     private targetUrl: string | null = null;
     private targetFrameId: string | null = null;
     /** Network sniff handler reference (for cleanup across reconnects) */
-    private networkSniffHandler: ((params: any) => void) | null = null;
+    private networkSniffHandler: ((params: Record<string, unknown>) => void) | null = null;
     /** Number of auto-reconnect attempts on disconnect */
     private maxReconnectAttempts: number;
     /** Original maxReconnectAttempts (preserved across disconnect/reconnect) */
@@ -111,7 +111,7 @@ export class CdpService extends EventEmitter {
         WorkspaceLauncher.clearLaunchCooldowns();
     }
 
-    public async getJson(url: string): Promise<any[]> {
+    public async getJson(url: string): Promise<unknown[]> {
         return new Promise((resolve, reject) => {
             http.get(url, (res) => {
                 let data = '';
@@ -145,18 +145,18 @@ export class CdpService extends EventEmitter {
     }
 
     /** Check if a CDP target is a workbench page (not Launchpad, not jetski-agent). */
-    public isWorkbenchPage(t: any): boolean {
+    public isWorkbenchPage(t: Record<string, unknown>): boolean {
         return (
             t.type === 'page' &&
             !!t.webSocketDebuggerUrl &&
-            !t.title?.includes('Launchpad') &&
-            !t.url?.includes('workbench-jetski-agent') &&
-            !!t.url?.includes('workbench')
+            !(t.title as string | undefined)?.includes('Launchpad') &&
+            !(t.url as string | undefined)?.includes('workbench-jetski-agent') &&
+            !!(t.url as string | undefined)?.includes('workbench')
         );
     }
 
     async discoverTarget(): Promise<string> {
-        const allPages: any[] = [];
+        const allPages: Record<string, unknown>[] = [];
         for (const port of this.ports) {
             try {
                 const list = await this.getJson(`http://127.0.0.1:${port}/json/list`);
@@ -231,7 +231,7 @@ export class CdpService extends EventEmitter {
 
         // Forward all other CDP events emitted by CdpConnection
         const originalEmit = this.connection.emit.bind(this.connection);
-        this.connection.emit = (event: string | symbol, ...args: any[]) => {
+        this.connection.emit = (event: string | symbol, ...args: unknown[]) => {
             if (event !== 'disconnected') {
                 this.emit(event, ...args);
                 
@@ -253,7 +253,7 @@ export class CdpService extends EventEmitter {
         await this.call('Runtime.enable', {});
 
     }
-    async call(method: string, params: any = {}): Promise<any> {
+    async call(method: string, params: unknown = {}): Promise<unknown> {
         if (!this.connection || !this.connection.isConnected()) {
             throw new Error('WebSocket is not connected');
         }
@@ -265,7 +265,7 @@ export class CdpService extends EventEmitter {
      * attempt a single on-demand reconnect then retry once.
      * Non-connection errors (timeout, protocol) are NOT retried.
      */
-    async callWithRetry(method: string, params: any = {}, timeoutMs = 10000): Promise<any> {
+    async callWithRetry(method: string, params: unknown = {}, timeoutMs = 10000): Promise<unknown> {
         try {
             return await this.call(method, params);
         } catch (error) {
@@ -368,7 +368,7 @@ export class CdpService extends EventEmitter {
         projectName: string,
     ): Promise<boolean> {
         // Scan all ports to collect workbench pages
-        const pages: any[] = [];
+        const pages: Record<string, unknown>[] = [];
         let respondingPort: number | null = null;
 
         for (const port of this.ports) {
@@ -376,7 +376,7 @@ export class CdpService extends EventEmitter {
                 const list = await this.getJson(`http://127.0.0.1:${port}/json/list`);
                 pages.push(...list);
                 // Prioritize recording ports that contain workbench pages
-                const hasWorkbench = list.some((t: any) => t.url?.includes('workbench'));
+                const hasWorkbench = list.some((t: Record<string, unknown>) => (t.url as string | undefined)?.includes('workbench'));
                 if (hasWorkbench && respondingPort === null) {
                     respondingPort = port;
                 }
@@ -397,7 +397,7 @@ export class CdpService extends EventEmitter {
         }
 
         // Filter workbench pages only (exclude Launchpad, Manager, iframe, worker)
-        const workbenchPages = pages.filter((t: any) => this.isWorkbenchPage(t));
+        const workbenchPages = pages.filter((t: Record<string, unknown>) => this.isWorkbenchPage(t));
 
         logger.debug(`[CdpService] Searching for workspace "${projectName}" (port=${respondingPort})... ${workbenchPages.length} workbench pages:`);
         for (const p of workbenchPages) {
@@ -405,7 +405,7 @@ export class CdpService extends EventEmitter {
         }
 
         // 1. Title match (fast path)
-        const titleMatch = workbenchPages.find((t: any) => t.title?.includes(projectName));
+        const titleMatch = workbenchPages.find((t: Record<string, unknown>) => (t.title as string | undefined)?.includes(projectName));
         if (titleMatch) {
             return this.connectToPage(titleMatch, projectName);
         }
@@ -443,7 +443,7 @@ export class CdpService extends EventEmitter {
         //    Try connecting to the most recently created / untitled page.
         if (workbenchPages.length > 1) {
             const untitledPage = workbenchPages.find(
-                (t: any) => !t.title || t.title.includes('Untitled') || t.title.trim() === '',
+                (t: Record<string, unknown>) => !t.title || (t.title as string | undefined)?.includes('Untitled') || (t.title as string | undefined)?.trim() === '',
             );
             if (untitledPage) {
                 logger.warn(`[CdpService] Found untitled workbench page among ${workbenchPages.length} pages — connecting to prevent window spam`);
@@ -459,7 +459,7 @@ export class CdpService extends EventEmitter {
     /**
      * Connect to the specified page (skip if already connected).
      */
-    public async connectToPage(page: any, projectName: string): Promise<boolean> {
+    public async connectToPage(page: Record<string, unknown>, projectName: string): Promise<boolean> {
         // No reconnection needed if already connected to the same URL
         if (this.isConnectedFlag && this.targetUrl === page.webSocketDebuggerUrl) {
             this.currentWorkspaceName = projectName;
@@ -496,7 +496,7 @@ export class CdpService extends EventEmitter {
      * @param workspacePath Full workspace path (for folder path matching)
      */
     public async probeWorkbenchPages(
-        workbenchPages: any[],
+        workbenchPages: Record<string, unknown>[],
         projectName: string,
         workspacePath?: string,
     ): Promise<boolean> {
@@ -983,8 +983,9 @@ export class CdpService extends EventEmitter {
                 if (runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
                     logger.info(`[CdpService] injectViaLS: cascade ${cascadeId.slice(0, 16)}... is still running; delegating turn queueing to Antigravity`);
                 }
-            } catch (err: any) {
-                logger.debug(`[CdpService] injectViaLS: failed to inspect existing cascade ${cascadeId.slice(0, 16)}...: ${err?.message || err}`);
+            } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                logger.debug(`[CdpService] injectViaLS: failed to inspect existing cascade ${cascadeId.slice(0, 16)}...: ${msg}`);
             }
 
             // Send to existing cascade
@@ -1061,8 +1062,9 @@ export class CdpService extends EventEmitter {
 
                 mediaItems.push({ mimeType, inlineData: base64Data });
                 logger.info(`[CdpService] Prepared media item: ${pathMod.basename(filePath)} (${mimeType}, ${Math.round(fileData.length / 1024)}KB)`);
-            } catch (err: any) {
-                logger.warn(`[CdpService] Failed to read image file ${filePath}: ${err?.message || err}`);
+            } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                logger.warn(`[CdpService] Failed to read image file ${filePath}: ${msg}`);
             }
         }
 
@@ -1143,7 +1145,7 @@ export class CdpService extends EventEmitter {
     /** Cached model configs from GetUserStatus */
     private cachedModelConfigs: Array<{ label: string; model: string; supportsImages?: boolean }> = [];
 
-    private extractModelIdentifier(config: any): string {
+    private extractModelIdentifier(config: Record<string, unknown>): string {
         const direct =
             config?.modelOrAlias?.model
             ?? config?.modelOrAlias?.alias
@@ -1206,8 +1208,8 @@ export class CdpService extends EventEmitter {
 
             const status = await client.getUserStatus();
             const configs = status?.userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
-            this.cachedModelConfigs = configs.map((cfg: any) => {
-                const label = cfg.label || cfg.displayName || cfg.modelName || cfg.model || 'Unknown';
+            this.cachedModelConfigs = configs.map((cfg: Record<string, unknown>) => {
+                const label = (cfg.label as string | undefined) || (cfg.displayName as string | undefined) || (cfg.modelName as string | undefined) || (cfg.model as string | undefined) || 'Unknown';
                 const modelId = this.extractModelIdentifier(cfg);
                 return {
                     label,
@@ -1216,8 +1218,9 @@ export class CdpService extends EventEmitter {
                 };
             });
             return this.cachedModelConfigs.map(c => c.label);
-        } catch (err: any) {
-            logger.error('[CdpService] getUiModels via LS API failed:', err.message);
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.error('[CdpService] getUiModels via LS API failed:', msg);
             return [];
         }
     }
@@ -1320,8 +1323,8 @@ export class CdpService extends EventEmitter {
             const data = status?.userStatus?.cascadeModelConfigData;
             const configs = data?.clientModelConfigs || [];
             if (configs.length > 0) {
-                this.cachedModelConfigs = configs.map((cfg: any) => {
-                    const label = cfg.label || cfg.displayName || cfg.modelName || cfg.model || 'Unknown';
+                this.cachedModelConfigs = configs.map((cfg: Record<string, unknown>) => {
+                    const label = (cfg.label as string | undefined) || (cfg.displayName as string | undefined) || (cfg.modelName as string | undefined) || (cfg.model as string | undefined) || 'Unknown';
                     const modelId = this.extractModelIdentifier(cfg);
                     return {
                         label,
@@ -1330,8 +1333,9 @@ export class CdpService extends EventEmitter {
                     };
                 });
             }
-        } catch (err: any) {
-            logger.debug(`[CdpService] refreshModelConfigs failed: ${err.message}`);
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.debug(`[CdpService] refreshModelConfigs failed: ${msg}`);
         }
     }
 
@@ -1453,7 +1457,7 @@ export class CdpService extends EventEmitter {
      * @param command Full command ID (e.g. 'antigravity.agent.acceptAgentStep')
      * @param args Optional arguments to pass to the command
      */
-    async executeVscodeCommand(command: string, ...args: any[]): Promise<any> {
+    async executeVscodeCommand(command: string, ...args: unknown[]): Promise<unknown> {
         const safeCommand = JSON.stringify(command);
         const safeArgs = JSON.stringify(args);
 
@@ -1504,14 +1508,14 @@ export class CdpService extends EventEmitter {
             const summaries = await client.listCascades();
             if (!summaries || typeof summaries !== 'object') return null;
 
-            const toSessionInfo = (id: string, summary: any) => ({
+            const toSessionInfo = (id: string, summary: Record<string, unknown> | undefined) => ({
                 id,
-                title: summary?.title || summary?.summary || 'Untitled Session',
-                summary: summary?.summary || '',
+                title: (summary?.title as string | undefined) || (summary?.summary as string | undefined) || 'Untitled Session',
+                summary: (summary?.summary as string | undefined) || '',
             });
 
             // Filter out summaries that don't belong to this workspace
-            const workspaceSummaries: Record<string, any> = {};
+            const workspaceSummaries: Record<string, Record<string, unknown>> = {};
             for (const [id, summary] of Object.entries(summaries)) {
                 if (this.isCascadeInWorkspace(summary)) {
                     workspaceSummaries[id] = summary;
@@ -1540,9 +1544,10 @@ export class CdpService extends EventEmitter {
             let latestTime = 0;
 
             for (const [id, summary] of Object.entries(workspaceSummaries)) {
-                const s = summary as any;
-                const modTime = s.lastModifiedTimestamp || s.lastModifiedTime
-                    ? new Date(s.lastModifiedTimestamp || s.lastModifiedTime).getTime()
+                const s = summary as Record<string, unknown>;
+                const ts = s.lastModifiedTimestamp || s.lastModifiedTime;
+                const modTime = ts
+                    ? new Date(String(ts)).getTime()
                     : 0;
                 if (modTime > latestTime) {
                     latestTime = modTime;
@@ -1570,8 +1575,9 @@ export class CdpService extends EventEmitter {
                 this.cachedCascadeId = firstId;
                 return toSessionInfo(firstId, summaries[firstId]);
             }
-        } catch (err: any) {
-            logger.debug(`[CdpService] getActiveSessionInfo via LS API failed: ${err.message}`);
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.debug(`[CdpService] getActiveSessionInfo via LS API failed: ${msg}`);
         }
         return null;
     }
@@ -1628,9 +1634,10 @@ export class CdpService extends EventEmitter {
                 try {
                     await lsClient.cancelCascade(this.cachedCascadeId);
                     steps.push(`Cancelled cascade ${this.cachedCascadeId.slice(0, 12)}...`);
-                } catch (err: any) {
+                } catch (err: unknown) {
                     // Not fatal — cascade may have already ended
-                    steps.push(`Cascade cancel skipped: ${err?.message || 'already ended'}`);
+                    const msg = err instanceof Error ? err.message : 'already ended';
+                    steps.push(`Cascade cancel skipped: ${msg}`);
                 }
             } else {
                 steps.push('No active cascade to cancel');
@@ -1655,8 +1662,9 @@ export class CdpService extends EventEmitter {
                     this.disconnectQuietly();
                     await this.discoverAndConnectForWorkspace(this.currentWorkspacePath);
                     steps.push(`CDP reconnected to "${projectName}"`);
-                } catch (err: any) {
-                    steps.push(`CDP reconnect warning: ${err?.message || 'failed'}`);
+                } catch (err: unknown) {
+                    const msg = err instanceof Error ? err.message : 'failed';
+                    steps.push(`CDP reconnect warning: ${msg}`);
                     // Not fatal — LS client can still work if CDP reconnects on next call
                 }
             } else {
@@ -1671,15 +1679,16 @@ export class CdpService extends EventEmitter {
                 } else {
                     steps.push('LS client discovery returned null (will retry on next message)');
                 }
-            } catch (err: any) {
-                steps.push(`LS re-discovery warning: ${err?.message || 'failed'}`);
+            } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : 'failed';
+                steps.push(`LS re-discovery warning: ${msg}`);
             }
 
             logger.info(`[CdpService] Gateway restart completed: ${steps.length} steps`);
             return { ok: true, steps };
 
-        } catch (err: any) {
-            const error = err?.message || String(err);
+        } catch (err: unknown) {
+            const error = err instanceof Error ? err.message : String(err);
             logger.error(`[CdpService] Gateway restart failed: ${error}`);
             return { ok: false, steps, error };
         }
@@ -1688,7 +1697,7 @@ export class CdpService extends EventEmitter {
     /**
      * Helper to verify if a cascade trajectory summary belongs to the currently active workspace.
      */
-    public isCascadeInWorkspace(summary: any): boolean {
+    public isCascadeInWorkspace(summary: Record<string, unknown>): boolean {
         if (!this.currentWorkspacePath) return true; // Accept if we don't know our own workspace yet
         if (!summary?.workspaces || !Array.isArray(summary.workspaces)) return false;
 

@@ -78,7 +78,7 @@ export function buildModePayload(currentMode: string, isPending: boolean = false
  * Build and send the interactive UI for the /mode command (dropdown style)
  */
 export async function sendModeUI(
-    target: { editReply: (opts: any) => Promise<any> },
+    target: { editReply: (opts: Record<string, unknown>) => Promise<unknown> },
     modeService: ModeService,
     deps?: ModeUiDeps,
 ): Promise<void> {

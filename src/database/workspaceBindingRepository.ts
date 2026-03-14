@@ -77,7 +77,7 @@ export class WorkspaceBindingRepository {
     public findByChannelId(channelId: string): WorkspaceBindingRecord | undefined {
         const row = this.db.prepare(
             'SELECT * FROM workspace_bindings WHERE channel_id = ?'
-        ).get(channelId) as any;
+        ).get(channelId) as Record<string, unknown> | undefined;
         if (!row) return undefined;
         return this.mapRow(row);
     }
@@ -89,7 +89,7 @@ export class WorkspaceBindingRepository {
     public findByWorkspacePathAndGuildId(workspacePath: string, guildId: string): WorkspaceBindingRecord[] {
         const rows = this.db.prepare(
             'SELECT * FROM workspace_bindings WHERE workspace_path = ? AND guild_id = ? ORDER BY id ASC'
-        ).all(workspacePath, guildId) as any[];
+        ).all(workspacePath, guildId) as Record<string, unknown>[];
         return rows.map(this.mapRow);
     }
 
@@ -99,7 +99,7 @@ export class WorkspaceBindingRepository {
     public findByGuildId(guildId: string): WorkspaceBindingRecord[] {
         const rows = this.db.prepare(
             'SELECT * FROM workspace_bindings WHERE guild_id = ? ORDER BY id ASC'
-        ).all(guildId) as any[];
+        ).all(guildId) as Record<string, unknown>[];
         return rows.map(this.mapRow);
     }
 
@@ -109,7 +109,7 @@ export class WorkspaceBindingRepository {
     public findAll(): WorkspaceBindingRecord[] {
         const rows = this.db.prepare(
             'SELECT * FROM workspace_bindings ORDER BY id ASC'
-        ).all() as any[];
+        ).all() as Record<string, unknown>[];
         return rows.map(this.mapRow);
     }
 
@@ -143,13 +143,13 @@ export class WorkspaceBindingRepository {
     /**
      * Map a DB row to WorkspaceBindingRecord
      */
-    private mapRow(row: any): WorkspaceBindingRecord {
+    private mapRow(row: Record<string, unknown>): WorkspaceBindingRecord {
         return {
-            id: row.id,
-            channelId: row.channel_id,
-            workspacePath: row.workspace_path,
-            guildId: row.guild_id,
-            createdAt: row.created_at,
+            id: row.id as number,
+            channelId: row.channel_id as string,
+            workspacePath: row.workspace_path as string,
+            guildId: row.guild_id as string,
+            createdAt: row.created_at as string,
         };
     }
 }

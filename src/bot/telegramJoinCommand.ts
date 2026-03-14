@@ -98,8 +98,8 @@ export interface TelegramJoinCommandDeps {
 async function resolveBindingRuntime(
     deps: TelegramJoinCommandDeps,
     chatId: string,
-    replyTarget: { reply: (opts: { text: string }) => Promise<any> },
-): Promise<{ runtime: any } | null> {
+    replyTarget: { reply: (opts: { text: string }) => Promise<unknown> },
+): Promise<{ runtime: unknown } | null> {
     const binding = deps.telegramBindingRepo.findByChatId(chatId);
     if (!binding) {
         await replyTarget.reply({
@@ -115,9 +115,9 @@ async function resolveBindingRuntime(
     try {
         const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath);
         return { runtime: prepared.runtime };
-    } catch (err: any) {
+    } catch (err: unknown) {
         await replyTarget.reply({
-            text: `Failed to connect to project: ${escapeHtml(err?.message || 'unknown error')}`,
+            text: `Failed to connect to project: ${escapeHtml((err as Error)?.message || 'unknown error')}`,
         }).catch(logger.error);
         return null;
     }
@@ -143,7 +143,7 @@ export async function handleTelegramJoinCommand(
         type: 'selectMenu',
         customId: TG_JOIN_SELECT_ID,
         placeholder: 'Select a history session',
-        options: sessions.slice(0, 25).map((session: any) => {
+        options: sessions.slice(0, 25).map((session: { title: string; lastModifiedTime?: number; cascadeId?: string }) => {
             const timeStr = session.lastModifiedTime ? formatRelativeTime(session.lastModifiedTime) : '';
             const isCurrent = session.title === currentTitle?.title;
             const suffix = [
@@ -174,7 +174,7 @@ export async function handleTelegramJoinSelect(
     const { runtime } = resolved;
 
     const sessions = await runtime.listAllSessions(deps.chatSessionService);
-    const selectedSession = sessions.find((s: any) => s.title === selectedTitle);
+    const selectedSession = sessions.find((s: { title: string; cascadeId?: string }) => s.title === selectedTitle);
     const cascadeId = selectedSession?.cascadeId || '';
 
     deps.sessionStateStore.setSelectedSession(chatId, selectedTitle, cascadeId);
@@ -199,8 +199,8 @@ export async function handleTelegramJoinSelect(
                         deps.sessionStateStore,
                     );
                 }
-            } catch (err: any) {
-                logger.debug(`[TelegramJoin] runStatus check failed: ${err?.message || err}`);
+            } catch (err: unknown) {
+                logger.debug(`[TelegramJoin] runStatus check failed: ${(err as Error)?.message || err}`);
             }
         }
     }

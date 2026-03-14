@@ -46,7 +46,7 @@ export function setApplicationContext(context: ApplicationContext): void {
     globalContext = context;
 }
 
-function getApplicationContext(): ApplicationContext {
+function _getApplicationContext(): ApplicationContext {
     if (!globalContext) {
         throw new Error('Application context is not initialized');
     }

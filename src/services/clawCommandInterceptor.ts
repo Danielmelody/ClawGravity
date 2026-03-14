@@ -179,12 +179,13 @@ export class ClawCommandInterceptor {
                         message: `Unknown @claw action: ${cmd.action}`,
                     };
             }
-        } catch (err: any) {
-            logger.error(`[ClawInterceptor] Error executing @claw:${cmd.action}:`, err?.message || err);
+        } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            logger.error(`[ClawInterceptor] Error executing @claw:${cmd.action}:`, errMsg);
             return {
                 command: cmd,
                 success: false,
-                message: `Error: ${err?.message || String(err)}`,
+                message: `Error: ${errMsg}`,
             };
         }
     }
@@ -354,11 +355,12 @@ export class ClawCommandInterceptor {
                 success: true,
                 message: content,
             };
-        } catch (err: any) {
+        } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
             return {
                 command: cmd,
                 success: false,
-                message: `Failed to read response file: ${err?.message}`,
+                message: `Failed to read response file: ${errMsg}`,
             };
         }
     }

@@ -101,7 +101,7 @@ export async function executeDetectorClick(
 
     if (clicked) {
         await interaction
-            .update({ ...successPayload, components: [] as any[] })
+            .update({ ...successPayload, components: [] })
             .catch((err) => {
                 logger.warn(`[${label}] update failed:`, err);
             });

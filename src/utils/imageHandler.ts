@@ -77,7 +77,7 @@ export async function downloadInboundImageAttachments(message: Message): Promise
                 mimeType,
             });
             index += 1;
-        } catch (error: any) {
+        } catch (error: unknown) {
             logger.warn(`[ImageBridge] Attachment image processing failed (id=${attachment.id || 'unknown'})`, error?.message || error);
         }
     }

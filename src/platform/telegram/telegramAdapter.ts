@@ -64,7 +64,7 @@ export class TelegramAdapter implements PlatformAdapter {
         // Catch errors to prevent unhandled promise rejections (e.g. getMe()
         // failure inside grammY's init phase).
         const startPromise = this.bot.start();
-        if (startPromise && typeof (startPromise as any).catch === 'function') {
+        if (startPromise && typeof (startPromise as Promise<void>).catch === 'function') {
             (startPromise as Promise<void>).catch((err: unknown) => {
                 logger.error('[TelegramAdapter] Polling loop error:', err instanceof Error ? err.message : err);
                 this.emitError(err);
@@ -93,7 +93,7 @@ export class TelegramAdapter implements PlatformAdapter {
      */
     async getChannel(chatId: string): Promise<PlatformChannel | null> {
         try {
-            const chat = await this.bot.api.getChat(chatId);
+            const chat = await this.bot.api.getChat(chatId) as { title?: string; first_name?: string } | null;
             if (!chat) return null;
 
             const channel = wrapTelegramChannel(this.bot.api, chatId, this.bot.toInputFile);
@@ -122,11 +122,12 @@ export class TelegramAdapter implements PlatformAdapter {
      * Shared handler for both text and photo messages.
      * Wraps the Telegram message and fires onMessage.
      */
-    private handleIncomingMessage(eventName: string, ctx: any): void {
+    private handleIncomingMessage(eventName: string, ctx: unknown): void {
+        const typedCtx = ctx as { message?: TelegramMessageLike; msg?: TelegramMessageLike; };
         if (!this.events?.onMessage) return;
 
         try {
-            const msg: TelegramMessageLike = ctx.message ?? ctx.msg;
+            const msg = typedCtx.message ?? typedCtx.msg;
             if (!msg) return;
 
             const msgTimestampMs = msg.date ? msg.date * 1000 : 0;
@@ -164,21 +165,22 @@ export class TelegramAdapter implements PlatformAdapter {
 
     private registerHandlers(): void {
         // Text messages
-        this.bot.on('message:text', async (ctx: any) => {
+        this.bot.on('message:text', async (ctx: unknown) => {
             this.handleIncomingMessage('message:text', ctx);
         });
 
         // Photo messages
-        this.bot.on('message:photo', async (ctx: any) => {
+        this.bot.on('message:photo', async (ctx: unknown) => {
             this.handleIncomingMessage('message:photo', ctx);
         });
 
         // Callback queries (button presses and select menu selections)
-        this.bot.on('callback_query:data', async (ctx: any) => {
+        this.bot.on('callback_query:data', async (ctx: unknown) => {
             if (!this.events?.onButtonInteraction && !this.events?.onSelectInteraction) return;
 
             try {
-                const query: TelegramCallbackQueryLike = ctx.callbackQuery;
+                const typedCtx = ctx as { callbackQuery: TelegramCallbackQueryLike };
+                const query: TelegramCallbackQueryLike = typedCtx.callbackQuery;
                 if (!query) return;
 
                 const interaction = wrapTelegramCallbackQuery(query, this.bot.api);

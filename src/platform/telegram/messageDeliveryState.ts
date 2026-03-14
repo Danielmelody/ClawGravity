@@ -31,7 +31,7 @@ function setRegister<T>(reg: LWWRegister<T>, value: T): LWWRegister<T> {
 
 /** Raw step data from trajectory for native rendering. */
 export interface StepsData {
-    readonly steps: any[];
+    readonly steps: unknown[];
     readonly runStatus: string | null;
 }
 

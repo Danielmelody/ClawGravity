@@ -77,7 +77,7 @@ export class TemplateRepository {
      * Get all templates
      */
     public findAll(): TemplateRecord[] {
-        const rows = this.db.prepare('SELECT * FROM templates ORDER BY id ASC').all() as any[];
+        const rows = this.db.prepare('SELECT * FROM templates ORDER BY id ASC').all() as Record<string, unknown>[];
         return rows.map(this.mapRow);
     }
 
@@ -85,7 +85,7 @@ export class TemplateRepository {
      * Find by ID
      */
     public findById(id: number): TemplateRecord | undefined {
-        const row = this.db.prepare('SELECT * FROM templates WHERE id = ?').get(id) as any;
+        const row = this.db.prepare('SELECT * FROM templates WHERE id = ?').get(id) as Record<string, unknown> | undefined;
         if (!row) return undefined;
         return this.mapRow(row);
     }
@@ -94,7 +94,7 @@ export class TemplateRepository {
      * Find by template name
      */
     public findByName(name: string): TemplateRecord | undefined {
-        const row = this.db.prepare('SELECT * FROM templates WHERE name = ?').get(name) as any;
+        const row = this.db.prepare('SELECT * FROM templates WHERE name = ?').get(name) as Record<string, unknown> | undefined;
         if (!row) return undefined;
         return this.mapRow(row);
     }
@@ -112,7 +112,7 @@ export class TemplateRepository {
      */
     public updateByName(name: string, input: UpdateTemplateInput): boolean {
         const sets: string[] = [];
-        const values: any[] = [];
+        const values: (string | undefined)[] = [];
 
         if (input.prompt !== undefined) {
             sets.push('prompt = ?');
@@ -130,12 +130,12 @@ export class TemplateRepository {
     /**
      * Map a DB row to TemplateRecord
      */
-    private mapRow(row: any): TemplateRecord {
+    private mapRow(row: Record<string, unknown>): TemplateRecord {
         return {
-            id: row.id,
-            name: row.name,
-            prompt: row.prompt,
-            createdAt: row.created_at,
+            id: row.id as number,
+            name: row.name as string,
+            prompt: row.prompt as string,
+            createdAt: row.created_at as string,
         };
     }
 }

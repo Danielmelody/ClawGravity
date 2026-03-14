@@ -260,7 +260,7 @@ export function wrapDiscordSentMessage(msg: Message): PlatformSentMessage {
 }
 
 /** Wrap a discord.js TextChannel (or any channel with send()) as a PlatformChannel. */
-export function wrapDiscordChannel(channel: TextChannel | { id: string; name?: string; send: (...args: any[]) => any }): PlatformChannel {
+export function wrapDiscordChannel(channel: TextChannel | { id: string; name?: string; send: (...args: unknown[]) => unknown }): PlatformChannel {
     return {
         id: channel.id,
         platform: 'discord',
@@ -328,16 +328,16 @@ function buildInteractionBase(interaction: ButtonInteraction | StringSelectMenuI
             await interaction.deferUpdate();
         },
         async reply(payload: MessagePayload): Promise<void> {
-            await interaction.reply(toDiscordPayload(payload, EPHEMERAL_ALLOWED) as any);
+            await interaction.reply(toDiscordPayload(payload, EPHEMERAL_ALLOWED) as unknown as Parameters<ButtonInteraction['reply']>[0]);
         },
         async update(payload: MessagePayload): Promise<void> {
-            await interaction.update(toDiscordPayload(payload, EPHEMERAL_ALLOWED) as any);
+            await interaction.update(toDiscordPayload(payload, EPHEMERAL_ALLOWED) as unknown as Parameters<ButtonInteraction['update']>[0]);
         },
         async editReply(payload: MessagePayload): Promise<void> {
-            await interaction.editReply(toDiscordPayload(payload, EPHEMERAL_ALLOWED) as any);
+            await interaction.editReply(toDiscordPayload(payload, EPHEMERAL_ALLOWED) as unknown as Parameters<ButtonInteraction['editReply']>[0]);
         },
         async followUp(payload: MessagePayload): Promise<PlatformSentMessage> {
-            const sent = await interaction.followUp(toDiscordPayload(payload, EPHEMERAL_ALLOWED) as any);
+            const sent = await interaction.followUp(toDiscordPayload(payload, EPHEMERAL_ALLOWED) as unknown as Parameters<ButtonInteraction['followUp']>[0]);
             return wrapDiscordSentMessage(sent as Message);
         },
     };

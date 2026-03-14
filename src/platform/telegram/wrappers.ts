@@ -31,17 +31,17 @@ export interface TelegramBotLike {
     token?: string;
     start(): void | Promise<void>;
     stop(): void;
-    on(event: string, handler: (...args: any[]) => any): void;
+    on(event: string, handler: (...args: unknown[]) => unknown): void;
     api: {
-        sendMessage(chatId: number | string, text: string, options?: any): Promise<any>;
-        editMessageText(chatId: number | string, messageId: number, text: string, options?: any): Promise<any>;
-        deleteMessage(chatId: number | string, messageId: number): Promise<any>;
-        getChat(chatId: number | string): Promise<any>;
-        answerCallbackQuery(callbackQueryId: string, options?: any): Promise<any>;
-        setMessageReaction?(chatId: number | string, messageId: number, reaction: readonly any[], options?: any): Promise<any>;
-        setMyCommands?(commands: readonly { command: string; description: string }[]): Promise<any>;
-        sendPhoto?(chatId: number | string, photo: any, options?: any): Promise<any>;
-        sendDocument?(chatId: number | string, document: any, options?: any): Promise<any>;
+        sendMessage(chatId: number | string, text: string, options?: Record<string, unknown>): Promise<unknown>;
+        editMessageText(chatId: number | string, messageId: number, text: string, options?: Record<string, unknown>): Promise<unknown>;
+        deleteMessage(chatId: number | string, messageId: number): Promise<unknown>;
+        getChat(chatId: number | string): Promise<unknown>;
+        answerCallbackQuery(callbackQueryId: string, options?: Record<string, unknown>): Promise<unknown>;
+        setMessageReaction?(chatId: number | string, messageId: number, reaction: readonly unknown[], options?: Record<string, unknown>): Promise<unknown>;
+        setMyCommands?(commands: readonly { command: string; description: string }[]): Promise<unknown>;
+        sendPhoto?(chatId: number | string, photo: unknown, options?: Record<string, unknown>): Promise<unknown>;
+        sendDocument?(chatId: number | string, document: unknown, options?: Record<string, unknown>): Promise<unknown>;
         getFile?(file_id: string): Promise<{ file_id: string; file_path?: string }>;
     };
     /**
@@ -65,9 +65,10 @@ async function withRetry429<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T>
     for (let attempt = 0; ; attempt++) {
         try {
             return await fn();
-        } catch (err: any) {
-            const msg = err?.message || err?.description || '';
-            const is429 = err?.error_code === 429
+        } catch (err: unknown) {
+            const errObj = err as Record<string, unknown>;
+            const msg = (errObj?.message || errObj?.Description || '') as string;
+            const is429 = errObj?.error_code === 429
                 || msg.includes('429')
                 || msg.includes('Too Many Requests');
 
@@ -248,6 +249,35 @@ export function toTelegramPayload(payload: MessagePayload): TelegramSendOptions 
 }
 
 // ---------------------------------------------------------------------------
+// Shared send-with-HTML-fallback helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Send a Telegram message with automatic HTML-fallback retry.
+ * Shared by channel.send() and callbackQuery.followUp() to avoid duplication.
+ */
+async function sendWithHtmlFallback(
+    api: TelegramBotLike['api'],
+    chatId: number | string,
+    payload: MessagePayload,
+    extraSendOptions?: Record<string, unknown>,
+): Promise<PlatformSentMessage> {
+    const opts = toTelegramPayload(payload);
+    const { text, ...rest } = opts;
+    const sendOpts = extraSendOptions ? { ...rest, ...extraSendOptions } : rest;
+    try {
+        const sent = await withRetry429(() => api.sendMessage(chatId, text, sendOpts));
+        return wrapTelegramSentMessage(sent, api, chatId);
+    } catch (_err: unknown) {
+        const errMsg = _err instanceof Error ? _err.message : String(_err);
+        logger.warn(`[TgSend] HTML parse failed, falling back. Error: ${errMsg}`);
+        const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
+        const sent = await withRetry429(() => api.sendMessage(chatId, rawText, { reply_markup: rest.reply_markup, ...extraSendOptions }));
+        return wrapTelegramSentMessage(sent, api, chatId);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entity wrappers
 // ---------------------------------------------------------------------------
 
@@ -281,7 +311,7 @@ async function trySendFile(
     caption: string | undefined,
     extraOptions?: Record<string, unknown>,
     toInputFile?: TelegramBotLike['toInputFile'],
-): Promise<any | null> {
+): Promise<unknown | null> {
     const isImage = file.contentType?.startsWith('image/') || file.name.match(/\.(png|jpe?g|gif|webp)$/i);
     // grammY requires Buffer wrapped in InputFile; use toInputFile if available.
     const inputFile = toInputFile ? toInputFile(file.data, file.name) : file.data;
@@ -313,7 +343,7 @@ async function trySendFileFromPayload(
     api: TelegramBotLike['api'],
     chatId: number | string,
     payload: MessagePayload,
-    extraOptions: Record<string, any> | undefined,
+    extraOptions: Record<string, unknown> | undefined,
     toInputFile: TelegramBotLike['toInputFile'] | undefined,
 ): Promise<PlatformSentMessage | null> {
     if (!payload.files || payload.files.length === 0) return null;
@@ -348,18 +378,7 @@ export function wrapTelegramChannel(
             const fileSent = await trySendFileFromPayload(api, chatId, payload, undefined, toInputFile);
             if (fileSent) return fileSent;
 
-            const opts = toTelegramPayload(payload);
-            const { text, ...rest } = opts;
-            try {
-                const sent = await withRetry429(() => api.sendMessage(chatId, text, rest));
-                return wrapTelegramSentMessage(sent, api, chatId);
-            } catch (err: any) {
-                // HTML parse error — retry with raw text, no parse_mode
-                logger.warn(`[TgSend] HTML parse failed, falling back to raw text. Error: ${err?.message || err}. Text starts: ${text.slice(0, 200)}`);
-                const rawText = payload.text || text.replace(/<[^>]*>?/gm, ''); // Strip HTML for neat raw text
-                const sent = await withRetry429(() => api.sendMessage(chatId, rawText, { reply_markup: rest.reply_markup }));
-                return wrapTelegramSentMessage(sent, api, chatId);
-            }
+            return sendWithHtmlFallback(api, chatId, payload);
         },
     };
 }
@@ -453,7 +472,7 @@ export function wrapTelegramMessage(
                     ...rest,
                     reply_to_message_id: msg.message_id,
                 }));
-            } catch (err: any) {
+            } catch {
                 logger.warn(`[TgMsgReply] HTML parse failed, falling back to raw text.`);
                 const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
                 sent = await withRetry429(() => api.sendMessage(msg.chat.id, rawText, {
@@ -507,7 +526,7 @@ export function wrapTelegramCallbackQuery(
             const { text, ...rest } = opts;
             try {
                 await withRetry429(() => api.sendMessage(chatId, text, rest));
-            } catch (err: any) {
+            } catch {
                 logger.warn(`[TgReply] HTML parse failed, falling back to raw text.`);
                 const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
                 await withRetry429(() => api.sendMessage(chatId, rawText, { reply_markup: rest.reply_markup }));
@@ -521,7 +540,7 @@ export function wrapTelegramCallbackQuery(
             const { text, ...rest } = opts;
             try {
                 await withRetry429(() => api.editMessageText(chatId, messageId, text, rest));
-            } catch (err: any) {
+            } catch {
                 logger.warn(`[TgUpdate] HTML parse failed, falling back to raw text.`);
                 const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
                 await withRetry429(() => api.editMessageText(chatId, messageId, rawText, { reply_markup: rest.reply_markup }));
@@ -533,17 +552,7 @@ export function wrapTelegramCallbackQuery(
         },
         async followUp(payload: MessagePayload): Promise<PlatformSentMessage> {
             assertValidChatId(chatId);
-            const opts = toTelegramPayload(payload);
-            const { text, ...rest } = opts;
-            try {
-                const sent = await withRetry429(() => api.sendMessage(chatId, text, rest));
-                return wrapTelegramSentMessage(sent, api, chatId);
-            } catch (err: any) {
-                logger.warn(`[TgFollowUp] HTML parse failed, falling back to raw text.`);
-                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
-                const sent = await withRetry429(() => api.sendMessage(chatId, rawText, { reply_markup: rest.reply_markup }));
-                return wrapTelegramSentMessage(sent, api, chatId);
-            }
+            return sendWithHtmlFallback(api, chatId, payload);
         },
     };
 }
@@ -554,7 +563,7 @@ export function wrapTelegramCallbackQuery(
 
 /** Wrap a Telegram API send result as a PlatformSentMessage. */
 export function wrapTelegramSentMessage(
-    msg: any,
+    msg: unknown,
     api: TelegramBotLike['api'],
     chatId: number | string,
 ): PlatformSentMessage {
@@ -570,9 +579,10 @@ export function wrapTelegramSentMessage(
             try {
                 const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), text, rest));
                 return wrapTelegramSentMessage(edited, api, chatId);
-            } catch (err: any) {
+            } catch (_err: unknown) {
+                const errMsg = _err instanceof Error ? _err.message : String(_err);
                 // HTML parse error — retry with raw text, no parse_mode
-                logger.warn(`[TgEdit] HTML parse failed, falling back to raw text. Error: ${err?.message || err}. Text starts: ${text.slice(0, 200)}`);
+                logger.warn(`[TgEdit] HTML parse failed, falling back to raw text. Error: ${errMsg}. Text starts: ${text.slice(0, 200)}`);
                 const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
                 const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), rawText, { reply_markup: rest.reply_markup }));
                 return wrapTelegramSentMessage(edited, api, chatId);

@@ -1,6 +1,21 @@
 import Database from 'better-sqlite3';
 
 /**
+ * Database row type for chat_sessions table
+ */
+interface ChatSessionRow {
+    id: number;
+    channel_id: string;
+    category_id: string;
+    workspace_path: string;
+    session_number: number;
+    display_name: string | null;
+    is_renamed: number;
+    guild_id: string;
+    created_at: string;
+}
+
+/**
  * Chat session record type definition
  */
 export interface ChatSessionRecord {
@@ -83,7 +98,7 @@ export class ChatSessionRepository {
     public findByChannelId(channelId: string): ChatSessionRecord | undefined {
         const row = this.db.prepare(
             'SELECT * FROM chat_sessions WHERE channel_id = ?'
-        ).get(channelId) as any;
+        ).get(channelId) as ChatSessionRow | undefined;
         if (!row) return undefined;
         return this.mapRow(row);
     }
@@ -91,14 +106,14 @@ export class ChatSessionRepository {
     public findByCategoryId(categoryId: string): ChatSessionRecord[] {
         const rows = this.db.prepare(
             'SELECT * FROM chat_sessions WHERE category_id = ? ORDER BY session_number ASC'
-        ).all(categoryId) as any[];
+        ).all(categoryId) as ChatSessionRow[];
         return rows.map(this.mapRow);
     }
 
     public findAll(): ChatSessionRecord[] {
         const rows = this.db.prepare(
             'SELECT * FROM chat_sessions ORDER BY id ASC'
-        ).all() as any[];
+        ).all() as ChatSessionRow[];
         return rows.map(this.mapRow);
     }
 
@@ -108,7 +123,7 @@ export class ChatSessionRepository {
     public getNextSessionNumber(categoryId: string): number {
         const row = this.db.prepare(
             'SELECT MAX(session_number) as max_num FROM chat_sessions WHERE category_id = ?'
-        ).get(categoryId) as any;
+        ).get(categoryId) as { max_num: number | null } | undefined;
 
         return (row?.max_num ?? 0) + 1;
     }
@@ -130,7 +145,7 @@ export class ChatSessionRepository {
     public findByDisplayName(workspacePath: string, displayName: string): ChatSessionRecord | undefined {
         const row = this.db.prepare(
             'SELECT * FROM chat_sessions WHERE workspace_path = ? AND display_name = ? ORDER BY id DESC LIMIT 1'
-        ).get(workspacePath, displayName) as any;
+        ).get(workspacePath, displayName) as ChatSessionRow | undefined;
         if (!row) return undefined;
         return this.mapRow(row);
     }
@@ -145,7 +160,7 @@ export class ChatSessionRepository {
                AND trim(display_name) <> ''
              ORDER BY id DESC
              LIMIT 1`
-        ).get(workspacePath) as any;
+        ).get(workspacePath) as ChatSessionRow | undefined;
         if (!row) return undefined;
         return this.mapRow(row);
     }
@@ -157,7 +172,7 @@ export class ChatSessionRepository {
         return result.changes > 0;
     }
 
-    private mapRow(row: any): ChatSessionRecord {
+    private mapRow(row: ChatSessionRow): ChatSessionRecord {
         return {
             id: row.id,
             channelId: row.channel_id,

@@ -1,6 +1,16 @@
 import Database from 'better-sqlite3';
 
 /**
+ * Database row type for telegram_bindings table
+ */
+interface TelegramBindingRow {
+    id: number;
+    chat_id: string;
+    workspace_path: string;
+    created_at: string;
+}
+
+/**
  * Telegram binding record type definition
  */
 export interface TelegramBindingRecord {
@@ -72,7 +82,7 @@ export class TelegramBindingRepository {
     public findByChatId(chatId: string): TelegramBindingRecord | undefined {
         const row = this.db.prepare(
             'SELECT * FROM telegram_bindings WHERE chat_id = ?'
-        ).get(chatId) as any;
+        ).get(chatId) as TelegramBindingRow | undefined;
         if (!row) return undefined;
         return this.mapRow(row);
     }
@@ -83,7 +93,7 @@ export class TelegramBindingRepository {
     public findByWorkspacePath(workspacePath: string): TelegramBindingRecord[] {
         const rows = this.db.prepare(
             'SELECT * FROM telegram_bindings WHERE workspace_path = ? ORDER BY id ASC'
-        ).all(workspacePath) as any[];
+        ).all(workspacePath) as TelegramBindingRow[];
         return rows.map(this.mapRow);
     }
 
@@ -93,7 +103,7 @@ export class TelegramBindingRepository {
     public findAll(): TelegramBindingRecord[] {
         const rows = this.db.prepare(
             'SELECT * FROM telegram_bindings ORDER BY id ASC'
-        ).all() as any[];
+        ).all() as TelegramBindingRow[];
         return rows.map(this.mapRow);
     }
 
@@ -126,7 +136,7 @@ export class TelegramBindingRepository {
     /**
      * Map a DB row to TelegramBindingRecord
      */
-    private mapRow(row: any): TelegramBindingRecord {
+    private mapRow(row: TelegramBindingRow): TelegramBindingRecord {
         return {
             id: row.id,
             chatId: row.chat_id,

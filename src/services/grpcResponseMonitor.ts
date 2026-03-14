@@ -40,16 +40,16 @@ export interface GrpcResponseMonitorOptions {
     onTimeout?: (lastText: string) => void;
     onPhaseChange?: (phase: GrpcResponsePhase, text: string | null) => void;
     /** Callback for raw step data (for native rendering without CDP). */
-    onStepsUpdate?: (data: { steps: any[]; runStatus: string | null }) => void;
+    onStepsUpdate?: (data: { steps: unknown[]; runStatus: string | null }) => void;
 }
 
 /** Polling interval for trajectory fetches (ms). */
 const POLLING_INTERVAL_MS = 500;
 
 interface TrajectoryRecoverySnapshot {
-    steps: any[];
-    renderSteps: any[];
-    renderTrajectory: any | null;
+    steps: unknown[];
+    renderSteps: unknown[];
+    renderTrajectory: unknown | null;
     runStatus: string | null;
     hasExplicitRunStatus: boolean;
     anchorMatched: boolean;
@@ -64,33 +64,44 @@ function normalizeComparableText(text: string | null | undefined): string {
     return (text || '').replace(/\r/g, '').replace(/\s+/g, ' ').trim();
 }
 
-function extractUserStepText(step: any): string {
-    const direct = typeof step?.userInput?.userResponse === 'string'
-        ? step.userInput.userResponse
+function extractUserStepText(step: unknown): string {
+    const s = step as Record<string, unknown> | null | undefined;
+    const userInput = s?.userInput as Record<string, unknown> | undefined;
+    const direct = typeof userInput?.userResponse === 'string'
+        ? userInput.userResponse
         : '';
     if (direct.trim()) return direct;
 
-    const items = Array.isArray(step?.userInput?.items) ? step.userInput.items : [];
+    const items = Array.isArray(userInput?.items) ? (userInput.items as unknown[]) : [];
     return items
-        .map((item: any) => typeof item?.text === 'string' ? item.text : '')
+        .map((item: unknown) => {
+            const it = item as Record<string, unknown> | null | undefined;
+            return typeof it?.text === 'string' ? it.text : '';
+        })
         .filter(Boolean)
         .join('\n');
 }
 
-function extractAssistantStepText(step: any): string {
-    if (typeof step?.plannerResponse?.response === 'string') {
-        return step.plannerResponse.response;
+function extractAssistantStepText(step: unknown): string {
+    const s = step as Record<string, unknown> | null | undefined;
+    const plannerResponse = s?.plannerResponse as Record<string, unknown> | undefined;
+    const assistantResponse = s?.assistantResponse as Record<string, unknown> | undefined;
+    if (typeof plannerResponse?.response === 'string') {
+        return plannerResponse.response;
     }
-    if (typeof step?.assistantResponse?.text === 'string') {
-        return step.assistantResponse.text;
+    if (typeof assistantResponse?.text === 'string') {
+        return assistantResponse.text;
     }
     return '';
 }
 
-function buildAssistantSignature(step: any, stepIndex: number): string {
+function buildAssistantSignature(step: unknown, stepIndex: number): string {
     const text = normalizeComparableText(extractAssistantStepText(step));
-    const toolCalls = Array.isArray(step?.plannerResponse?.toolCalls) ? step.plannerResponse.toolCalls.length : 0;
-    return `${stepIndex}:${step?.type || 'assistant'}:${toolCalls}:${text}`;
+    const s = step as Record<string, unknown> | null | undefined;
+    const plannerResponse = s?.plannerResponse as Record<string, unknown> | undefined;
+    const toolCalls = Array.isArray(plannerResponse?.toolCalls) ? (plannerResponse.toolCalls as unknown[]).length : 0;
+    const stepType = s?.type || 'assistant';
+    return `${stepIndex}:${stepType}:${toolCalls}:${text}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +119,7 @@ export class GrpcResponseMonitor {
     private readonly onTimeout?: (lastText: string) => void;
     private readonly onPhaseChange?: (phase: GrpcResponsePhase, text: string | null) => void;
     /** Callback for raw step data (for native rendering without CDP). */
-    private readonly onStepsUpdate?: (data: { steps: any[]; runStatus: string | null }) => void;
+    private readonly onStepsUpdate?: (data: { steps: unknown[]; runStatus: string | null }) => void;
 
     private isRunning = false;
     private currentPhase: GrpcResponsePhase = 'waiting';
@@ -256,9 +267,9 @@ export class GrpcResponseMonitor {
             } else {
                 this.onPollFailure('null snapshot');
             }
-        } catch (err: any) {
+        } catch (err: unknown) {
             if (!this.isRunning) return;
-            const msg = err?.message || String(err);
+            const msg = err instanceof Error ? err.message : String(err);
             this.onPollFailure(msg);
         } finally {
             this.activeTrajectoryRPC = null;
@@ -374,7 +385,7 @@ export class GrpcResponseMonitor {
                     // Only count PENDING tool calls (no result yet) as "still working".
                     // Resolved tool calls (with results/output) should not block completion.
                     if (Array.isArray(step?.plannerResponse?.toolCalls) && step.plannerResponse.toolCalls.length > 0) {
-                        const pendingToolCalls = step.plannerResponse.toolCalls.filter((tc: any) => {
+                        const pendingToolCalls = step.plannerResponse.toolCalls.filter((tc: unknown) => {
                             // A tool call is pending if it has no result/output
                             const hasResult = tc?.result !== undefined
                                 || tc?.output !== undefined
@@ -416,8 +427,8 @@ export class GrpcResponseMonitor {
                 latestAssistantHasToolCalls,
                 latestAssistantSignature,
             };
-        } catch (err: any) {
-            logger.debug(`[GrpcMonitor] Trajectory recovery failed: ${err?.message || err}`);
+        } catch (err: unknown) {
+            logger.debug(`[GrpcMonitor] Trajectory recovery failed: ${err instanceof Error ? err.message : String(err)}`);
             return null;
         }
     }
