@@ -224,15 +224,15 @@ describe('CdpService - Cross-Platform Workspace Launching', () => {
             setupGetJsonForLaunch({
                 id: 'new-id',
                 type: 'page',
-                title: 'LazyGravity',
+                title: 'ClawGravity',
                 webSocketDebuggerUrl: 'ws://debug',
                 url: 'file:///workbench'
             });
 
-            const workspacePath = 'C:\\Source\\LazyGravity';
+            const workspacePath = 'C:\\Source\\ClawGravity';
             await service.discoverAndConnectForWorkspace(workspacePath);
 
-            expect(service.getCurrentWorkspaceName()).toBe('LazyGravity');
+            expect(service.getCurrentWorkspaceName()).toBe('ClawGravity');
         });
 
         it('should extract the project name from a Mac/Linux path with forward slashes', async () => {

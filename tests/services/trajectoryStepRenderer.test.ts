@@ -444,6 +444,18 @@ describe('renderStepsToTelegramHtml', () => {
         expect(resultIdle).not.toContain('● Generating…');
     });
 
+    it('shows mode and model in the Generating footer', () => {
+        const steps = [{
+            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+            plannerResponse: { response: 'Working...' },
+        }];
+        const result = renderStepsToTelegramHtml(steps, 'CASCADE_RUN_STATUS_RUNNING', {
+            modeName: 'Fast',
+            modelName: 'Gemini 2.5 Pro',
+        });
+        expect(result).toContain('<i>● Generating…</i> Fast | Gemini 2.5 Pro');
+    });
+
     it('only renders steps after last user input', () => {
         const steps = [
             {

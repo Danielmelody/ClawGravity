@@ -133,7 +133,15 @@ export async function handleTelegramJoinCommand(
     if (!resolved) return;
     const { runtime } = resolved;
 
-    const sessions = await runtime.listAllSessions(deps.chatSessionService);
+    let sessions;
+    try {
+        sessions = await runtime.listAllSessions(deps.chatSessionService);
+    } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`[TelegramJoin] listAllSessions failed: ${errMsg}`);
+        await message.reply({ text: `Failed to list sessions: ${escapeHtml(errMsg || 'unknown error')}` }).catch(logger.error);
+        return;
+    }
     if (sessions.length === 0) {
         await message.reply({ text: 'No history sessions found in the Antigravity side panel.' }).catch(logger.error);
         return;
@@ -156,10 +164,16 @@ export async function handleTelegramJoinCommand(
         }),
     };
 
-    await message.reply({
-        text: `Select a history session to join (${sessions.length} found):`,
-        components: [{ components: [selectMenu] }],
-    }).catch(logger.error);
+    try {
+        await message.reply({
+            text: `Select a history session to join (${sessions.length} found):`,
+            components: [{ components: [selectMenu] }],
+        });
+    } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`[TelegramJoin] Failed to send session picker: ${errMsg}`);
+        await message.reply({ text: `Failed to show session picker: ${escapeHtml(errMsg || 'unknown error')}` }).catch(logger.error);
+    }
 }
 
 export async function handleTelegramJoinSelect(
@@ -175,10 +189,16 @@ export async function handleTelegramJoinSelect(
     const { runtime } = resolved;
 
     const sessions = await runtime.listAllSessions(deps.chatSessionService);
-    const selectedSession = sessions.find((s: { title: string; cascadeId?: string }) => s.title === selectedTitle);
+    // Exact match first; fall back to prefix match in case callback_data was
+    // truncated to fit Telegram's 64-byte limit.
+    let selectedSession = sessions.find((s: { title: string; cascadeId?: string }) => s.title === selectedTitle);
+    if (!selectedSession && selectedTitle.length > 0) {
+        selectedSession = sessions.find((s: { title: string; cascadeId?: string }) => s.title.startsWith(selectedTitle));
+    }
+    const resolvedTitle = selectedSession?.title || selectedTitle;
     const cascadeId = selectedSession?.cascadeId || '';
 
-    deps.sessionStateStore.setSelectedSession(chatId, selectedTitle, cascadeId);
+    deps.sessionStateStore.setSelectedSession(chatId, resolvedTitle, cascadeId);
 
     if (cascadeId) {
         await runtime.setActiveCascade(cascadeId);
@@ -207,7 +227,7 @@ export async function handleTelegramJoinSelect(
     }
 
     await interaction.update({
-        text: `Joined history session: <b>${escapeHtml(selectedTitle)}</b>\nLoading conversation history into Telegram...`,
+        text: `Joined history session: <b>${escapeHtml(resolvedTitle)}</b>\nLoading conversation history into Telegram...`,
         components: [],
     }).catch(logger.error);
 
@@ -216,7 +236,7 @@ export async function handleTelegramJoinSelect(
         maxScrollSteps: 40,
     });
 
-    const chunks = formatConversationHistory(selectedTitle, history.messages, history.truncated);
+    const chunks = formatConversationHistory(resolvedTitle, history.messages, history.truncated);
     if (chunks.length === 0) {
         await interaction.followUp({
             text: 'No visible conversation history could be extracted from Antigravity.',

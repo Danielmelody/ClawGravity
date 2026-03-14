@@ -4,7 +4,7 @@ import { acquireLock } from '../../utils/lockfile';
 import { startBot } from '../../bot';
 import { logger } from '../../utils/logger';
 import type { LogLevel } from '../../utils/logger';
-import { version } from '../../../package.json';
+import { APP_VERSION } from '../../utils/version';
 import { checkForUpdates } from '../../services/updateCheckService';
 import { waitForRestartParentExit } from '../../services/processRestartService';
 
@@ -35,7 +35,7 @@ export async function startAction(
     acquireLock();
 
     // Non-blocking update check (fire-and-forget)
-    checkForUpdates(version).catch(() => {});
+    checkForUpdates(APP_VERSION).catch(() => {});
 
     await startBot(cliLevel).catch((err) => {
         logger.error('Failed to start bot:', err);

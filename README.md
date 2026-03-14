@@ -13,7 +13,7 @@
 > **An [OpenClaw](https://github.com/AntiguardDev/OpenClaw) implementation built on [Antigravity](https://antigravity.dev)'s Agent capabilities.**
 > More stable. More token-efficient. All-in-one. Does not violate Antigravity's Terms of Service.
 
-**ClawGravity** (formerly [LazyGravity](https://github.com/tokyoweb3/LazyGravity)) is a local, secure bot that lets you remotely operate [Antigravity](https://antigravity.dev) on your home PC — from your smartphone, anywhere. Supports **Discord** and **Telegram** (optional).
+**ClawGravity** is a local, secure bot that lets you remotely operate [Antigravity](https://antigravity.dev) on your home PC — from your smartphone, anywhere. Supports **Discord** and **Telegram** (optional).
 
 Send natural language instructions like "fix that bug" or "start designing the new feature" from your phone. Antigravity executes them locally on your home PC using its full resources, and reports results back to your chat platform.
 
@@ -21,7 +21,7 @@ https://github.com/user-attachments/assets/08eac63e-5ede-469b-ac6c-1c40ec77b0c0
 
 ## What is ClawGravity?
 
-ClawGravity is a second-generation fork of LazyGravity that implements the **OpenClaw** concept — using Antigravity's publicly available CDP (Chrome DevTools Protocol) debugging interface as an automation bridge. Key principles:
+ClawGravity implements the **OpenClaw** concept — using Antigravity's publicly available CDP (Chrome DevTools Protocol) debugging interface as an automation bridge. Key principles:
 
 - **TOS Compliant** — Uses only the standard CDP debugging interface (same as Chrome DevTools, Puppeteer, Playwright). No reverse engineering, no binary modification, no proprietary protocol interception.
 - **More Stable** — Improved CDP connection management, automatic reconnection, and gRPC trajectory-based response extraction for reliable long-running sessions.
@@ -298,7 +298,7 @@ Both adapters implement the same `PlatformAdapter` interface and emit events thr
 
 ## Attribution
 
-ClawGravity is a fork of [LazyGravity](https://github.com/tokyoweb3/LazyGravity), an open-source project for remote Antigravity automation. This project builds upon LazyGravity's foundation to provide an **OpenClaw**-compatible implementation with improved stability, token efficiency, and an all-in-one user experience.
+ClawGravity is an open-source project for remote Antigravity automation with an **OpenClaw**-compatible implementation providing improved stability, token efficiency, and an all-in-one user experience.
 
 ## License
 

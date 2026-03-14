@@ -247,7 +247,7 @@ export class GrpcCascadeClient extends EventEmitter {
                     mimeType: item.mimeType,
                 };
                 if (item.inlineData) {
-                    mediaObj.payload = { inlineData: item.inlineData };
+                    mediaObj.inlineData = item.inlineData;
                 }
                 if (item.thumbnail) {
                     mediaObj.thumbnail = item.thumbnail;
@@ -284,7 +284,7 @@ export class GrpcCascadeClient extends EventEmitter {
             mimeType: media.mimeType,
         };
         if (media.inlineData) {
-            mediaObj.payload = { inlineData: media.inlineData };
+            mediaObj.inlineData = media.inlineData;
         }
         if (media.thumbnail) {
             mediaObj.thumbnail = media.thumbnail;

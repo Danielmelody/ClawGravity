@@ -2,7 +2,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Command } from 'commander';
-import { version } from '../../package.json';
+import { APP_VERSION } from '../utils/version';
 import { startAction } from './commands/start';
 import { doctorAction } from './commands/doctor';
 import { setupAction } from './commands/setup';
@@ -12,7 +12,7 @@ import { ConfigLoader } from '../utils/configLoader';
 const program = new Command()
     .name('claw-gravity')
     .description('Control your AI coding assistant from Discord')
-    .version(version)
+    .version(APP_VERSION)
     .option('--verbose', 'Show debug-level logs')
     .option('--quiet', 'Only show errors');
 

@@ -214,14 +214,14 @@ describe('Config', () => {
     });
 
     it('normalizes response delivery mode to stream even when set to final-only', () => {
-        process.env.LAZYGRAVITY_RESPONSE_DELIVERY = 'final-only';
+        process.env.CLAWGRAVITY_RESPONSE_DELIVERY = 'final-only';
         expect(resolveResponseDeliveryMode()).toBe('stream');
 
-        process.env.LAZYGRAVITY_RESPONSE_DELIVERY = 'stream';
+        process.env.CLAWGRAVITY_RESPONSE_DELIVERY = 'stream';
         expect(resolveResponseDeliveryMode()).toBe('stream');
 
-        delete process.env.LAZYGRAVITY_RESPONSE_DELIVERY;
-        process.env.LAZYGRAVITY_RESPONSE_MODE = 'final-only';
+        delete process.env.CLAWGRAVITY_RESPONSE_DELIVERY;
+        process.env.CLAWGRAVITY_RESPONSE_MODE = 'final-only';
         expect(resolveResponseDeliveryMode()).toBe('stream');
     });
 });

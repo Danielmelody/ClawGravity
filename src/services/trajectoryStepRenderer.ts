@@ -26,6 +26,10 @@ export interface StepRenderOptions {
     showToolResults?: boolean;
     /** Truncate thinking text beyond this length (default: 800) */
     maxThinkingChars?: number;
+    /** Current mode name (e.g. "Fast", "Planning") — shown in the Generating footer */
+    modeName?: string;
+    /** Current model name (e.g. "Gemini 2.5 Pro") — shown in the Generating footer */
+    modelName?: string;
 }
 
 const DEFAULT_OPTIONS: Required<StepRenderOptions> = {
@@ -34,6 +38,8 @@ const DEFAULT_OPTIONS: Required<StepRenderOptions> = {
     showToolArgs: true,
     showToolResults: true,
     maxThinkingChars: 800,
+    modeName: '',
+    modelName: '',
 };
 const PRE_BLOCK_PLACEHOLDER = '@@PRE_BLOCK_';
 const CODE_SPAN_PLACEHOLDER = '@@CODE_SPAN_';
@@ -168,11 +174,15 @@ export function renderStepsToTelegramHtml(
         }
     }
 
-    // Append running indicator
+    // Append running indicator with mode | model footer
     const isRunning = runStatus === 'CASCADE_RUN_STATUS_RUNNING'
         || runStatus === 'RUNNING';
     if (isRunning && fragments.length > 0) {
-        fragments.push('<i>● Generating…</i>');
+        const metaParts: string[] = [];
+        if (opts.modeName) metaParts.push(escapeHtml(opts.modeName));
+        if (opts.modelName) metaParts.push(escapeHtml(opts.modelName));
+        const metaSuffix = metaParts.length > 0 ? ' ' + metaParts.join(' | ') : '';
+        fragments.push(`<i>● Generating…</i>${metaSuffix}`);
     }
 
     return fragments.join('\n\n').trim();
@@ -1170,7 +1180,11 @@ export function renderStepsToDiscordMarkdown(
     const isRunning = runStatus === 'CASCADE_RUN_STATUS_RUNNING'
         || runStatus === 'RUNNING';
     if (isRunning && fragments.length > 0) {
-        fragments.push('*● Generating…*');
+        const metaParts: string[] = [];
+        if (opts.modeName) metaParts.push(opts.modeName);
+        if (opts.modelName) metaParts.push(opts.modelName);
+        const metaSuffix = metaParts.length > 0 ? ' ' + metaParts.join(' | ') : '';
+        fragments.push(`*● Generating…*${metaSuffix}`);
     }
 
     return fragments.join('\n\n').trim();

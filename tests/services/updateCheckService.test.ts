@@ -189,7 +189,7 @@ describe('isGlobalInstall', () => {
     });
 
     it('returns false for local dev run', () => {
-        process.argv[1] = '/home/user/projects/LazyGravity/src/bin/cli.ts';
+        process.argv[1] = '/home/user/projects/ClawGravity/src/bin/cli.ts';
         expect(isGlobalInstall()).toBe(false);
     });
 });
@@ -213,7 +213,7 @@ describe('checkForUpdates', () => {
     });
 
     it('skips check when running from source (not global install)', async () => {
-        process.argv[1] = '/home/user/projects/LazyGravity/src/bin/cli.ts';
+        process.argv[1] = '/home/user/projects/ClawGravity/src/bin/cli.ts';
         mockedFs.existsSync.mockReturnValue(false);
 
         await checkForUpdates('0.1.0');

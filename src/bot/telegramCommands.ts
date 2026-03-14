@@ -44,6 +44,7 @@ import type { TelegramSessionStateStore } from './telegramJoinCommand';
 import { handleTelegramJoinCommand } from './telegramJoinCommand';
 import { restartCurrentProcess } from '../services/processRestartService';
 import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
+import { APP_VERSION } from '../utils/version';
 
 // ---------------------------------------------------------------------------
 // Known commands (used by both parser and /help output)
@@ -130,76 +131,84 @@ export async function handleTelegramCommand(
     const argsDisplay = parsed.args ? ` ${parsed.args}` : '';
     logger.info(`[TelegramCommand] /${parsed.command}${argsDisplay} (chat=${message.channel.id})`);
 
-    switch (parsed.command as KnownCommand) {
-        case 'start':
-            await handleStart(message);
-            break;
-        case 'help':
-            await handleHelp(message);
-            break;
-        case 'status':
-            await handleStatus(deps, message);
-            break;
-        case 'stop':
-            await handleStop(deps, message);
-            break;
-        case 'restart':
-            await handleRestart(deps, message);
-            break;
-        case 'ping':
-            await handlePing(message);
-            break;
-        case 'mode':
-            await handleMode(deps, message);
-            break;
-        case 'model':
-            await handleModel(deps, message);
-            break;
-        case 'screenshot':
-            await handleScreenshot(deps, message);
-            break;
-        case 'autoaccept':
-            await handleAutoAccept(deps, message, parsed.args);
-            break;
-        case 'template':
-            await handleTemplate(deps, message);
-            break;
-        case 'template_add':
-            await handleTemplateAdd(deps, message, parsed.args);
-            break;
-        case 'template_delete':
-            await handleTemplateDelete(deps, message, parsed.args);
-            break;
-        case 'project_create':
-            await handleProjectCreate(deps, message, parsed.args);
-            break;
-        case 'logs':
-            await handleLogs(message, parsed.args);
-            break;
-        case 'new':
-            await handleNew(deps, message);
-            break;
-        case 'clear':
-            await handleClear(deps, message);
-            break;
-        case 'session':
-        case 'history':
-            await handleSession(deps, message);
-            break;
-        case 'inspect':
-            return handleInspect(deps, message);
-        case 'schedule':
-            await handleScheduleList(deps, message);
-            break;
-        case 'schedule_add':
-            await handleScheduleAdd(deps, message, parsed.args);
-            break;
-        case 'schedule_remove':
-            await handleScheduleRemove(deps, message, parsed.args);
-            break;
-        default:
-            // Should not happen — parser filters unknowns
-            break;
+    try {
+        switch (parsed.command as KnownCommand) {
+            case 'start':
+                await handleStart(message);
+                break;
+            case 'help':
+                await handleHelp(message);
+                break;
+            case 'status':
+                await handleStatus(deps, message);
+                break;
+            case 'stop':
+                await handleStop(deps, message);
+                break;
+            case 'restart':
+                await handleRestart(deps, message);
+                break;
+            case 'ping':
+                await handlePing(message);
+                break;
+            case 'mode':
+                await handleMode(deps, message);
+                break;
+            case 'model':
+                await handleModel(deps, message);
+                break;
+            case 'screenshot':
+                await handleScreenshot(deps, message);
+                break;
+            case 'autoaccept':
+                await handleAutoAccept(deps, message, parsed.args);
+                break;
+            case 'template':
+                await handleTemplate(deps, message);
+                break;
+            case 'template_add':
+                await handleTemplateAdd(deps, message, parsed.args);
+                break;
+            case 'template_delete':
+                await handleTemplateDelete(deps, message, parsed.args);
+                break;
+            case 'project_create':
+                await handleProjectCreate(deps, message, parsed.args);
+                break;
+            case 'logs':
+                await handleLogs(message, parsed.args);
+                break;
+            case 'new':
+                await handleNew(deps, message);
+                break;
+            case 'clear':
+                await handleClear(deps, message);
+                break;
+            case 'session':
+            case 'history':
+                await handleSession(deps, message);
+                break;
+            case 'inspect':
+                return handleInspect(deps, message);
+            case 'schedule':
+                await handleScheduleList(deps, message);
+                break;
+            case 'schedule_add':
+                await handleScheduleAdd(deps, message, parsed.args);
+                break;
+            case 'schedule_remove':
+                await handleScheduleRemove(deps, message, parsed.args);
+                break;
+            default:
+                // Should not happen — parser filters unknowns
+                break;
+        }
+    } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(`[TelegramCommand] /${parsed.command} failed: ${errMsg}`);
+        await message.reply({
+            text: `❌ Command /${parsed.command} failed: ${errMsg?.slice(0, 200) || 'unknown error'}`,
+        }).catch(logger.error);
     }
 }
 
@@ -279,12 +288,9 @@ async function handleStatus(deps: TelegramCommandDeps, message: PlatformMessage)
     const lines = [
         '<b>Bot Status</b>',
         '',
-        `<b>This chat:</b>`,
-        `  Project: ${escapeHtml(boundProject)}`,
-        `  CDP: ${projectConnected ? '✅ Connected' : '❌ Not connected'}`,
-        '',
-        `Mode: ${escapeHtml(mode)}`,
-        `Model: ${escapeHtml(currentModel)}`,
+        `Version: ${APP_VERSION}`,
+        `CDP: ${projectConnected ? '✅ Connected' : '❌ Not connected'}`,
+        `Project: ${escapeHtml(boundProject)}`,
         `Active connections: ${activeWorkspaces.length > 0 ? activeWorkspaces.map(escapeHtml).join(', ') : 'none'}`,
     ];
 
@@ -315,6 +321,9 @@ async function handleStatus(deps: TelegramCommandDeps, message: PlatformMessage)
             lines.push(`<i>Quota fetch failed: ${escapeHtml((err instanceof Error ? err.message : String(err)) || 'unknown')}</i>`);
         }
     }
+
+    lines.push('');
+    lines.push(`<i>${escapeHtml(mode)} | ${escapeHtml(currentModel)}</i>`);
 
     await message.reply({ text: lines.join('\n') }).catch(logger.error);
 }

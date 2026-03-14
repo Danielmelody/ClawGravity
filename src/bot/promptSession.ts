@@ -268,7 +268,10 @@ export class PromptSession {
                 },
                 onProgress: (text: string) => this.handleContentDelta(text),
                 onStepsUpdate: (data: { steps: unknown[]; runStatus: string | null }) => {
-                    const activityText = renderStepsToDiscordMarkdown(data.steps as Array<{ [key: string]: unknown }>, data.runStatus);
+                    const activityText = renderStepsToDiscordMarkdown(data.steps as Array<{ [key: string]: unknown }>, data.runStatus, {
+                        modeName: this.deps.telemetryModeName,
+                        modelName: this.deps.telemetryModelName,
+                    });
                     this.handleActivity(activityText, data.runStatus === 'complete');
                 },
                 onComplete: (finalText: string) => this.handleComplete(finalText),

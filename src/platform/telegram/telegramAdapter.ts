@@ -174,6 +174,11 @@ export class TelegramAdapter implements PlatformAdapter {
             this.handleIncomingMessage('message:photo', ctx);
         });
 
+        // Document messages (includes uncompressed images sent as files)
+        this.bot.on('message:document', async (ctx: unknown) => {
+            this.handleIncomingMessage('message:document', ctx);
+        });
+
         // Callback queries (button presses and select menu selections)
         this.bot.on('callback_query:data', async (ctx: unknown) => {
             if (!this.events?.onButtonInteraction && !this.events?.onSelectInteraction) return;

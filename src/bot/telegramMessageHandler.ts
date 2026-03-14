@@ -48,6 +48,7 @@ import type { TelegramMessageTracker } from '../services/telegramMessageTracker'
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 import type { TrajectoryStep } from '../services/trajectoryToolState';
 import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../services/trajectoryStepRenderer';
+import type { StepRenderOptions } from '../services/trajectoryStepRenderer';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 import { sendArtifactsToTelegram } from '../services/artifactSender';
 
@@ -296,6 +297,11 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
             // Inject prompt (with or without images) into Antigravity
         logger.prompt(effectivePrompt);
+
+        // Pre-register in passive dedup map to prevent duplicate "Generating..." messages.
+        // The CDP onUserMessage callback fires shortly after we inject the prompt,
+        // and without this it would create a second passive monitor.
+        registerActivePromptForDedup(chatId, projectName, effectivePrompt, currentCascadeId);
         let injectResult;
         let initialMonitoringTarget;
         try {
@@ -326,7 +332,11 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             // Monitor the response
         const channel = trackedChannel;
         const startTime = Date.now();
-        const mirror = await createTelegramMirrorSession(channel, 'Generating...');
+        const mirrorRenderOpts: StepRenderOptions = {
+            modeName: deps.modeService?.getCurrentMode() || '',
+            modelName: deps.modelService?.getCurrentModel() || '',
+        };
+        const mirror = await createTelegramMirrorSession(channel, 'Generating...', mirrorRenderOpts);
 
         const TIMEOUT_MS = 600_000;
 
@@ -827,6 +837,7 @@ interface TelegramMirrorSession {
 async function createTelegramMirrorSession(
     channel: PlatformChannel,
     initialPlaceholderText?: string,
+    renderOptions?: StepRenderOptions,
 ): Promise<TelegramMirrorSession> {
     let messages: PlatformSentMessage[] = [];
     const renderer = createCoalescedStatusRenderer(
@@ -845,6 +856,7 @@ async function createTelegramMirrorSession(
             return renderStepsToTelegramHtml(
                 state.stepsData.value.steps as TrajectoryStep[],
                 state.stepsData.value.runStatus,
+                renderOptions,
             ).trim();
         }
         if (state.text.clock > 0 && state.text.value.trim()) {
@@ -1104,8 +1116,49 @@ function shouldSkipDuplicatePassiveUserEvent(channelId: string, projectName: str
         return true;
     }
 
+    // Fallback: check text-only key (ignoring cascade ID).
+    // The active handler pre-registers with 'no-cascade' because the cascade ID
+    // may not be assigned yet — but the passive event will have the real ID.
+    if (info.cascadeId) {
+        const fallbackInfo: UserMessageInfo = { text: info.text };
+        const fallbackKey = buildPassiveUserEventKey(channelId, projectName, fallbackInfo);
+        const fallbackSeenAt = recentPassiveUserEvents.get(fallbackKey) ?? 0;
+        if (fallbackSeenAt && now - fallbackSeenAt <= PASSIVE_USER_EVENT_TTL_MS) {
+            return true;
+        }
+    }
+
     recentPassiveUserEvents.set(key, now);
     return false;
+}
+
+/**
+ * Pre-register a prompt sent from Telegram so the passive CDP user-message
+ * listener doesn't create a duplicate monitor for the same message.
+ * Must be called BEFORE the prompt is injected into Antigravity.
+ *
+ * Registers both with the current cascade ID (if known) and with a
+ * wildcard key (no-cascade) so the passive handler's dedup catches
+ * the event regardless of which cascade ID it reports.
+ */
+export function registerActivePromptForDedup(
+    channelId: string,
+    projectName: string,
+    text: string,
+    cascadeId?: string | null,
+): void {
+    const now = Date.now();
+    // Register with exact cascade ID if known
+    if (cascadeId) {
+        const info: UserMessageInfo = { text, cascadeId };
+        const key = buildPassiveUserEventKey(channelId, projectName, info);
+        recentPassiveUserEvents.set(key, now);
+    }
+    // Also register without cascade ID as a fallback — the passive handler
+    // may receive a different/new cascade ID that was assigned during injection.
+    const fallbackInfo: UserMessageInfo = { text };
+    const fallbackKey = buildPassiveUserEventKey(channelId, projectName, fallbackInfo);
+    recentPassiveUserEvents.set(fallbackKey, now);
 }
 
 /**

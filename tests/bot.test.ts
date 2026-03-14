@@ -189,7 +189,7 @@ describe('Bot Startup', () => {
     });
 
     it('forces response delivery mode to stream even when final-only is configured', () => {
-        process.env.LAZYGRAVITY_RESPONSE_DELIVERY = 'final-only';
+        process.env.CLAWGRAVITY_RESPONSE_DELIVERY = 'final-only';
         expect(getResponseDeliveryModeForTest()).toBe('stream');
     });
 });

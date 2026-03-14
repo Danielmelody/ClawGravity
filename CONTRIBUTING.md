@@ -2,7 +2,7 @@
 
 First off, thank you for considering contributing to ClawGravity! It's people like you that make ClawGravity such a great tool.
 
-> **Note**: ClawGravity is a fork of [LazyGravity](https://github.com/tokyoweb3/LazyGravity), providing an OpenClaw implementation built on Antigravity's Agent capabilities.
+> **Note**: ClawGravity provides an OpenClaw implementation built on Antigravity's Agent capabilities.
 
 ## Development Setup
 

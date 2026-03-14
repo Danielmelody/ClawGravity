@@ -46,6 +46,36 @@ describe('GrpcCascadeClient createCascade', () => {
     });
 });
 
+describe('GrpcCascadeClient sendMessage media payload', () => {
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    it('puts inlineData as a direct property, not nested inside payload', async () => {
+        const client = new GrpcCascadeClient();
+        const rpc = jest.spyOn(client as any, 'rpc').mockResolvedValue({});
+
+        await client.sendMessage('cascade-123', 'Look at this image', undefined, [
+            { mimeType: 'image/jpeg', inlineData: 'base64data==' },
+        ]);
+
+        expect(rpc).toHaveBeenCalledWith('SendUserCascadeMessage', expect.objectContaining({
+            cascadeId: 'cascade-123',
+            media: [
+                expect.objectContaining({
+                    mimeType: 'image/jpeg',
+                    inlineData: 'base64data==',
+                }),
+            ],
+        }));
+
+        // Must NOT have a nested payload wrapper
+        const payload = rpc.mock.calls[0][1] as Record<string, unknown>;
+        const mediaItems = payload.media as Record<string, unknown>[];
+        expect(mediaItems[0]).not.toHaveProperty('payload');
+    });
+});
+
 describe('decodeWorkspaceId', () => {
     let decodeWorkspaceId: typeof import('../../src/services/grpcCascadeClient').decodeWorkspaceId;
 

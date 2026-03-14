@@ -23,7 +23,7 @@ describe('Metadata Extractor', () => {
     });
 
     it('returns an empty object when no metadata is present', () => {
-        const footerText = 'LazyGravity System';
+        const footerText = 'ClawGravity System';
         const result = extractMetadataFromFooter(footerText);
         expect(result.taskId).toBeUndefined();
         expect(result.directory).toBeUndefined();

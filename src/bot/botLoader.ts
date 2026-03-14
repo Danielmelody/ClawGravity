@@ -1,4 +1,5 @@
 import { t } from "../utils/i18n";
+import { APP_VERSION } from '../utils/version';
 import { logger } from '../utils/logger';
 import type { LogLevel } from '../utils/logger';
 import { logBuffer } from '../utils/logBuffer';
@@ -985,8 +986,6 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 // Startup dashboard embed
                 try {
                     const os = await import('os');
-                    const pkg = await import('../../package.json');
-                    const version = pkg.default?.version ?? pkg.version ?? 'unknown';
                     const projects = workspaceService.scanWorkspaces();
 
                     // Eagerly connect CDP to read actual model/mode from Antigravity UI
@@ -1019,16 +1018,13 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         .setTitle('ClawGravity Online')
                         .setColor(0x57F287)
                         .addFields(
-                            { name: 'Version', value: version, inline: true },
+                            { name: 'Version', value: APP_VERSION, inline: true },
                             { name: 'Node.js', value: process.versions.node, inline: true },
                             { name: 'OS', value: `${os.platform()} ${os.release()}`, inline: true },
                             { name: 'CDP', value: cdpStatus, inline: true },
-                            { name: 'Model', value: startupModel, inline: true },
-                            { name: 'Mode', value: startupMode, inline: true },
                             { name: 'Projects', value: `${projects.length} registered`, inline: true },
-                            { name: 'Extraction', value: config.extractionMode, inline: true },
                         )
-                        .setFooter({ text: `Started at ${new Date().toLocaleString()}` })
+                        .setFooter({ text: `${startupMode} | ${startupModel}` })
                         .setTimestamp();
 
                     // Send to the first available text channel in the guild
@@ -1397,8 +1393,6 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             const bindings = telegramBindingRepo.findAll();
             if (bindings.length > 0) {
                 const os = await import('os');
-                const pkg = await import('../../package.json');
-                const version = pkg.default?.version ?? pkg.version ?? 'unknown';
                 const projects = workspaceService.scanWorkspaces();
 
                 // Eagerly connect CDP to read actual model/mode from Antigravity UI
@@ -1430,16 +1424,13 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 const startupText = [
                     '<b>ClawGravity Online</b>',
                     '',
-                    `Version: ${version}`,
+                    `Version: ${APP_VERSION}`,
                     `Node.js: ${process.versions.node}`,
                     `OS: ${os.platform()} ${os.release()}`,
                     `CDP: ${cdpStatus}`,
-                    `Model: ${tgStartupModel}`,
-                    `Mode: ${tgStartupMode}`,
                     `Projects: ${projects.length} registered`,
-                    `Extraction: ${config.extractionMode}`,
                     '',
-                    `<i>Started at ${new Date().toLocaleString()}</i>`,
+                    `<i>${tgStartupMode} | ${tgStartupModel}</i>`,
                 ].join('\n');
 
                 const sendWithRetry = async (chatId: number | string, text: string, retries = 3, delayMs = 2000): Promise<void> => {

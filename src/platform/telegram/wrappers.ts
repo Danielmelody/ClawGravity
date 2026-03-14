@@ -100,6 +100,14 @@ export interface TelegramPhotoSize {
     file_size?: number;
 }
 
+export interface TelegramDocument {
+    file_id: string;
+    file_unique_id: string;
+    file_name?: string;
+    mime_type?: string;
+    file_size?: number;
+}
+
 export interface TelegramMessageLike {
     message_id: number;
     from?: TelegramFrom;
@@ -109,6 +117,8 @@ export interface TelegramMessageLike {
     caption?: string;
     /** Array of photo sizes; last element is the largest. */
     photo?: TelegramPhotoSize[];
+    /** Document attachment (files, including uncompressed images). */
+    document?: TelegramDocument;
     date: number;
 }
 
@@ -146,10 +156,33 @@ function buttonDefToInline(btn: ButtonDef): InlineButton {
  */
 export const SELECT_CALLBACK_SEP = '\x1f';
 
+/**
+ * Telegram inline keyboard callback_data is limited to 64 bytes.
+ * Truncate a string to fit within the given byte budget, respecting
+ * multi-byte Unicode characters (never split a surrogate pair).
+ */
+const TELEGRAM_MAX_CALLBACK_DATA_BYTES = 64;
+
+function truncateToBytes(str: string, maxBytes: number): string {
+    const buf = Buffer.from(str, 'utf-8');
+    if (buf.length <= maxBytes) return str;
+    // Slice to maxBytes and decode back — Buffer.toString handles
+    // incomplete multi-byte sequences gracefully (replaces trailing
+    // partial chars). We then re-encode to verify and trim if needed.
+    let truncated = buf.subarray(0, maxBytes).toString('utf-8');
+    // Remove any replacement character at the end from a split codepoint
+    while (truncated.length > 0 && Buffer.from(truncated, 'utf-8').length > maxBytes) {
+        truncated = truncated.slice(0, -1);
+    }
+    return truncated;
+}
+
 function selectMenuToInlineRows(menu: SelectMenuDef): ReadonlyArray<ReadonlyArray<InlineButton>> {
-    return menu.options.map((opt) => [
-        { text: opt.label, callback_data: `${menu.customId}${SELECT_CALLBACK_SEP}${opt.value}` },
-    ]);
+    return menu.options.map((opt) => {
+        const raw = `${menu.customId}${SELECT_CALLBACK_SEP}${opt.value}`;
+        const callbackData = truncateToBytes(raw, TELEGRAM_MAX_CALLBACK_DATA_BYTES);
+        return [{ text: opt.label, callback_data: callbackData }];
+    });
 }
 
 function componentRowsToInlineKeyboard(
@@ -249,6 +282,26 @@ export function toTelegramPayload(payload: MessagePayload): TelegramSendOptions 
 }
 
 // ---------------------------------------------------------------------------
+// HTML tag stripping helper (for fallback plain-text delivery)
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip ALL HTML tags from text and decode common HTML entities.
+ * Used when Telegram rejects HTML parse_mode — produces clean plain text.
+ */
+function stripAllHtmlTags(html: string): string {
+    return html
+        .replace(/<[^>]*>/g, '')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+// ---------------------------------------------------------------------------
 // Shared send-with-HTML-fallback helper
 // ---------------------------------------------------------------------------
 
@@ -271,8 +324,8 @@ async function sendWithHtmlFallback(
     } catch (_err: unknown) {
         const errMsg = _err instanceof Error ? _err.message : String(_err);
         logger.warn(`[TgSend] HTML parse failed, falling back. Error: ${errMsg}`);
-        const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
-        const sent = await withRetry429(() => api.sendMessage(chatId, rawText, { reply_markup: rest.reply_markup, ...extraSendOptions }));
+        const rawText = stripAllHtmlTags(text);
+        const sent = await withRetry429(() => api.sendMessage(chatId, rawText || '(empty)', { reply_markup: rest.reply_markup, ...extraSendOptions }));
         return wrapTelegramSentMessage(sent, api, chatId);
     }
 }
@@ -411,6 +464,24 @@ function buildPhotoAttachments(
     }];
 }
 
+/**
+ * Build PlatformAttachment[] from a Telegram document message.
+ * Only produces attachments for image documents (mime_type starts with 'image/').
+ */
+function buildDocumentAttachments(
+    doc: TelegramDocument,
+): PlatformAttachment[] {
+    // Only treat documents with image mime types as image attachments
+    if (!doc.mime_type || !doc.mime_type.startsWith('image/')) return [];
+
+    return [{
+        name: doc.file_name || `doc-${doc.file_unique_id}`,
+        contentType: doc.mime_type,
+        url: `telegram-file://${doc.file_id}`,
+        size: doc.file_size ?? 0,
+    }];
+}
+
 /** Wrap a Telegram message as a PlatformMessage. */
 export function wrapTelegramMessage(
     msg: TelegramMessageLike,
@@ -430,11 +501,14 @@ export function wrapTelegramMessage(
 
     const channel = wrapTelegramChannel(api, msg.chat.id, toInputFile);
 
-    // Photo messages: use caption as content, build attachments from photo array
+    // Photo messages: use caption as content, build attachments from photo array.
+    // Document messages: fall back to document attachment if no photo and doc is an image.
     const content = msg.text ?? msg.caption ?? '';
     const attachments: readonly PlatformAttachment[] = msg.photo
         ? buildPhotoAttachments(msg.photo, botToken)
-        : [];
+        : msg.document
+            ? buildDocumentAttachments(msg.document)
+            : [];
 
     return {
         id: String(msg.message_id),
@@ -474,8 +548,8 @@ export function wrapTelegramMessage(
                 }));
             } catch {
                 logger.warn(`[TgMsgReply] HTML parse failed, falling back to raw text.`);
-                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
-                sent = await withRetry429(() => api.sendMessage(msg.chat.id, rawText, {
+                const rawText = stripAllHtmlTags(text);
+                sent = await withRetry429(() => api.sendMessage(msg.chat.id, rawText || '(empty)', {
                     reply_markup: rest.reply_markup,
                     reply_to_message_id: msg.message_id,
                 }));
@@ -528,8 +602,8 @@ export function wrapTelegramCallbackQuery(
                 await withRetry429(() => api.sendMessage(chatId, text, rest));
             } catch {
                 logger.warn(`[TgReply] HTML parse failed, falling back to raw text.`);
-                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
-                await withRetry429(() => api.sendMessage(chatId, rawText, { reply_markup: rest.reply_markup }));
+                const rawText = stripAllHtmlTags(text);
+                await withRetry429(() => api.sendMessage(chatId, rawText || '(empty)', { reply_markup: rest.reply_markup }));
             }
         },
         async update(payload: MessagePayload): Promise<void> {
@@ -542,8 +616,8 @@ export function wrapTelegramCallbackQuery(
                 await withRetry429(() => api.editMessageText(chatId, messageId, text, rest));
             } catch {
                 logger.warn(`[TgUpdate] HTML parse failed, falling back to raw text.`);
-                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
-                await withRetry429(() => api.editMessageText(chatId, messageId, rawText, { reply_markup: rest.reply_markup }));
+                const rawText = stripAllHtmlTags(text);
+                await withRetry429(() => api.editMessageText(chatId, messageId, rawText || '(empty)', { reply_markup: rest.reply_markup }));
             }
         },
         async editReply(payload: MessagePayload): Promise<void> {
@@ -584,7 +658,7 @@ export function wrapTelegramSentMessage(
                 const errMsg = _err instanceof Error ? _err.message : String(_err);
                 // HTML parse error — retry with raw text, no parse_mode
                 logger.warn(`[TgEdit] HTML parse failed, falling back to raw text. Error: ${errMsg}. Text starts: ${text.slice(0, 200)}`);
-                const rawText = payload.text || text.replace(/<[^>]*>?/gm, '');
+                const rawText = stripAllHtmlTags(text);
                 const edited = await withRetry429(() => api.editMessageText(chatId, Number(msgId), rawText, { reply_markup: rest.reply_markup }));
                 return wrapTelegramSentMessage(edited, api, chatId);
             }
