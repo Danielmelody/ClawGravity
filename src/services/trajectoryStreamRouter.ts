@@ -12,8 +12,12 @@
  *   Polling tick arrives
  *     → fetch trajectory + summaries ONCE
  *     → fan out to all registered detectors via evaluate()
+ *
+ * Effect migration: internal polling uses Effect.repeat with Schedule,
+ * replacing manual setInterval / isFetching / isRunning flags.
  */
 
+import { Effect, Fiber, Schedule, Ref, Option } from 'effect';
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
 import { ApprovalDetector } from './approvalDetector';
@@ -31,6 +35,14 @@ export interface TrajectoryStreamRouterOptions {
     projectName: string;
 }
 
+/** Connection-ignorable error messages (transient network issues). */
+const TRANSIENT_ERRORS = ['WebSocket is not connected', 'Not connected', 'ECONNREFUSED'];
+
+function isTransientError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return TRANSIENT_ERRORS.some((t) => msg.includes(t));
+}
+
 export class TrajectoryStreamRouter {
     private readonly cdpService: CdpService;
     private readonly projectName: string;
@@ -42,12 +54,9 @@ export class TrajectoryStreamRouter {
     private runCommandDetector: RunCommandDetector | null = null;
     private userMessageDetector: UserMessageDetector | null = null;
 
-    // Polling state
-    private pollingTimer: NodeJS.Timeout | null = null;
-    private isRunning: boolean = false;
-    private isFetching: boolean = false;
-
-    /** The cascade ID currently being polled (may change when user switches conversations) */
+    // Effect-managed polling state
+    private pollingFiber: Fiber.RuntimeFiber<void, never> | null = null;
+    private _isRunning = false;
     private currentCascadeId: string | null = null;
 
     constructor(options: TrajectoryStreamRouterOptions) {
@@ -79,63 +88,60 @@ export class TrajectoryStreamRouter {
 
     // ─── Lifecycle ──────────────────────────────────────────────────
 
-    /**
-     * Mark the router as ready. Does NOT start polling.
-     * Call `connectToCascade(id)` to actually begin polling.
-     */
     start(): void {
-        this.isRunning = true;
+        this._isRunning = true;
     }
 
     async stop(): Promise<void> {
-        this.isRunning = false;
-        this.stopPolling();
+        this._isRunning = false;
+        await this.stopPolling();
     }
 
     isActive(): boolean {
-        return this.isRunning;
+        return this._isRunning;
     }
 
-    /**
-     * Connect (or reconnect) polling to a specific cascade.
-     * Called on-demand when a cascade is created, selected, or discovered.
-     * If already polling the same cascade, this is a no-op.
-     */
     connectToCascade(cascadeId: string): void {
-        if (!this.isRunning) {
-            this.isRunning = true;
+        if (!this._isRunning) {
+            this._isRunning = true;
         }
-        if (this.currentCascadeId === cascadeId && this.pollingTimer) {
-            return; // Already polling this cascade
+        if (this.currentCascadeId === cascadeId && this.pollingFiber) {
+            return;
         }
         if (this.currentCascadeId && this.currentCascadeId !== cascadeId) {
             logger.info(`[StreamRouter:${this.projectName}] Cascade changed from ${this.currentCascadeId.slice(0, 12)} to ${cascadeId.slice(0, 12)}, restarting poll`);
-            this.stopPolling();
+            void this.stopPolling();
         }
         this.startPolling(cascadeId);
     }
 
-    // ─── Polling ────────────────────────────────────────────────────
+    // ─── Effect-based Polling ───────────────────────────────────────
 
     private startPolling(cascadeId: string): void {
         this.currentCascadeId = cascadeId;
-
         logger.info(`[StreamRouter:${this.projectName}] Polling started for cascade=${cascadeId.slice(0, 12)}...`);
 
-        // Immediate first fetch
-        void this.fetchAndDispatch();
+        // Build the polling effect: fetch-and-dispatch, then repeat
+        const tick = Effect.tryPromise({
+            try: () => this.fetchAndDispatch(),
+            catch: () => undefined,   // errors handled inside fetchAndDispatch
+        }).pipe(
+            Effect.catchAll(() => Effect.void),   // never propagate
+        );
 
-        // Regular polling interval
-        this.pollingTimer = setInterval(() => {
-            if (!this.isRunning) return;
-            void this.fetchAndDispatch();
-        }, POLLING_INTERVAL_MS);
+        const pollingEffect = tick.pipe(
+            Effect.repeat(Schedule.spaced(POLLING_INTERVAL_MS)),
+            Effect.interruptible,                 // allows Fiber.interrupt to stop it
+        );
+
+        // Fork the polling fiber
+        this.pollingFiber = Effect.runFork(pollingEffect as Effect.Effect<void, never, never>);
     }
 
-    private stopPolling(): void {
-        if (this.pollingTimer) {
-            clearInterval(this.pollingTimer);
-            this.pollingTimer = null;
+    private async stopPolling(): Promise<void> {
+        if (this.pollingFiber) {
+            await Effect.runPromise(Fiber.interrupt(this.pollingFiber).pipe(Effect.catchAll(() => Effect.void)));
+            this.pollingFiber = null;
         }
         this.currentCascadeId = null;
     }
@@ -144,12 +150,10 @@ export class TrajectoryStreamRouter {
 
     /**
      * Fetch current trajectory and summaries, then dispatch to all
-     * registered detectors. Prevents concurrent fetches.
+     * registered detectors.
      */
     private async fetchAndDispatch(): Promise<void> {
-        if (!this.isRunning) return;
-        if (this.isFetching) return; // Already in-flight
-        this.isFetching = true;
+        if (!this._isRunning) return;
 
         try {
             const client = await this.cdpService.getLSClient();
@@ -159,40 +163,29 @@ export class TrajectoryStreamRouter {
                 ?? await this.cdpService.getActiveCascadeId();
             if (!cascadeId) return;
 
-            // If the cascade changed (user switched conversations), reconnect polling
             if (this.currentCascadeId && cascadeId !== this.currentCascadeId) {
                 this.connectToCascade(cascadeId);
                 return;
             }
 
-            // Fetch trajectory for detection (approval, error, planning, run command)
             const trajectoryResp = await client.rawRPC('GetCascadeTrajectory', { cascadeId }) as Record<string, unknown>;
             const trajectory = (trajectoryResp?.trajectory as Record<string, unknown> | undefined) ?? trajectoryResp;
             const steps = Array.isArray(trajectory?.steps) ? trajectory.steps as unknown[] : [];
             const runStatus = extractCascadeRunStatus(trajectoryResp);
 
-            // Dispatch to trajectory-based detectors
             this.approvalDetector?.evaluate(cascadeId, steps, runStatus);
             this.errorPopupDetector?.evaluate(cascadeId, steps, runStatus);
             this.planningDetector?.evaluate(cascadeId, steps, runStatus);
             this.runCommandDetector?.evaluate(cascadeId, steps, runStatus);
 
-            // Fetch summaries for user message detection
             if (this.userMessageDetector?.isActive()) {
                 const summResp = await client.rawRPC('GetAllCascadeTrajectories', {}) as Record<string, unknown>;
                 const summaries = (summResp?.trajectorySummaries as Record<string, unknown>) || {};
                 await this.userMessageDetector.evaluateSummaries(summaries);
             }
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (message.includes('WebSocket is not connected')
-                || message.includes('Not connected')
-                || message.includes('ECONNREFUSED')) {
-                return;
-            }
+            if (isTransientError(error)) return;
             logger.error(`[StreamRouter:${this.projectName}] Error in fetchAndDispatch:`, error);
-        } finally {
-            this.isFetching = false;
         }
     }
 }

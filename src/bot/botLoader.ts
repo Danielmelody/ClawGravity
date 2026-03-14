@@ -235,7 +235,7 @@ async function sendPromptToAntigravity(
     const enqueueActivity = createSerialTaskQueue('activity', monitorTraceId).enqueue;
 
     const telemetryModeName = MODE_UI_NAMES[modeService.getCurrentMode()] || modeService.getCurrentMode();
-    const telemetryModelName = (await cdp.getCurrentModel()) || modelService.getCurrentModel();
+    const telemetryModelName = (await cdp.getCurrentModel()) || '';
 
     const autoRenameChannel = async (newTitle: string) => {
         if (message.channel.isTextBased() && 'setName' in message.channel) {
@@ -1008,10 +1008,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                         ? `Connected (${activeWorkspaces.join(', ')})`
                         : 'Not connected';
 
-                    const startupModel = cdpModel || modelService.getDefaultModel() || modelService.getCurrentModel() || 'Not synced';
+                    const startupModel = cdpModel || modelService.getDefaultModel() || 'Not synced';
                     const startupMode = cdpMode || modeService.getCurrentMode();
-                    // Sync model service with actual UI state
-                    if (cdpModel) modelService.setModel(cdpModel, true);
                     if (cdpMode) modeService.setMode(cdpMode);
 
                     const dashboardEmbed = new EmbedBuilder()
@@ -1415,10 +1413,8 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                     ? `Connected (${activeWorkspaces.join(', ')})`
                     : 'Not connected';
 
-                const tgStartupModel = tgCdpModel || modelService.getDefaultModel() || modelService.getCurrentModel() || 'Not synced';
+                const tgStartupModel = tgCdpModel || modelService.getDefaultModel() || 'Not synced';
                 const tgStartupMode = tgCdpMode || modeService.getCurrentMode();
-                // Sync model service with actual UI state
-                if (tgCdpModel) modelService.setModel(tgCdpModel, true);
                 if (tgCdpMode) modeService.setMode(tgCdpMode);
 
                 const startupText = [
@@ -1666,6 +1662,7 @@ async function handleSlashInteraction(
                 }
                 const res = await cdp.setUiModel(modelName);
                 if (res.ok) {
+
                     await interaction.editReply({ content: `Model changed to **${res.model}**.` });
                 } else {
                     await interaction.editReply({ content: res.error || 'Failed to change model.' });

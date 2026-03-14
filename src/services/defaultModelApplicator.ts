@@ -43,7 +43,6 @@ export async function applyDefaultModel(
 
     const currentModel = await cdp.getCurrentModel();
     if (currentModel && currentModel.toLowerCase() === defaultModel.toLowerCase()) {
-        modelService.markSynced();
         logger.debug(`[DefaultModelApplicator] Already on default model: ${defaultModel}`);
         return { applied: true, modelName: defaultModel, stale: false, staleMessage: null };
     }
@@ -56,7 +55,6 @@ export async function applyDefaultModel(
     if (exactMatch) {
         const result = await cdp.setUiModel(exactMatch);
         if (result.ok) {
-            modelService.markSynced();
             logger.debug(`[DefaultModelApplicator] Applied default model: ${exactMatch}`);
             return { applied: true, modelName: exactMatch, stale: false, staleMessage: null };
         }

@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
+import { runVscodeCommand } from './baseDetector';
 import { getPendingToolCallsFromPlannerStep, getToolCallName } from './trajectoryToolState';
 import {
     type NotificationTracker,
@@ -11,43 +12,34 @@ import {
 
 /** Run command dialog information */
 export interface RunCommandInfo {
-    /** The command text to be executed (e.g. "python3 -m http.server 8000") */
     commandText: string;
-    /** Working directory shown in the dialog (e.g. "~/Code/login") */
     workingDirectory: string;
-    /** Run button text (e.g. "Run") */
     runText: string;
-    /** Reject button text (e.g. "Reject") */
     rejectText: string;
 }
 
 export interface RunCommandDetectorOptions {
-    /** CDP service instance (used only for VS Code commands) */
     cdpService: CdpService;
-    /** Callback when a run command dialog is detected */
     onRunCommandRequired: (info: RunCommandInfo) => void;
-    /** Callback when a previously detected dialog is resolved (disappeared) */
     onResolved?: () => void;
 }
 
+/** Patterns that identify a terminal command tool */
+const TERMINAL_PATTERNS = [
+    'terminal', 'command', 'shell', 'bash', 'exec',
+    'run_command', 'runcommand', 'execute_command',
+];
+
 /**
  * Detects "Run command?" state from cascade trajectory data.
- *
- * Zero DOM operations — detection is based on cascade trajectory:
- * When the cascade has status=IDLE and the latest step contains a terminal/command
- * tool call pending approval, the agent is waiting for run command confirmation.
- *
- * This detector is passive: it does not poll. Call `evaluate()` to feed
- * it trajectory data from the TrajectoryStreamRouter.
- *
- * Actions (run/reject) are performed via VS Code extension commands.
+ * Zero DOM operations — detection is based on cascade trajectory.
  */
 export class RunCommandDetector {
     private cdpService: CdpService;
     private onRunCommandRequired: (info: RunCommandInfo) => void;
     private onResolved?: () => void;
 
-    private isRunning: boolean = false;
+    private isRunning = false;
     private tracker: NotificationTracker<RunCommandInfo> = createNotificationTracker();
     private static readonly MAX_NOTIFIED_KEYS = 50;
 
@@ -57,47 +49,22 @@ export class RunCommandDetector {
         this.onResolved = options.onResolved;
     }
 
-    /** Start monitoring (marks active — must be called before evaluate()). */
     start(): void {
         if (this.isRunning) return;
         this.isRunning = true;
         resetTrackerDetection(this.tracker);
-        // Note: notifiedKeys is NOT cleared on start — it persists across
-        // stop/start cycles to prevent stale cross-session re-notifications.
     }
 
-    /** Stop monitoring. */
-    async stop(): Promise<void> {
-        this.isRunning = false;
-    }
+    async stop(): Promise<void> { this.isRunning = false; }
+    getLastDetectedInfo(): RunCommandInfo | null { return this.tracker.lastDetectedInfo; }
+    isActive(): boolean { return this.isRunning; }
 
-    /** Return the last detected run command info. */
-    getLastDetectedInfo(): RunCommandInfo | null {
-        return this.tracker.lastDetectedInfo;
-    }
-
-    /** Returns whether monitoring is currently active */
-    isActive(): boolean {
-        return this.isRunning;
-    }
-
-    /**
-     * Evaluate trajectory data to detect run command state.
-     * Called by TrajectoryStreamRouter when stream events arrive.
-     *
-     * @param cascadeId  The active cascade ID
-     * @param steps      Trajectory steps array
-     * @param runStatus  Cascade run status string
-     */
     evaluate(cascadeId: string, steps: unknown[], runStatus: string | null): void {
         if (!this.isRunning) return;
-
         try {
             const info = this.extractRunCommandFromTrajectory(steps, runStatus);
-
             processDetection(
-                this.tracker,
-                info,
+                this.tracker, info,
                 (i) => `${cascadeId}::${i.commandText}::${i.workingDirectory}`,
                 (i) => this.onRunCommandRequired(i),
                 this.onResolved,
@@ -108,10 +75,6 @@ export class RunCommandDetector {
         }
     }
 
-    /**
-     * Extract run command info from trajectory steps.
-     * Looks for terminal/command tool calls when cascade is IDLE.
-     */
     private extractRunCommandFromTrajectory(steps: unknown[], runStatus: string | null): RunCommandInfo | null {
         const found = findLastPlannerStep(steps, runStatus);
         if (!found) return null;
@@ -121,30 +84,19 @@ export class RunCommandDetector {
         const pendingToolCalls = getPendingToolCallsFromPlannerStep(steps as unknown as any[], i) as unknown[];
         if (pendingToolCalls.length === 0) return null;
 
-        // Find terminal command tool calls
         for (const tc of pendingToolCalls) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const toolName = getToolCallName(tc as any);
-            const isTerminal = [
-                'terminal', 'command', 'shell', 'bash', 'exec',
-                'run_command', 'runcommand', 'execute_command',
-            ].some((pattern) => toolName.includes(pattern));
-            if (!isTerminal) continue;
+            if (!TERMINAL_PATTERNS.some((p) => toolName.includes(p))) continue;
 
-            // Extract command text from tool call arguments
             const args = this.parseToolCallArgs(tc) as Record<string, unknown> | string;
             const argsRecord = typeof args === 'object' && args !== null ? args : {};
             const commandText = typeof args === 'string'
                 ? args
                 : argsRecord.command || argsRecord.cmd || argsRecord.script || argsRecord.CommandLine || '';
             const workingDirectory =
-                argsRecord.cwd
-                || argsRecord.workingDirectory
-                || argsRecord.directory
-                || argsRecord.Cwd
-                || '';
+                argsRecord.cwd || argsRecord.workingDirectory || argsRecord.directory || argsRecord.Cwd || '';
 
-            // Skip if we couldn't extract a meaningful command
             const trimmedCommand = String(commandText).trim();
             if (!trimmedCommand) continue;
 
@@ -155,9 +107,6 @@ export class RunCommandDetector {
                 rejectText: 'Reject',
             };
         }
-
-        // If we reach the end of the latest planner response and found
-        // no pending terminal commands, then there are none awaiting user action.
         return null;
     }
 
@@ -165,57 +114,20 @@ export class RunCommandDetector {
         const tcRecord = toolCall as Record<string, unknown> | null | undefined;
         const tcFunction = tcRecord?.function as Record<string, unknown> | undefined;
         const direct = tcRecord?.arguments || tcFunction?.arguments || tcRecord?.input;
-        if (direct && typeof direct === 'object') {
-            return direct;
-        }
+        if (direct && typeof direct === 'object') return direct;
 
         const json = tcRecord?.argumentsJson;
-        if (typeof json !== 'string' || !json.trim()) {
-            return {};
-        }
-
-        try {
-            return JSON.parse(json);
-        } catch {
-            return {};
-        }
+        if (typeof json !== 'string' || !json.trim()) return {};
+        try { return JSON.parse(json); } catch { return {}; }
     }
 
-    /**
-     * Accept/run the pending terminal command via VS Code command.
-     * Uses `antigravity.terminalCommand.run` from the verified SDK.
-     */
-    async runButton(): Promise<boolean> {
-        try {
-            const result = await this.cdpService.executeVscodeCommand('antigravity.terminalCommand.run');
-            const resultRecord = result as Record<string, unknown> | null | undefined;
-            if (resultRecord?.ok) {
-                logger.debug('[RunCommandDetector] Ran via VS Code command');
-                return true;
-            }
-            return false;
-        } catch (error) {
-            logger.error('[RunCommandDetector] Run command failed:', error);
-            return false;
-        }
+    // ─── Actions (using shared CDP helper) ───────────────────────────
+
+    runButton(): Promise<boolean> {
+        return runVscodeCommand(this.cdpService, 'antigravity.terminalCommand.run', 'RunCommandDetector');
     }
 
-    /**
-     * Reject the pending terminal command via VS Code command.
-     * Uses `antigravity.terminalCommand.reject` from the verified SDK.
-     */
-    async rejectButton(): Promise<boolean> {
-        try {
-            const result = await this.cdpService.executeVscodeCommand('antigravity.terminalCommand.reject');
-            const resultRecord = result as Record<string, unknown> | null | undefined;
-            if (resultRecord?.ok) {
-                logger.debug('[RunCommandDetector] Rejected via VS Code command');
-                return true;
-            }
-            return false;
-        } catch (error) {
-            logger.error('[RunCommandDetector] Reject command failed:', error);
-            return false;
-        }
+    rejectButton(): Promise<boolean> {
+        return runVscodeCommand(this.cdpService, 'antigravity.terminalCommand.reject', 'RunCommandDetector');
     }
 }

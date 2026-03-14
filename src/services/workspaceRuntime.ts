@@ -1,3 +1,4 @@
+import { Effect } from 'effect';
 import { logger } from '../utils/logger';
 import { ApprovalDetector } from './approvalDetector';
 import {
@@ -71,9 +72,11 @@ export class WorkspaceRuntime {
     private readonly onReconnectFailed?: () => void;
 
     private connectPromise: Promise<CdpService> | null = null;
-    private operationTail: Promise<void> = Promise.resolve();
 
-    /** Generic detector/router registry (replaces individual fields) */
+    /** Effect Semaphore replaces the hand-rolled operationTail chain */
+    private readonly mutex = Effect.unsafeMakeSemaphore(1);
+
+    /** Generic detector/router registry */
     private readonly detectors = new Map<string, Stoppable>();
     private selectedCascadeId: string | null = null;
     private activeSessionInfo: WorkspaceActiveSessionInfo | null = null;
@@ -88,108 +91,68 @@ export class WorkspaceRuntime {
         this.cdp.on('disconnected', () => {
             logger.error(`[WorkspaceRuntime:${this.projectName}] disconnected`);
         });
-
         this.cdp.on('reconnectFailed', () => {
             logger.error(`[WorkspaceRuntime:${this.projectName}] reconnect failed`);
             this.onReconnectFailed?.();
         });
     }
 
-    getProjectName(): string {
-        return this.projectName;
-    }
-
-    getWorkspacePath(): string {
-        return this.workspacePath;
-    }
+    getProjectName(): string { return this.projectName; }
+    getWorkspacePath(): string { return this.workspacePath; }
 
     getConnected(): CdpService | null {
         return this.cdp.isConnected() ? this.cdp : null;
     }
 
-    getConnectedCdp(): CdpService | null {
-        return this.getConnected();
-    }
-
-    getCdpUnsafe(): CdpService {
-        return this.cdp;
-    }
+    getConnectedCdp(): CdpService | null { return this.getConnected(); }
+    getCdpUnsafe(): CdpService { return this.cdp; }
 
     async getOrConnect(): Promise<CdpService> {
         if (this.cdp.isConnected()) {
             await this.cdp.discoverAndConnectForWorkspace(this.workspacePath);
             return this.cdp;
         }
-
         if (!this.connectPromise) {
             this.connectPromise = (async () => {
                 await this.cdp.discoverAndConnectForWorkspace(this.workspacePath);
                 return this.cdp;
-            })().finally(() => {
-                this.connectPromise = null;
-            });
+            })().finally(() => { this.connectPromise = null; });
         }
-
         return this.connectPromise;
     }
 
-    async ready(): Promise<CdpService> {
-        return this.getOrConnect();
-    }
+    async ready(): Promise<CdpService> { return this.getOrConnect(); }
 
     async setActiveCascade(cascadeId: string | null): Promise<void> {
         this.rememberActiveCascade(cascadeId);
-        await this.runExclusive(async (cdp) => {
-            cdp.setCachedCascadeId(cascadeId);
-        });
+        await this.runExclusive(async (cdp) => { cdp.setCachedCascadeId(cascadeId); });
     }
 
-    async clearActiveCascade(): Promise<void> {
-        await this.setActiveCascade(null);
-    }
+    async clearActiveCascade(): Promise<void> { await this.setActiveCascade(null); }
 
-    getSelectedCascadeId(): string | null {
-        return this.selectedCascadeId;
-    }
-
-    hasSelectedCascade(): boolean {
-        return !!this.selectedCascadeId;
-    }
+    getSelectedCascadeId(): string | null { return this.selectedCascadeId; }
+    hasSelectedCascade(): boolean { return !!this.selectedCascadeId; }
 
     async sendPrompt(options: WorkspaceSendPromptOptions): Promise<InjectResult> {
         return this.runExclusive(async (cdp) => this.sendPromptLocked(cdp, options));
     }
 
-    async sendPromptWithMonitoringTarget(
-        options: WorkspaceSendPromptOptions,
-    ): Promise<WorkspaceSendPromptResult> {
+    async sendPromptWithMonitoringTarget(options: WorkspaceSendPromptOptions): Promise<WorkspaceSendPromptResult> {
         return this.runExclusive(async (cdp) => {
             const injectResult = await this.sendPromptLocked(cdp, options);
-            if (!injectResult.ok) {
-                return { injectResult, monitoringTarget: null };
-            }
-
+            if (!injectResult.ok) return { injectResult, monitoringTarget: null };
             const monitoringTarget = await this.resolveMonitoringTargetLocked(
-                cdp,
-                injectResult.cascadeId ?? options.overrideCascadeId ?? this.selectedCascadeId ?? null,
+                cdp, injectResult.cascadeId ?? options.overrideCascadeId ?? this.selectedCascadeId ?? null,
             );
-
             return { injectResult, monitoringTarget };
         });
     }
 
     async sendPromptWithImages(
-        text: string,
-        imageFilePaths: readonly string[],
-        overrideCascadeId?: string,
-        echoText?: string,
+        text: string, imageFilePaths: readonly string[],
+        overrideCascadeId?: string, echoText?: string,
     ): Promise<InjectResult> {
-        return this.sendPrompt({
-            text,
-            imageFilePaths,
-            overrideCascadeId,
-            echoText,
-        });
+        return this.sendPrompt({ text, imageFilePaths, overrideCascadeId, echoText });
     }
 
     async startNewChat(chatSessionService: ChatSessionService): Promise<{ ok: boolean; error?: string }> {
@@ -198,16 +161,8 @@ export class WorkspaceRuntime {
             if (grpcClient?.createCascade) {
                 try {
                     const cascadeId = await grpcClient.createCascade();
-                    if (!cascadeId) {
-                        return { ok: false, error: 'Failed to create cascade via gRPC' };
-                    }
+                    if (!cascadeId) return { ok: false, error: 'Failed to create cascade via gRPC' };
                     cdp.rememberCreatedCascade(cascadeId);
-                    // NOTE: We intentionally do NOT call focusCascade (SmartFocusConversation)
-                    // here. All Antigravity windows share the same LS, so focusCascade would
-                    // focus the cascade in whichever window the LS considers "active" — often
-                    // the __claw__ agent workspace after a restart. Since remote callers
-                    // (Telegram/Discord) interact with the cascade through gRPC, UI focus is
-                    // unnecessary and would cause the cascade to appear in the wrong workspace.
                     this.rememberActiveCascade(cascadeId);
                     return { ok: true };
                 } catch (error: unknown) {
@@ -215,34 +170,24 @@ export class WorkspaceRuntime {
                     return { ok: false, error: message };
                 }
             }
-
             const result = await chatSessionService.startNewChat(cdp);
-            if (result.ok) {
-                this.activeSessionInfo = null;
-            }
+            if (result.ok) this.activeSessionInfo = null;
             return result;
         });
     }
 
-    async activateSessionByTitle(
-        chatSessionService: ChatSessionService,
-        title: string,
-    ): Promise<{ ok: boolean; error?: string }> {
+    async activateSessionByTitle(chatSessionService: ChatSessionService, title: string): Promise<{ ok: boolean; error?: string }> {
         return this.runExclusive(async (cdp) => {
             const sessions = await chatSessionService.listAllSessions(cdp);
-            const selectedSession = sessions.find((session) => session.title === title);
-
+            const selectedSession = sessions.find((s) => s.title === title);
             const result = await chatSessionService.activateSessionByTitle(cdp, title);
-            if (!result.ok) {
-                return result;
-            }
+            if (!result.ok) return result;
 
             if (selectedSession?.cascadeId) {
                 cdp.setCachedCascadeId(selectedSession.cascadeId);
                 this.rememberActiveCascade(selectedSession.cascadeId);
                 return result;
             }
-
             this.activeSessionInfo = null;
             return result;
         });
@@ -255,11 +200,7 @@ export class WorkspaceRuntime {
 
     async getConversationHistory(
         chatSessionService: ChatSessionService,
-        options?: {
-            maxMessages?: number;
-            maxScrollSteps?: number;
-            cascadeId?: string;
-        },
+        options?: { maxMessages?: number; maxScrollSteps?: number; cascadeId?: string },
     ): Promise<{ messages: ConversationHistoryEntry[]; truncated: boolean }> {
         const cdp = await this.getOrConnect();
         return chatSessionService.getConversationHistory(cdp, options);
@@ -284,10 +225,7 @@ export class WorkspaceRuntime {
     }
 
     async getActiveSessionInfo(): Promise<WorkspaceActiveSessionInfo | null> {
-        if (this.activeSessionInfo) {
-            return this.activeSessionInfo;
-        }
-
+        if (this.activeSessionInfo) return this.activeSessionInfo;
         const cdp = await this.getOrConnect();
         const info = await cdp.getActiveSessionInfo();
         this.rememberActiveSessionInfo(info);
@@ -295,10 +233,7 @@ export class WorkspaceRuntime {
     }
 
     async getActiveCascadeId(): Promise<string | null> {
-        if (this.selectedCascadeId) {
-            return this.selectedCascadeId;
-        }
-
+        if (this.selectedCascadeId) return this.selectedCascadeId;
         const info = await this.getActiveSessionInfo();
         return info?.id || null;
     }
@@ -311,32 +246,32 @@ export class WorkspaceRuntime {
     }
 
     async resolveActiveCascadeId(preferredCascadeId?: string | null): Promise<string | null> {
-        if (preferredCascadeId) {
-            return preferredCascadeId;
-        }
-
-        return this.getActiveCascadeId();
+        return preferredCascadeId || this.getActiveCascadeId();
     }
 
     async getMonitoringTarget(preferredCascadeId?: string | null): Promise<WorkspaceMonitoringTarget | null> {
         return this.runExclusive(async (cdp) => this.resolveMonitoringTargetLocked(cdp, preferredCascadeId ?? null));
     }
 
+    /**
+     * Serialize async operations on the CDP service.
+     * Uses Effect.Semaphore(1) — replaces the manual Promise-chain mutex.
+     */
     async runExclusive<T>(operation: (cdp: CdpService) => Promise<T>): Promise<T> {
-        const previous = this.operationTail.catch(() => { });
-        let release!: () => void;
-        this.operationTail = new Promise<void>((resolve) => {
-            release = resolve;
-        });
-
-        await previous;
-
-        try {
-            const cdp = await this.getOrConnect();
-            return await operation(cdp);
-        } finally {
-            release();
-        }
+        return Effect.runPromise(
+            this.mutex.withPermits(1)(
+                Effect.tryPromise({
+                    try: async () => {
+                        const cdp = await this.getOrConnect();
+                        return operation(cdp);
+                    },
+                    catch: (e) => e,
+                }).pipe(
+                    Effect.flatMap((result) => Effect.promise(() => result as Promise<T>)),
+                    Effect.catchAll((e) => Effect.fail(e)),
+                ),
+            ),
+        ) as Promise<T>;
     }
 
     async runSerialized<T>(operation: (cdp: CdpService) => Promise<T>): Promise<T> {
@@ -345,74 +280,37 @@ export class WorkspaceRuntime {
 
     // ─── Generic Detector Registry ─────────────────────────────────────
 
-    /**
-     * Register a detector/router by type key.
-     * If an existing detector of the same type is active, it is stopped first.
-     */
     registerDetector<T extends Stoppable>(type: DetectorType | string, detector: T): void {
         const existing = this.detectors.get(type);
-        if (existing?.isActive()) {
-            void existing.stop();
-        }
+        if (existing?.isActive()) void existing.stop();
         this.detectors.set(type, detector);
     }
 
-    /**
-     * Retrieve a detector/router by type key.
-     */
     getDetector<T extends Stoppable>(type: DetectorType | string): T | undefined {
         return this.detectors.get(type) as T | undefined;
     }
 
-    // ─── Named Detector Accessors (backward-compatible wrappers) ──────
+    // ─── Named Detector Accessors (backward-compatible) ────────────────
 
-    registerApprovalDetector(detector: ApprovalDetector): void {
-        this.registerDetector('approval', detector);
-    }
+    registerApprovalDetector(detector: ApprovalDetector): void { this.registerDetector('approval', detector); }
+    getApprovalDetector(): ApprovalDetector | undefined { return this.getDetector<ApprovalDetector>('approval'); }
 
-    getApprovalDetector(): ApprovalDetector | undefined {
-        return this.getDetector<ApprovalDetector>('approval');
-    }
+    registerErrorPopupDetector(detector: ErrorPopupDetector): void { this.registerDetector('errorPopup', detector); }
+    getErrorPopupDetector(): ErrorPopupDetector | undefined { return this.getDetector<ErrorPopupDetector>('errorPopup'); }
 
-    registerErrorPopupDetector(detector: ErrorPopupDetector): void {
-        this.registerDetector('errorPopup', detector);
-    }
+    registerPlanningDetector(detector: PlanningDetector): void { this.registerDetector('planning', detector); }
+    getPlanningDetector(): PlanningDetector | undefined { return this.getDetector<PlanningDetector>('planning'); }
 
-    getErrorPopupDetector(): ErrorPopupDetector | undefined {
-        return this.getDetector<ErrorPopupDetector>('errorPopup');
-    }
+    registerRunCommandDetector(detector: RunCommandDetector): void { this.registerDetector('runCommand', detector); }
+    getRunCommandDetector(): RunCommandDetector | undefined { return this.getDetector<RunCommandDetector>('runCommand'); }
 
-    registerPlanningDetector(detector: PlanningDetector): void {
-        this.registerDetector('planning', detector);
-    }
+    registerUserMessageDetector(detector: UserMessageDetector): void { this.registerDetector('userMessage', detector); }
+    getUserMessageDetector(): UserMessageDetector | undefined { return this.getDetector<UserMessageDetector>('userMessage'); }
 
-    getPlanningDetector(): PlanningDetector | undefined {
-        return this.getDetector<PlanningDetector>('planning');
-    }
+    registerStreamRouter(router: TrajectoryStreamRouter): void { this.registerDetector('streamRouter', router); }
+    getStreamRouter(): TrajectoryStreamRouter | undefined { return this.getDetector<TrajectoryStreamRouter>('streamRouter'); }
 
-    registerRunCommandDetector(detector: RunCommandDetector): void {
-        this.registerDetector('runCommand', detector);
-    }
-
-    getRunCommandDetector(): RunCommandDetector | undefined {
-        return this.getDetector<RunCommandDetector>('runCommand');
-    }
-
-    registerUserMessageDetector(detector: UserMessageDetector): void {
-        this.registerDetector('userMessage', detector);
-    }
-
-    getUserMessageDetector(): UserMessageDetector | undefined {
-        return this.getDetector<UserMessageDetector>('userMessage');
-    }
-
-    registerStreamRouter(router: TrajectoryStreamRouter): void {
-        this.registerDetector('streamRouter', router);
-    }
-
-    getStreamRouter(): TrajectoryStreamRouter | undefined {
-        return this.getDetector<TrajectoryStreamRouter>('streamRouter');
-    }
+    // ─── User Message Sinks ────────────────────────────────────────────
 
     addUserMessageSink(sink: UserMessageSink): void;
     addUserMessageSink(sinkKey: string, sink: UserMessageSink): void;
@@ -421,36 +319,23 @@ export class WorkspaceRuntime {
             this.userMessageSinks.set(`sink:${this.userMessageSinks.size + 1}`, sinkOrKey);
             return;
         }
-
         if (!sink) return;
         this.userMessageSinks.set(sinkOrKey, sink);
     }
 
-    removeUserMessageSink(sinkKey: string): void {
-        this.userMessageSinks.delete(sinkKey);
-    }
-
-    clearUserMessageSinks(): void {
-        this.userMessageSinks.clear();
-    }
-
-    hasUserMessageSinks(): boolean {
-        return this.userMessageSinks.size > 0;
-    }
+    removeUserMessageSink(sinkKey: string): void { this.userMessageSinks.delete(sinkKey); }
+    clearUserMessageSinks(): void { this.userMessageSinks.clear(); }
+    hasUserMessageSinks(): boolean { return this.userMessageSinks.size > 0; }
 
     async dispatchUserMessage(info: UserMessageInfo): Promise<void> {
         for (const sink of this.userMessageSinks.values()) {
-            try {
-                await sink(info);
-            } catch (error) {
-                logger.error(`[WorkspaceRuntime:${this.projectName}] User message sink failed:`, error);
-            }
+            try { await sink(info); }
+            catch (error) { logger.error(`[WorkspaceRuntime:${this.projectName}] User message sink failed:`, error); }
         }
     }
 
     async disconnect(): Promise<void> {
         this.clearUserMessageSinks();
-        // Stop all registered detectors/routers
         for (const detector of this.detectors.values()) {
             try { await Promise.resolve(detector.stop()); } catch { /* cleanup */ }
         }
@@ -458,27 +343,18 @@ export class WorkspaceRuntime {
         await this.cdp.disconnect();
     }
 
-    private rememberPromptResult(result: InjectResult, requestedCascadeId: string | null): void {
-        if (result.ok && result.cascadeId) {
-            this.rememberActiveCascade(result.cascadeId);
-            return;
-        }
+    // ─── Internal Helpers ──────────────────────────────────────────────
 
-        if (result.ok && requestedCascadeId) {
-            this.rememberActiveCascade(requestedCascadeId);
-        }
+    private rememberPromptResult(result: InjectResult, requestedCascadeId: string | null): void {
+        if (result.ok && result.cascadeId) { this.rememberActiveCascade(result.cascadeId); return; }
+        if (result.ok && requestedCascadeId) { this.rememberActiveCascade(requestedCascadeId); }
     }
 
     private rememberActiveCascade(cascadeId: string | null): void {
         this.selectedCascadeId = cascadeId;
-        if (!cascadeId || this.activeSessionInfo?.id !== cascadeId) {
-            this.activeSessionInfo = null;
-        }
-        // Activate the stream router now that we have a real cascade
+        if (!cascadeId || this.activeSessionInfo?.id !== cascadeId) this.activeSessionInfo = null;
         const streamRouter = this.getDetector<TrajectoryStreamRouter>('streamRouter');
-        if (cascadeId && streamRouter?.isActive()) {
-            streamRouter.connectToCascade(cascadeId);
-        }
+        if (cascadeId && streamRouter?.isActive()) streamRouter.connectToCascade(cascadeId);
     }
 
     private rememberActiveSessionInfo(info: WorkspaceActiveSessionInfo | null): void {
@@ -486,31 +362,17 @@ export class WorkspaceRuntime {
         this.selectedCascadeId = info?.id || null;
     }
 
-    private async sendPromptLocked(
-        cdp: CdpService,
-        options: WorkspaceSendPromptOptions,
-    ): Promise<InjectResult> {
+    private async sendPromptLocked(cdp: CdpService, options: WorkspaceSendPromptOptions): Promise<InjectResult> {
         const targetCascadeId = options.overrideCascadeId ?? this.selectedCascadeId ?? null;
-        if (targetCascadeId) {
-            cdp.setCachedCascadeId(targetCascadeId);
-        }
+        if (targetCascadeId) cdp.setCachedCascadeId(targetCascadeId);
 
         const echoText = options.echoText ?? options.text;
-        if (echoText.trim()) {
-            this.getDetector<UserMessageDetector>('userMessage')?.addEchoHash(echoText);
-        }
+        if (echoText.trim()) this.getDetector<UserMessageDetector>('userMessage')?.addEchoHash(echoText);
 
         if (options.imageFilePaths && options.imageFilePaths.length > 0) {
             const result = targetCascadeId
-                ? await cdp.injectMessageWithImageFiles(
-                    options.text,
-                    [...options.imageFilePaths],
-                    targetCascadeId,
-                )
-                : await cdp.injectMessageWithImageFiles(
-                    options.text,
-                    [...options.imageFilePaths],
-                );
+                ? await cdp.injectMessageWithImageFiles(options.text, [...options.imageFilePaths], targetCascadeId)
+                : await cdp.injectMessageWithImageFiles(options.text, [...options.imageFilePaths]);
             this.rememberPromptResult(result, targetCascadeId);
             return result;
         }
@@ -522,19 +384,11 @@ export class WorkspaceRuntime {
         return result;
     }
 
-    private async resolveMonitoringTargetLocked(
-        cdp: CdpService,
-        preferredCascadeId: string | null,
-    ): Promise<WorkspaceMonitoringTarget | null> {
+    private async resolveMonitoringTargetLocked(cdp: CdpService, preferredCascadeId: string | null): Promise<WorkspaceMonitoringTarget | null> {
         const grpcClient = await cdp.getGrpcClient();
         if (!grpcClient) return null;
-
-        const cascadeId = preferredCascadeId
-            ?? this.selectedCascadeId
-            ?? this.activeSessionInfo?.id
-            ?? await cdp.getActiveCascadeId();
+        const cascadeId = preferredCascadeId ?? this.selectedCascadeId ?? this.activeSessionInfo?.id ?? await cdp.getActiveCascadeId();
         if (!cascadeId) return null;
-
         return { grpcClient, cascadeId };
     }
 }

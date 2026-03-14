@@ -283,7 +283,11 @@ async function handleStatus(deps: TelegramCommandDeps, message: PlatformMessage)
         ? deps.modeService.getCurrentMode()
         : 'unknown';
 
-    const currentModel = deps.modelService?.getDefaultModel() || deps.modelService?.getCurrentModel() || 'Auto (UI)';
+    // Read current model from the UI (CDP) — the single source of truth
+    const cdp = getCurrentCdp(deps.bridge);
+    const currentModel = (cdp ? await cdp.getCurrentModel() : null)
+        || deps.modelService?.getDefaultModel()
+        || 'Auto (UI)';
 
     const lines = [
         '<b>Bot Status</b>',
@@ -310,7 +314,17 @@ async function handleStatus(deps: TelegramCommandDeps, message: PlatformMessage)
                         const barLen = 10;
                         const filled = Math.round(pct / barLen);
                         const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
-                        lines.push(`  ${escapeHtml(label)}: ${bar} ${pct}%`);
+                        let resetLabel = '';
+                        const resetTime = quotaInfo.resetTime as string | undefined;
+                        if (resetTime) {
+                            const resetMs = new Date(resetTime).getTime() - Date.now();
+                            if (resetMs > 0) {
+                                const h = Math.floor(resetMs / 3_600_000);
+                                const m2 = Math.floor((resetMs % 3_600_000) / 60_000);
+                                resetLabel = h > 0 ? ` (resets in ${h}h ${m2}m)` : ` (resets in ${m2}m)`;
+                            }
+                        }
+                        lines.push(`  ${escapeHtml(label)}: ${bar} ${pct}%${resetLabel}`);
                     } else {
                         lines.push(`  ${escapeHtml(label)}: N/A`);
                     }

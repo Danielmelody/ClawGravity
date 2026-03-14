@@ -102,7 +102,7 @@ export class PromptSession {
     constructor(private deps: PromptSessionDependencies) {
         this.startTime = Date.now();
         this.currentMode = this.deps.modeService.getCurrentMode();
-        this.currentModel = this.deps.modelService.getCurrentModel();
+        this.currentModel = ''; // Will be populated asynchronously from CDP
         
         if (this.deps.options?.userPrefRepo) {
             this.outputFormat = this.deps.options.userPrefRepo.getOutputFormat(this.deps.message.author.id);
@@ -183,6 +183,8 @@ export class PromptSession {
 
     async execute() {
         const { message, prompt, cdp, logger } = this.deps;
+        // Read the current model from the UI (CDP is the single source of truth)
+        this.currentModel = (await cdp.getCurrentModel()) || '';
         
         try {
             await message.react('🚀').catch(() => { });

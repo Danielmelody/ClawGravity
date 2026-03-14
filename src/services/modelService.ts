@@ -1,17 +1,8 @@
-import { t } from "../utils/i18n";
-
 /**
  * Model type — plain string. CDP is the sole source of truth
  * for valid model names; no hardcoded list is maintained.
  */
 export type Model = string;
-
-/** Model set result type definition */
-export interface ModelSetResult {
-    success: boolean;
-    model?: string;
-    error?: string;
-}
 
 /** Default model set result type definition */
 export interface DefaultModelSetResult {
@@ -20,67 +11,17 @@ export interface DefaultModelSetResult {
 }
 
 /**
- * Service class for managing LLM models.
- * Handles model switching via the /model command.
+ * Service class for managing LLM model preferences.
  *
- * Model validation is intentionally NOT performed here.
- * The actual model list is dynamic (fetched from CDP via
- * cdp.getUiModels()), so setModel() accepts any string.
+ * The **current** model is always read live from CdpService
+ * (the Antigravity UI), so this service does NOT cache it.
  *
- * No hardcoded model names — CDP is the sole source of truth.
- * Before CDP connects, currentModel will be empty until
- * the actual model is read from the Antigravity UI.
+ * This service only manages the user's **default model**
+ * preference, which is applied on startup via
+ * `defaultModelApplicator`.
  */
 export class ModelService {
-    private currentModel: string = '';
     private defaultModel: string | null = null;
-    private pendingSync: boolean = false;
-
-    /**
-     * Get the current LLM model.
-     * Returns empty string if not yet synced with CDP.
-     */
-    public getCurrentModel(): string {
-        return this.currentModel;
-    }
-
-    /**
-     * Check if the current model is pending sync to Antigravity
-     */
-    public isPendingSync(): boolean {
-        return this.pendingSync;
-    }
-
-    /**
-     * Mark the pending model as synced (clears pendingSync flag)
-     */
-    public markSynced(): void {
-        this.pendingSync = false;
-    }
-
-    /**
-     * Switch LLM model.
-     * Accepts any model name — validation happens at the CDP layer
-     * (cdp.setUiModel) against the live model list.
-     *
-     * @param modelName Model name to set (case-insensitive)
-     * @param synced Whether the model has been synced to Antigravity (default: false)
-     */
-    public setModel(modelName: string, synced: boolean = false): ModelSetResult {
-        if (!modelName || modelName.trim() === '') {
-            return {
-                success: false,
-                error: t('⚠️ Model name not specified.'),
-            };
-        }
-
-        this.currentModel = modelName.trim().toLowerCase();
-        this.pendingSync = !synced;
-        return {
-            success: true,
-            model: this.currentModel,
-        };
-    }
 
     /**
      * Get the default model name (free-text, may not match current CDP models)

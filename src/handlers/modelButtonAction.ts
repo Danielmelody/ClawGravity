@@ -86,10 +86,6 @@ export function createModelButtonAction(deps: ModelButtonActionDeps): ButtonActi
                     return;
                 }
 
-                // Sync ModelService so the "Generating..." footer reflects the new model
-                if (res.model && deps.modelService) {
-                    deps.modelService.setModel(res.model, true);
-                }
 
                 // Refresh UI after model change
                 await refreshModelsUI(cdp, deps, interaction);

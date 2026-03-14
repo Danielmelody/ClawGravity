@@ -334,7 +334,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
         const startTime = Date.now();
         const mirrorRenderOpts: StepRenderOptions = {
             modeName: deps.modeService?.getCurrentMode() || '',
-            modelName: deps.modelService?.getCurrentModel() || '',
+            modelName: (await cdp.getCurrentModel()) || '',
         };
         const mirror = await createTelegramMirrorSession(channel, 'Generating...', mirrorRenderOpts);
 

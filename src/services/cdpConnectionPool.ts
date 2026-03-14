@@ -1,18 +1,16 @@
 import { extractProjectNameFromPath } from '../utils/pathUtils';
 import { CdpService, CdpServiceOptions } from './cdpService';
-import { ApprovalDetector } from './approvalDetector';
-import { ErrorPopupDetector } from './errorPopupDetector';
-import { PlanningDetector } from './planningDetector';
-import { RunCommandDetector } from './runCommandDetector';
-import { UserMessageDetector } from './userMessageDetector';
 import { TrajectoryStreamRouter } from './trajectoryStreamRouter';
 import { WorkspaceRuntime, DetectorType } from './workspaceRuntime';
 
 /**
  * Pool that manages independent workspace runtimes.
  *
- * Each runtime owns the CdpService plus detector / router lifecycle for a
+ * Each runtime owns the CdpService plus detector/router lifecycle for a
  * single workspace, while the pool is only a registry and lookup layer.
+ *
+ * Effect migration: removed boilerplate named-detector wrappers.
+ * All detector access goes through the generic registerDetector/getDetector.
  */
 export class CdpConnectionPool {
     private readonly runtimes = new Map<string, WorkspaceRuntime>();
@@ -33,17 +31,12 @@ export class CdpConnectionPool {
     getOrCreateRuntime(workspacePath: string): WorkspaceRuntime {
         const projectName = this.extractProjectName(workspacePath);
         const existing = this.runtimes.get(projectName);
-        if (existing) {
-            return existing;
-        }
+        if (existing) return existing;
 
         const runtime = new WorkspaceRuntime({
-            projectName,
-            workspacePath,
+            projectName, workspacePath,
             cdpOptions: this.cdpOptions,
-            onReconnectFailed: () => {
-                this.runtimes.delete(projectName);
-            },
+            onReconnectFailed: () => { this.runtimes.delete(projectName); },
         });
         this.runtimes.set(projectName, runtime);
         return runtime;
@@ -56,7 +49,6 @@ export class CdpConnectionPool {
     disconnectWorkspace(projectName: string): void {
         const runtime = this.runtimes.get(projectName);
         if (!runtime) return;
-
         void runtime.disconnect();
         this.runtimes.delete(projectName);
     }
@@ -69,95 +61,67 @@ export class CdpConnectionPool {
 
     // ─── Generic Detector Registry (delegates to WorkspaceRuntime) ────
 
-    /**
-     * Register a detector by type key on the runtime for the given project.
-     */
     registerDetector<T extends { isActive(): boolean; stop(): void | Promise<void> }>(
-        type: DetectorType | string,
-        projectName: string,
-        detector: T,
+        type: DetectorType | string, projectName: string, detector: T,
     ): void {
         this.runtimes.get(projectName)?.registerDetector(type, detector);
     }
 
-    /**
-     * Get a detector by type key from the runtime for the given project.
-     */
     getDetector<T extends { isActive(): boolean; stop(): void | Promise<void> }>(
-        type: DetectorType | string,
-        projectName: string,
+        type: DetectorType | string, projectName: string,
     ): T | undefined {
         return this.runtimes.get(projectName)?.getDetector<T>(type);
     }
 
-    // ─── Named Detector Accessors (backward-compatible wrappers) ──────
+    // ─── Named Accessors (backward-compatible one-line delegates) ─────
+    //     Each pair delegates to the generic registerDetector/getDetector.
 
-    registerApprovalDetector(projectName: string, detector: ApprovalDetector): void {
-        const runtime = this.runtimes.get(projectName);
-        if (!runtime) return;
-        runtime.registerApprovalDetector(detector);
+    registerApprovalDetector(projectName: string, detector: import('./approvalDetector').ApprovalDetector): void {
+        this.registerDetector('approval', projectName, detector);
+    }
+    getApprovalDetector(projectName: string): import('./approvalDetector').ApprovalDetector | undefined {
+        return this.getDetector('approval', projectName);
     }
 
-    getApprovalDetector(projectName: string): ApprovalDetector | undefined {
-        return this.runtimes.get(projectName)?.getApprovalDetector();
+    registerErrorPopupDetector(projectName: string, detector: import('./errorPopupDetector').ErrorPopupDetector): void {
+        this.registerDetector('errorPopup', projectName, detector);
+    }
+    getErrorPopupDetector(projectName: string): import('./errorPopupDetector').ErrorPopupDetector | undefined {
+        return this.getDetector('errorPopup', projectName);
     }
 
-    registerErrorPopupDetector(projectName: string, detector: ErrorPopupDetector): void {
-        const runtime = this.runtimes.get(projectName);
-        if (!runtime) return;
-        runtime.registerErrorPopupDetector(detector);
+    registerPlanningDetector(projectName: string, detector: import('./planningDetector').PlanningDetector): void {
+        this.registerDetector('planning', projectName, detector);
+    }
+    getPlanningDetector(projectName: string): import('./planningDetector').PlanningDetector | undefined {
+        return this.getDetector('planning', projectName);
     }
 
-    getErrorPopupDetector(projectName: string): ErrorPopupDetector | undefined {
-        return this.runtimes.get(projectName)?.getErrorPopupDetector();
+    registerRunCommandDetector(projectName: string, detector: import('./runCommandDetector').RunCommandDetector): void {
+        this.registerDetector('runCommand', projectName, detector);
+    }
+    getRunCommandDetector(projectName: string): import('./runCommandDetector').RunCommandDetector | undefined {
+        return this.getDetector('runCommand', projectName);
     }
 
-    registerPlanningDetector(projectName: string, detector: PlanningDetector): void {
-        const runtime = this.runtimes.get(projectName);
-        if (!runtime) return;
-        runtime.registerPlanningDetector(detector);
+    registerUserMessageDetector(projectName: string, detector: import('./userMessageDetector').UserMessageDetector): void {
+        this.registerDetector('userMessage', projectName, detector);
     }
-
-    getPlanningDetector(projectName: string): PlanningDetector | undefined {
-        return this.runtimes.get(projectName)?.getPlanningDetector();
-    }
-
-    registerRunCommandDetector(projectName: string, detector: RunCommandDetector): void {
-        const runtime = this.runtimes.get(projectName);
-        if (!runtime) return;
-        runtime.registerRunCommandDetector(detector);
-    }
-
-    getRunCommandDetector(projectName: string): RunCommandDetector | undefined {
-        return this.runtimes.get(projectName)?.getRunCommandDetector();
-    }
-
-    registerUserMessageDetector(projectName: string, detector: UserMessageDetector): void {
-        const runtime = this.runtimes.get(projectName);
-        if (!runtime) return;
-        runtime.registerUserMessageDetector(detector);
-    }
-
-    getUserMessageDetector(projectName: string): UserMessageDetector | undefined {
-        return this.runtimes.get(projectName)?.getUserMessageDetector();
+    getUserMessageDetector(projectName: string): import('./userMessageDetector').UserMessageDetector | undefined {
+        return this.getDetector('userMessage', projectName);
     }
 
     registerStreamRouter(projectName: string, router: TrajectoryStreamRouter): void {
-        const runtime = this.runtimes.get(projectName);
-        if (!runtime) return;
-        runtime.registerStreamRouter(router);
+        this.registerDetector('streamRouter', projectName, router);
     }
-
     getStreamRouter(projectName: string): TrajectoryStreamRouter | undefined {
-        return this.runtimes.get(projectName)?.getStreamRouter();
+        return this.getDetector('streamRouter', projectName);
     }
 
     getActiveWorkspaceNames(): string[] {
         const active: string[] = [];
         for (const [name, runtime] of this.runtimes) {
-            if (runtime.getConnected()) {
-                active.push(name);
-            }
+            if (runtime.getConnected()) active.push(name);
         }
         return active;
     }
