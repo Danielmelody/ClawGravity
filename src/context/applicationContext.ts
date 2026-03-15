@@ -1,3 +1,4 @@
+import { Context } from 'effect';
 import Database from 'better-sqlite3';
 
 import { ModeService } from '../services/modeService';
@@ -40,15 +41,23 @@ export interface ApplicationContext {
     bridge: CdpBridge;
 }
 
+export const ApplicationContextTag = Context.GenericTag<ApplicationContext>(
+    'claw-gravity/ApplicationContext',
+);
+
 let globalContext: ApplicationContext | null = null;
 
 export function setApplicationContext(context: ApplicationContext): void {
     globalContext = context;
 }
 
-function _getApplicationContext(): ApplicationContext {
+export function getApplicationContext(): ApplicationContext {
     if (!globalContext) {
         throw new Error('Application context is not initialized');
     }
     return globalContext;
+}
+
+export function clearApplicationContext(): void {
+    globalContext = null;
 }

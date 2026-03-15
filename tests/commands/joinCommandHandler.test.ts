@@ -107,15 +107,15 @@ describe('JoinCommandHandler', () => {
         bindingRepo = new WorkspaceBindingRepository(db);
         channelManager = new ChannelManager();
 
-        handler = new JoinCommandHandler(
-            mockService,
+        handler = new JoinCommandHandler({
+            chatSessionService: mockService,
             chatSessionRepo,
             bindingRepo,
             channelManager,
-            mockPool,
-            mockWorkspaceService,
-            mockClient,
-        );
+            pool: mockPool,
+            workspaceService: mockWorkspaceService,
+            client: mockClient,
+        });
     });
 
     afterEach(() => {

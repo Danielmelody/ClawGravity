@@ -46,24 +46,15 @@ export class JoinCommandHandler {
     /** Active gRPC response monitors per workspace (for AI response mirroring) */
     private readonly activeResponseMonitors = new Map<string, GrpcResponseMonitor>();
 
-    constructor(
-        chatSessionService: ChatSessionService,
-        chatSessionRepo: ChatSessionRepository,
-        bindingRepo: WorkspaceBindingRepository,
-        channelManager: ChannelManager,
-        pool: CdpConnectionPool,
-        workspaceService: WorkspaceService,
-        client: Client,
-        extractionMode?: ExtractionMode,
-    ) {
-        this.chatSessionService = chatSessionService;
-        this.chatSessionRepo = chatSessionRepo;
-        this.bindingRepo = bindingRepo;
-        this.channelManager = channelManager;
-        this.pool = pool;
-        this.workspaceService = workspaceService;
-        this.client = client;
-        this.extractionMode = extractionMode;
+    constructor(deps: JoinCommandHandlerDeps) {
+        this.chatSessionService = deps.chatSessionService;
+        this.chatSessionRepo = deps.chatSessionRepo;
+        this.bindingRepo = deps.bindingRepo;
+        this.channelManager = deps.channelManager;
+        this.pool = deps.pool;
+        this.workspaceService = deps.workspaceService;
+        this.client = deps.client;
+        this.extractionMode = deps.extractionMode;
     }
 
     /**
@@ -513,4 +504,15 @@ export class JoinCommandHandler {
             this.activeResponseMonitors.delete(projectName);
         });
     }
+}
+
+export interface JoinCommandHandlerDeps {
+    chatSessionService: ChatSessionService;
+    chatSessionRepo: ChatSessionRepository;
+    bindingRepo: WorkspaceBindingRepository;
+    channelManager: ChannelManager;
+    pool: CdpConnectionPool;
+    workspaceService: WorkspaceService;
+    client: Client;
+    extractionMode?: ExtractionMode;
 }

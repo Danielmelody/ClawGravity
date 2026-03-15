@@ -1,9 +1,11 @@
 export {
     startBot,
     globalTelegramNotifier,
+} from './botLoader';
+export {
     getResponseDeliveryModeForTest,
     createSerialTaskQueueForTest,
-} from './botLoader';
+} from './discordPromptRuntime';
 export * from './telegramCommands';
 export * from './telegramJoinCommand';
 export * from './telegramMessageHandler';

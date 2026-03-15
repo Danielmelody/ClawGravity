@@ -16,7 +16,12 @@ import { buildProjectListUI } from '../ui/projectListUi';
 // Re-export for backward compatibility
 export { WORKSPACE_SELECT_ID } from '../ui/projectListUi';
 
-import { ApplicationContext } from '../context/applicationContext';
+export interface WorkspaceCommandHandlerDeps {
+    workspaceBindingRepo: WorkspaceBindingRepository;
+    chatSessionRepo: ChatSessionRepository;
+    workspaceService: WorkspaceService;
+    channelManager: ChannelManager;
+}
 
 /**
  * Handler for the /project slash command.
@@ -30,11 +35,11 @@ export class WorkspaceCommandHandler {
 
     private processingWorkspaces: Set<string> = new Set();
 
-    constructor(ctx: ApplicationContext) {
-        this.bindingRepo = ctx.workspaceBindingRepo;
-        this.chatSessionRepo = ctx.chatSessionRepo;
-        this.workspaceService = ctx.workspaceService;
-        this.channelManager = ctx.channelManager;
+    constructor(deps: WorkspaceCommandHandlerDeps) {
+        this.bindingRepo = deps.workspaceBindingRepo;
+        this.chatSessionRepo = deps.chatSessionRepo;
+        this.workspaceService = deps.workspaceService;
+        this.channelManager = deps.channelManager;
     }
 
     /**
