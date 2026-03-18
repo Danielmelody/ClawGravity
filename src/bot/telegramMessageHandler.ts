@@ -21,6 +21,7 @@ import {
     initialDeliveryState,
     deliveryReducer,
     createDeliverySnapshot,
+    resolvePreferredFormat,
     type MessageDeliveryState,
     type DeliveryAction,
 } from '../platform/telegram/messageDeliveryState';
@@ -32,7 +33,7 @@ import {
 import { parseTelegramProjectCommand, handleTelegramProjectCommand } from './telegramProjectCommand';
 import { parseTelegramCommand, handleTelegramCommand } from './telegramCommands';
 
-import { ModeService } from '../services/modeService';
+import { ModeService, MODE_UI_NAMES } from '../services/modeService';
 import type { ModelService } from '../services/modelService';
 import { applyDefaultModel } from '../services/defaultModelApplicator';
 import { logger } from '../utils/logger';
@@ -333,7 +334,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
         const channel = trackedChannel;
         const startTime = Date.now();
         const mirrorRenderOpts: StepRenderOptions = {
-            modeName: deps.modeService?.getCurrentMode() || '',
+            modeName: deps.modeService ? (MODE_UI_NAMES[deps.modeService.getCurrentMode()] || deps.modeService.getCurrentMode()) : '',
             modelName: (await cdp.getCurrentModel()) || '',
         };
         const mirror = await createTelegramMirrorSession(channel, 'Generating...', mirrorRenderOpts);
@@ -851,17 +852,35 @@ async function createTelegramMirrorSession(
 
     // Step-rendered content natively, falling back to basic text rendering
     const renderCurrent = (): string => {
-        if (state.stepsData.clock > 0 && state.stepsData.value !== null
-            && Array.isArray(state.stepsData.value.steps) && state.stepsData.value.steps.length > 0) {
-            return renderStepsToTelegramHtml(
+        const preferredFormat = resolvePreferredFormat(state);
+
+        if (preferredFormat === 'steps'
+            && state.stepsData.clock > 0
+            && state.stepsData.value !== null
+            && Array.isArray(state.stepsData.value.steps)
+            && state.stepsData.value.steps.length > 0) {
+            const renderedSteps = renderStepsToTelegramHtml(
                 state.stepsData.value.steps as TrajectoryStep[],
                 state.stepsData.value.runStatus,
                 renderOptions,
             ).trim();
+            if (renderedSteps) {
+                return renderedSteps;
+            }
         }
-        if (state.text.clock > 0 && state.text.value.trim()) {
+
+        if (preferredFormat === 'html' && state.html.value.trim()) {
+            return state.html.value.trim();
+        }
+
+        if (state.text.value.trim()) {
             return markdownToTelegramHtml(state.text.value).trim();
         }
+
+        if (state.html.value.trim()) {
+            return state.html.value.trim();
+        }
+
         return '';
     };
 
@@ -966,6 +985,16 @@ function buildMonitorCallbacks(options: MonitorCallbackOptions) {
             if (!shouldForward()) return;
             if (!data.steps || data.steps.length === 0) return;
             mirror.dispatch({ type: 'STEPS_UPDATE', stepsData: data });
+        },
+
+        onPhaseChange: (phase: string, text: string | null) => {
+            if (!shouldForward()) return;
+            if (phase !== 'thinking' || !text?.trim()) return;
+
+            mirror.dispatch({
+                type: 'HTML_UPDATE',
+                html: `💭 <blockquote expandable>${escapeHtml(text.trim())}</blockquote>`,
+            });
         },
 
         onComplete: async (finalText: string) => {
@@ -1141,7 +1170,7 @@ function shouldSkipDuplicatePassiveUserEvent(channelId: string, projectName: str
  * wildcard key (no-cascade) so the passive handler's dedup catches
  * the event regardless of which cascade ID it reports.
  */
-export function registerActivePromptForDedup(
+function registerActivePromptForDedup(
     channelId: string,
     projectName: string,
     text: string,
