@@ -29,7 +29,7 @@
     "docs:diagram": "mmdc -i docs/diagrams/architecture.mmd -o docs/images/architecture.svg -b transparent",
     "cpd": "jscpd src/",
     "dead-code": "knip",
-    "check": "npm run dead-code && npm run cpd && tsc --noEmit && eslint src/",
+    "check": "npm run dead-code && npm run cpd && tsc --noEmit && eslint src/ --max-warnings=0",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -51,7 +51,6 @@
   },
   "homepage": "https://github.com/Danielmelody/ClawGravity#readme",
   "dependencies": {
-    "@effect/schema": "^0.75.5",
     "@inquirer/select": "^4.4.2",
     "better-sqlite3": "^12.6.2",
     "commander": "^14.0.3",

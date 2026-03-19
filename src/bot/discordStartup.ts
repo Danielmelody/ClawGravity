@@ -13,6 +13,7 @@ import {
 import { ChatSessionService } from '../services/chatSessionService';
 import { ModeService } from '../services/modeService';
 import { ModelService } from '../services/modelService';
+import { buildStartupStatusSnapshot } from '../services/startupStatus';
 import { WorkspaceService } from '../services/workspaceService';
 import { logger } from '../utils/logger';
 import { APP_VERSION } from '../utils/version';
@@ -121,16 +122,17 @@ async function sendDiscordStartupDashboard({
         }
     }
 
-    const activeWorkspaces = bridge.pool.getActiveWorkspaceNames();
-    const cdpStatus = activeWorkspaces.length > 0
-        ? `Connected (${activeWorkspaces.join(', ')})`
-        : 'Not connected';
-
-    const startupModel = cdpModel || modelService.getDefaultModel() || 'Not synced';
-    const startupMode = cdpMode || modeService.getCurrentMode();
-    if (cdpMode) {
-        modeService.setMode(cdpMode);
-    }
+    const {
+        cdpStatus,
+        startupModel,
+        startupMode,
+    } = buildStartupStatusSnapshot({
+        bridge,
+        cdpMode,
+        cdpModel,
+        modeService,
+        modelService,
+    });
 
     const dashboardEmbed = new EmbedBuilder()
         .setTitle('ClawGravity Online')

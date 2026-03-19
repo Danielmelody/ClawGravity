@@ -1,13 +1,9 @@
-import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
 import { runVscodeCommand } from './baseDetector';
 import { getPendingToolCallsFromPlannerStep, getToolCallName } from './trajectoryToolState';
 import {
-    type NotificationTracker,
-    createNotificationTracker,
-    resetTrackerDetection,
-    processDetection,
     findLastPlannerStep,
+    NotificationDetector,
 } from './detectorStateManager';
 
 /** Run command dialog information */
@@ -34,45 +30,25 @@ const TERMINAL_PATTERNS = [
  * Detects "Run command?" state from cascade trajectory data.
  * Zero DOM operations — detection is based on cascade trajectory.
  */
-export class RunCommandDetector {
+export class RunCommandDetector extends NotificationDetector<RunCommandInfo> {
     private cdpService: CdpService;
     private onRunCommandRequired: (info: RunCommandInfo) => void;
-    private onResolved?: () => void;
-
-    private isRunning = false;
-    private tracker: NotificationTracker<RunCommandInfo> = createNotificationTracker();
-    private static readonly MAX_NOTIFIED_KEYS = 50;
 
     constructor(options: RunCommandDetectorOptions) {
+        super('RunCommandDetector', options.onResolved);
         this.cdpService = options.cdpService;
         this.onRunCommandRequired = options.onRunCommandRequired;
-        this.onResolved = options.onResolved;
     }
-
-    start(): void {
-        if (this.isRunning) return;
-        this.isRunning = true;
-        resetTrackerDetection(this.tracker);
-    }
-
-    async stop(): Promise<void> { this.isRunning = false; }
-    getLastDetectedInfo(): RunCommandInfo | null { return this.tracker.lastDetectedInfo; }
-    isActive(): boolean { return this.isRunning; }
 
     evaluate(cascadeId: string, steps: unknown[], runStatus: string | null): void {
-        if (!this.isRunning) return;
-        try {
-            const info = this.extractRunCommandFromTrajectory(steps, runStatus);
-            processDetection(
-                this.tracker, info,
-                (i) => `${cascadeId}::${i.commandText}::${i.workingDirectory}`,
-                (i) => this.onRunCommandRequired(i),
-                this.onResolved,
-                RunCommandDetector.MAX_NOTIFIED_KEYS,
-            );
-        } catch (error) {
-            logger.error('[RunCommandDetector] Error during evaluation:', error);
-        }
+        this.processEvaluation(
+            cascadeId,
+            steps,
+            runStatus,
+            (detectorSteps, detectorRunStatus) => this.extractRunCommandFromTrajectory(detectorSteps, detectorRunStatus),
+            (currentCascadeId, info) => `${currentCascadeId}::${info.commandText}::${info.workingDirectory}`,
+            (info) => this.onRunCommandRequired(info),
+        );
     }
 
     private extractRunCommandFromTrajectory(steps: unknown[], runStatus: string | null): RunCommandInfo | null {

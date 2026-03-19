@@ -32,7 +32,7 @@ import type { TrajectoryStep } from '../../services/trajectoryToolState';
  *
  * No CDP/Preact fallback. All rendering is done natively.
  */
-export type DeliveryMode = 'step-rendered' | 'text-delivery' | 'empty';
+export type DeliveryMode = 'step-rendered' | 'html-delivery' | 'text-delivery' | 'empty';
 
 /** Immutable plan produced by the pure pipeline. */
 export interface DeliveryPlan {
@@ -79,9 +79,14 @@ export function planDelivery(
             finalTextLength: snapshot.finalText.length,
         },
         (): DeliveryMode => {
-            if (snapshot.stepsData && Array.isArray(snapshot.stepsData.steps)
+            if (snapshot.preferredFormat === 'steps'
+                && snapshot.stepsData
+                && Array.isArray(snapshot.stepsData.steps)
                 && snapshot.stepsData.steps.length > 0) {
                 return 'step-rendered';
+            }
+            if (snapshot.preferredFormat === 'html' && snapshot.html.trim()) {
+                return 'html-delivery';
             }
             if (snapshot.finalText.trim()) {
                 return 'text-delivery';
@@ -100,6 +105,9 @@ export function planDelivery(
                     snapshot.stepsData.steps as TrajectoryStep[],
                     snapshot.stepsData.runStatus,
                 ).trim();
+            }
+            if (mode === 'html-delivery') {
+                return snapshot.html.trim();
             }
             if (mode === 'text-delivery') {
                 return markdownToTelegramHtml(snapshot.finalText).trim();
@@ -121,7 +129,7 @@ export function planDelivery(
         'resolveDeliveredText',
         { mode, telegramHtmlLength: telegramHtml.length },
         (): string | null => {
-            if ((mode === 'step-rendered' || mode === 'text-delivery') && telegramHtml.trim()) {
+            if ((mode === 'step-rendered' || mode === 'html-delivery' || mode === 'text-delivery') && telegramHtml.trim()) {
                 return stripHtmlTags(telegramHtml).trim() || null;
             }
             return null;
@@ -131,6 +139,8 @@ export function planDelivery(
     // ── Build reason string for debugging ──────────────────────────────────
     const reason = mode === 'step-rendered'
         ? `Step-rendered (stepsClock=${snapshot.stepsClock}, steps=${snapshot.stepsData?.steps?.length ?? 0})`
+        : mode === 'html-delivery'
+        ? `HTML preview (htmlClock=${snapshot.htmlClock})`
         : mode === 'text-delivery'
         ? `Fallback to text (finalText=${snapshot.finalText.length} chars)`
         : `Empty — no step data available (stepsClock=${snapshot.stepsClock})`;

@@ -1,12 +1,8 @@
-import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
 import { runVscodeCommand } from './baseDetector';
 import { getPendingToolCallsFromPlannerStep, type TrajectoryStep } from './trajectoryToolState';
 import {
-    type NotificationTracker,
-    createNotificationTracker,
-    resetTrackerDetection,
-    processDetection,
+    NotificationDetector,
 } from './detectorStateManager';
 
 /** Approval button information */
@@ -39,48 +35,25 @@ const TERMINAL_TOOL_NAMES = [
  *
  * Actions (approve/deny) are performed via VS Code extension commands.
  */
-export class ApprovalDetector {
+export class ApprovalDetector extends NotificationDetector<ApprovalInfo> {
     private cdpService: CdpService;
     private onApprovalRequired: (info: ApprovalInfo) => void;
-    private onResolved?: () => void;
-
-    private isRunning = false;
-    private tracker: NotificationTracker<ApprovalInfo> = createNotificationTracker();
-    private static readonly MAX_NOTIFIED_KEYS = 50;
 
     constructor(options: ApprovalDetectorOptions) {
+        super('ApprovalDetector', options.onResolved);
         this.cdpService = options.cdpService;
         this.onApprovalRequired = options.onApprovalRequired;
-        this.onResolved = options.onResolved;
     }
-
-    start(): void {
-        if (this.isRunning) return;
-        this.isRunning = true;
-        resetTrackerDetection(this.tracker);
-    }
-
-    async stop(): Promise<void> { this.isRunning = false; }
-
-    getLastDetectedInfo(): ApprovalInfo | null { return this.tracker.lastDetectedInfo; }
-
-    isActive(): boolean { return this.isRunning; }
 
     evaluate(cascadeId: string, steps: unknown[], runStatus: string | null): void {
-        if (!this.isRunning) return;
-        try {
-            const info = this.extractApprovalFromTrajectory(steps, runStatus);
-            processDetection(
-                this.tracker,
-                info,
-                (i) => `${cascadeId}::${i.approveText}::${i.description}`,
-                (i) => this.onApprovalRequired(i),
-                this.onResolved,
-                ApprovalDetector.MAX_NOTIFIED_KEYS,
-            );
-        } catch (error) {
-            logger.error('[ApprovalDetector] Error during evaluation:', error);
-        }
+        this.processEvaluation(
+            cascadeId,
+            steps,
+            runStatus,
+            (detectorSteps, detectorRunStatus) => this.extractApprovalFromTrajectory(detectorSteps, detectorRunStatus),
+            (currentCascadeId, info) => `${currentCascadeId}::${info.approveText}::${info.description}`,
+            (info) => this.onApprovalRequired(info),
+        );
     }
 
     private extractApprovalFromTrajectory(steps: unknown[], runStatus: string | null): ApprovalInfo | null {

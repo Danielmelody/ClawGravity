@@ -39,6 +39,42 @@ export interface UiSyncResult {
     error?: string;
 }
 
+interface CdpTargetInfo {
+    id?: string;
+    type?: string;
+    title?: string;
+    url?: string;
+    webSocketDebuggerUrl?: string;
+}
+
+interface WorkbenchTargetInfo extends CdpTargetInfo {
+    webSocketDebuggerUrl: string;
+}
+
+interface RuntimeExecutionContextCreatedEvent {
+    context?: CdpContext;
+}
+
+interface RuntimeExecutionContextDestroyedEvent {
+    executionContextId?: number;
+}
+
+interface RuntimeEvaluateResult<T> {
+    result?: {
+        value?: T;
+    };
+}
+
+interface DomDocumentResult {
+    root: {
+        nodeId: number;
+    };
+}
+
+interface DomQuerySelectorResult {
+    nodeId: number;
+}
+
 const RECENT_CASCADE_PROPAGATION_GRACE_MS = 15_000;
 
 export class CdpService extends EventEmitter {
@@ -111,7 +147,7 @@ export class CdpService extends EventEmitter {
     }
 
     /** Check if a CDP target is a workbench page (not Launchpad, not jetski-agent). */
-    public isWorkbenchPage(t: Record<string, unknown>): boolean {
+    public isWorkbenchPage(t: CdpTargetInfo): t is WorkbenchTargetInfo {
         return (
             t.type === 'page' &&
             !!t.webSocketDebuggerUrl &&
@@ -122,11 +158,10 @@ export class CdpService extends EventEmitter {
     }
 
     async discoverTarget(): Promise<string> {
-        const pages: any[] = [];
-        for (const port of this.ports) {
-            try { pages.push(...await this.getJson(`http://127.0.0.1:${port}/json/list`) as any[]); } catch { /**/ }
-        }
-        const matches = (t: any) => (t.url?.includes('workbench') || t.title?.includes('Antigravity') || t.title?.includes('Cascade')) && !t.title?.includes('Launchpad');
+        const pages = await this.listPagesAcrossPorts();
+        const matches = (t: CdpTargetInfo) =>
+            (t.url?.includes('workbench') || t.title?.includes('Antigravity') || t.title?.includes('Cascade'))
+            && !t.title?.includes('Launchpad');
         const target = pages.find(t => t.type === 'page' && t.webSocketDebuggerUrl && matches(t))
             ?? pages.find(t => t.webSocketDebuggerUrl && matches(t))
             ?? pages.find(t => t.webSocketDebuggerUrl && (matches(t) || t.title?.includes('Launchpad')));
@@ -148,12 +183,12 @@ export class CdpService extends EventEmitter {
             if (!this.isSwitchingWorkspace) { this.emit('disconnected'); if (this.maxReconnectAttempts > 0 && !this.isReconnecting) this.tryReconnect(); }
         });
         const orig = this.connection.emit.bind(this.connection);
-        this.connection.emit = (ev: string | symbol, ...args: any[]) => {
+        this.connection.emit = (ev: string | symbol, ...args: unknown[]) => {
             if (ev === 'Runtime.executionContextCreated') {
-                const ctx = args[0]?.context;
+                const ctx = (args[0] as RuntimeExecutionContextCreatedEvent | undefined)?.context;
                 if (ctx) this.contexts.push({ ...ctx, url: ctx.url || '' });
             } else if (ev === 'Runtime.executionContextDestroyed') {
-                const id = args[0]?.executionContextId;
+                const id = (args[0] as RuntimeExecutionContextDestroyedEvent | undefined)?.executionContextId;
                 const idx = this.contexts.findIndex(c => c.id === id);
                 if (idx !== -1) this.contexts.splice(idx, 1);
             } else if (ev !== 'disconnected') this.emit(ev, ...args);
@@ -163,12 +198,12 @@ export class CdpService extends EventEmitter {
         this.isConnectedFlag = true;
         await this.call('Runtime.enable', {});
     }
-    async call(method: string, params: any = {}): Promise<any> {
+    async call<T = unknown>(method: string, params: unknown = {}): Promise<T> {
         if (!this.connection?.isConnected()) throw new Error('WebSocket is not connected');
-        return this.connection.call(method, params);
+        return this.connection.call(method, params) as Promise<T>;
     }
 
-    async callWithRetry(method: string, params: any = {}, timeoutMs = 15000): Promise<any> {
+    async callWithRetry<T = unknown>(method: string, params: unknown = {}, timeoutMs = 15000): Promise<T> {
         try { return await this.call(method, params); }
         catch (e) {
             const m = e instanceof Error ? e.message : String(e);
@@ -202,17 +237,14 @@ export class CdpService extends EventEmitter {
     private async verifyCurrentWorkspace(projectName: string, workspacePath: string): Promise<boolean> {
         if (!this.connection?.isConnected()) return false;
         try {
-            const res = await this.call('Runtime.evaluate', { expression: 'document.title', returnByValue: true }) as any;
-            if (String(res?.result?.value || '').toLowerCase().includes(projectName.toLowerCase())) { this.currentWorkspaceName = projectName; return true; }
+            const title = await this.evaluateRuntime<string>('document.title');
+            if (String(title || '').toLowerCase().includes(projectName.toLowerCase())) { this.currentWorkspaceName = projectName; return true; }
         } catch { /**/ }
         return this.probeWorkspaceFolderPath(projectName, workspacePath);
     }
 
     private async _discoverAndConnectForWorkspaceImpl(workspacePath: string, projectName: string): Promise<boolean> {
-        const pages: any[] = [];
-        for (const port of this.ports) {
-            try { pages.push(...await this.getJson(`http://127.0.0.1:${port}/json/list`) as any[]); } catch { /**/ }
-        }
+        const pages = await this.listPagesAcrossPorts();
         if (pages.length === 0) throw new Error('CDP ports not responding.');
 
         const wb = pages.filter(t => this.isWorkbenchPage(t));
@@ -231,22 +263,33 @@ export class CdpService extends EventEmitter {
         return WorkspaceLauncher.launchAndConnectWorkspace(this, workspacePath, projectName, this.ports);
     }
 
-    async connectToPage(page: any, projectName: string): Promise<boolean> {
+    private async listPagesAcrossPorts(): Promise<CdpTargetInfo[]> {
+        const pages: CdpTargetInfo[] = [];
+        for (const port of this.ports) {
+            try {
+                pages.push(...await this.getJson(`http://127.0.0.1:${port}/json/list`) as CdpTargetInfo[]);
+            } catch {
+                /**/
+            }
+        }
+        return pages;
+    }
+
+    async connectToPage(page: WorkbenchTargetInfo, projectName: string): Promise<boolean> {
         if (this.isConnectedFlag && this.targetUrl === page.webSocketDebuggerUrl) { this.currentWorkspaceName = projectName; return true; }
         this.disconnectQuietly();
         this.lsClientManager.reset();
-        this.targetUrl = page.webSocketDebuggerUrl; this.targetFrameId = page.id || null;
+        this.targetUrl = page.webSocketDebuggerUrl; this.targetFrameId = page.id ?? null;
         await this.connect();
         this.currentWorkspaceName = projectName;
         return true;
     }
 
-    async probeWorkbenchPages(wb: any[], projectName: string, workspacePath?: string): Promise<boolean> {
+    async probeWorkbenchPages(wb: WorkbenchTargetInfo[], projectName: string, workspacePath?: string): Promise<boolean> {
         for (const p of wb) {
             try {
                 this.disconnectQuietly(); this.targetUrl = p.webSocketDebuggerUrl; await this.connect();
-                const res = await this.call('Runtime.evaluate', { expression: 'document.title', returnByValue: true }) as any;
-                const title = String(res?.result?.value || '').toLowerCase();
+                const title = String(await this.evaluateRuntime<string>('document.title') || '').toLowerCase();
                 if (title.includes(projectName.toLowerCase()) || (title.includes('untitled') && workspacePath && await this.probeWorkspaceFolderPath(projectName, workspacePath))) {
                     this.currentWorkspaceName = projectName; return true;
                 }
@@ -261,8 +304,8 @@ export class CdpService extends EventEmitter {
                 const getItems = (s) => Array.from(document.querySelectorAll(s)).map(e => e.textContent?.trim()).filter(Boolean);
                 return { val: [document.querySelector('title')?.textContent || "", ...getItems('.breadcrumbs-view .folder-icon, .tabs-breadcrumbs .label-name'), ...getItems('.explorer-item-label, .monaco-icon-label .label-name'), document.body?.getAttribute('data-uri') || ''].join('|') };
             })()`;
-            const res = await this.call('Runtime.evaluate', { expression: script, returnByValue: true }) as any;
-            const val = String(res?.result?.value?.val || '').toLowerCase();
+            const result = await this.evaluateRuntime<{ val?: string }>(script);
+            const val = String(result?.val || '').toLowerCase();
             if (val.includes(projectName.toLowerCase()) || val.includes(workspacePath.toLowerCase())) { this.currentWorkspaceName = projectName; return true; }
         } catch { /**/ }
         return false;
@@ -344,21 +387,32 @@ export class CdpService extends EventEmitter {
             if (!input) return { ok: false };
             const t = 'ag-' + Math.random().toString(36).slice(2); input.setAttribute('data-ag', t); return { ok: true, token: t };
         })()`;
-        const res = await this.call('Runtime.evaluate', { expression: s, returnByValue: true, awaitPromise: true, ...(contextId ? { contextId } : {}) }) as any;
-        if (!res?.result?.value?.ok) return { ok: false, error: 'Input not found' };
-        const { root } = await this.call('DOM.getDocument', { depth: 1, pierce: true }) as any;
-        const { nodeId } = await this.call('DOM.querySelector', { nodeId: root.nodeId, selector: `input[data-ag="${res.result.value.token}"]` }) as any;
+        const result = await this.evaluateRuntime<{ ok?: boolean; token?: string }>(s, { awaitPromise: true, contextId });
+        if (!result?.ok || !result.token) return { ok: false, error: 'Input not found' };
+        const { root } = await this.call<DomDocumentResult>('DOM.getDocument', { depth: 1, pierce: true });
+        const { nodeId } = await this.call<DomQuerySelectorResult>('DOM.querySelector', { nodeId: root.nodeId, selector: `input[data-ag="${result.token}"]` });
         await this.call('DOM.setFileInputFiles', { nodeId, files: filePaths });
         return { ok: true };
     }
 
     async getLSClient(): Promise<GrpcCascadeClient | null> {
         const client = await this.lsClientManager.getClient(this.currentWorkspacePath, async (expr: string) => {
-            const res = await this.call('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true, timeout: 10000 }) as any;
-            return res?.result?.value;
+            return this.evaluateRuntime(expr, { awaitPromise: true, timeout: 10000 });
         });
         if (client) client.setCdpEvaluate(expr => this.call('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true, timeout: 10000 }));
         return client;
+    }
+
+    private async evaluateRuntime<T>(
+        expression: string,
+        options: { awaitPromise?: boolean; contextId?: number; timeout?: number } = {},
+    ): Promise<T | undefined> {
+        const result = await this.call<RuntimeEvaluateResult<T>>('Runtime.evaluate', {
+            expression,
+            returnByValue: true,
+            ...options,
+        });
+        return result?.result?.value;
     }
 
     /** Public alias used by higher-level bot/runtime flows. */

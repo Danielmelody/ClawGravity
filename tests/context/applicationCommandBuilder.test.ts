@@ -12,7 +12,7 @@ describe('applicationCommandBuilder', () => {
         platforms: ['discord'],
     };
 
-    it('builds the core command handler set from the application context', async () => {
+    it('workspace handler resolves channel-to-workspace bindings created through the shared repo', async () => {
         const context = await buildApplicationContext({
             config,
             sendPromptImpl: jest.fn().mockResolvedValue(undefined),
@@ -21,10 +21,33 @@ describe('applicationCommandBuilder', () => {
         try {
             const handlers = await buildApplicationCommandHandlers(context);
 
-            expect(handlers.workspace).toBeDefined();
-            expect(handlers.chat).toBeDefined();
-            expect(handlers.cleanup).toBeDefined();
-            expect(handlers.slash).toBeDefined();
+            // Bind a channel to a workspace through the shared repository
+            context.workspaceBindingRepo.upsert({
+                channelId: 'ch-100',
+                workspacePath: 'proj-alpha',
+                guildId: 'test-guild',
+            });
+
+            // The workspace handler should resolve it because it shares
+            // the same repository instance — this tests real wiring, not just
+            // "does the property exist".
+            const resolved = handlers.workspace.getWorkspaceForChannel('ch-100');
+            expect(resolved).toBeDefined();
+            expect(resolved).toContain('proj-alpha');
+        } finally {
+            context.db.close();
+        }
+    });
+
+    it('workspace handler returns undefined for unbound channels', async () => {
+        const context = await buildApplicationContext({
+            config,
+            sendPromptImpl: jest.fn().mockResolvedValue(undefined),
+        });
+
+        try {
+            const handlers = await buildApplicationCommandHandlers(context);
+            expect(handlers.workspace.getWorkspaceForChannel('unknown-ch')).toBeUndefined();
         } finally {
             context.db.close();
         }

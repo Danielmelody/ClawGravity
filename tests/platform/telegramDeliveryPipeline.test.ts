@@ -69,6 +69,18 @@ describe('planDelivery', () => {
         expect(plan.deliveredText).toBeNull();
     });
 
+    it('returns html-delivery when html preview is the preferred format', () => {
+        const snapshot = makeSnapshot({
+            html: '💭 <blockquote expandable>Inspecting current workspace</blockquote>',
+            htmlClock: 1,
+            preferredFormat: 'html',
+        });
+        const plan = planDelivery(testPipeline(), snapshot, { renderOnlyOnComplete: false });
+        expect(plan.mode).toBe('html-delivery');
+        expect(plan.telegramHtml).toContain('Inspecting current workspace');
+        expect(plan.deliveredText).toContain('Inspecting current workspace');
+    });
+
     it('returns empty mode when stepsData has empty steps array', () => {
         const snapshot = makeSnapshot({
             stepsData: { steps: [], runStatus: null },

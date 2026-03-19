@@ -16,8 +16,9 @@ import {
     getCurrentCdp,
 } from '../services/cdpBridgeManager';
 import { AutoAcceptService } from '../services/autoAcceptService';
-import { MODE_DISPLAY_NAMES, ModeService } from '../services/modeService';
+import { ModeService } from '../services/modeService';
 import { ScheduleService } from '../services/scheduleService';
+import { buildConnectedProjectsDescription, buildDiscordStatusFields } from '../ui/discordStatus';
 import { restartCurrentProcess } from '../services/processRestartService';
 import { logBuffer } from '../utils/logBuffer';
 import type { LogLevel } from '../utils/logger';
@@ -221,25 +222,19 @@ export async function handleDiscordSlashInteraction(
                 : '⚪ OFF';
 
             const statusFields = [
-                { name: 'CDP Connection', value: activeNames.length > 0 ? `🟢 ${activeNames.length} project(s) connected` : '⚪ Disconnected', inline: true },
-                { name: 'Mode', value: MODE_DISPLAY_NAMES[currentMode] || currentMode, inline: true },
-                { name: 'Auto Approve', value: autoAcceptService.isEnabled() ? '🟢 ON' : '⚪ OFF', inline: true },
+                ...buildDiscordStatusFields(
+                    activeNames.length,
+                    currentMode,
+                    autoAcceptService.isEnabled(),
+                ),
                 { name: 'Mirroring', value: mirrorStatus, inline: true },
             ];
 
-            let statusDescription: string;
-            if (activeNames.length > 0) {
-                const lines = activeNames.map((name) => {
-                    const cdp = bridge.pool.getConnected(name);
-                    const contexts = cdp ? cdp.getContexts().length : 0;
-                    const detectorActive = bridge.pool.getApprovalDetector(name)?.isActive() ? ' [Detecting]' : '';
-                    const mirrorActive = bridge.pool.getUserMessageDetector(name)?.isActive() ? ' [Mirror]' : '';
-                    return `• **${name}** — Contexts: ${contexts}${detectorActive}${mirrorActive}`;
-                });
-                statusDescription = `**Connected Projects:**\n${lines.join('\n')}`;
-            } else {
-                statusDescription = 'Send a message to auto-connect to a project.';
-            }
+            const statusDescription = buildConnectedProjectsDescription({
+                bridge,
+                workspaceNames: activeNames,
+                includeMirroring: true,
+            });
 
             const statusOutputFormat = userPrefRepo?.getOutputFormat(interaction.user.id) ?? 'embed';
             if (statusOutputFormat === 'plain') {

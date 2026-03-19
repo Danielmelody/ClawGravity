@@ -8,13 +8,18 @@ import * as http from 'http';
 import * as net from 'net';
 import { CDP_PORTS } from './cdpPorts';
 
+export interface CdpTargetInfo {
+    readonly type?: string;
+    readonly url?: string;
+    readonly title?: string;
+}
+
 /**
- * Check if CDP responds on the specified port.
+ * Read Chrome DevTools targets from the specified port.
  *
- * Sends a GET request to `http://127.0.0.1:{port}/json/list` and resolves
- * `true` when the response is a valid JSON array.
+ * Returns null when the port does not respond or the payload is invalid.
  */
-export function checkCdpPort(port: number): Promise<boolean> {
+export function fetchCdpTargets(port: number): Promise<CdpTargetInfo[] | null> {
     return new Promise((resolve) => {
         const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
             let data = '';
@@ -22,18 +27,28 @@ export function checkCdpPort(port: number): Promise<boolean> {
             res.on('end', () => {
                 try {
                     const parsed = JSON.parse(data);
-                    resolve(Array.isArray(parsed));
+                    resolve(Array.isArray(parsed) ? parsed as CdpTargetInfo[] : null);
                 } catch {
-                    resolve(false);
+                    resolve(null);
                 }
             });
         });
-        req.on('error', () => resolve(false));
+        req.on('error', () => resolve(null));
         req.setTimeout(2000, () => {
             req.destroy();
-            resolve(false);
+            resolve(null);
         });
     });
+}
+
+/**
+ * Check if CDP responds on the specified port.
+ *
+ * Sends a GET request to `http://127.0.0.1:{port}/json/list` and resolves
+ * `true` when the response is a valid JSON array.
+ */
+export async function checkCdpPort(port: number): Promise<boolean> {
+    return (await fetchCdpTargets(port)) !== null;
 }
 
 /**

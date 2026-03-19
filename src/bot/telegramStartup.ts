@@ -9,6 +9,7 @@ import { extractCascadeRunStatus } from '../services/grpcCascadeClient';
 import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import { ModeService } from '../services/modeService';
 import { ModelService } from '../services/modelService';
+import { buildStartupStatusSnapshot } from '../services/startupStatus';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 import { WorkspaceService } from '../services/workspaceService';
 import { logger } from '../utils/logger';
@@ -94,16 +95,17 @@ async function sendTelegramStartupMessage({
         );
     }
 
-    const activeWorkspaces = bridge.pool.getActiveWorkspaceNames();
-    const cdpStatus = activeWorkspaces.length > 0
-        ? `Connected (${activeWorkspaces.join(', ')})`
-        : 'Not connected';
-
-    const startupModel = cdpModel || modelService.getDefaultModel() || 'Not synced';
-    const startupMode = cdpMode || modeService.getCurrentMode();
-    if (cdpMode) {
-        modeService.setMode(cdpMode);
-    }
+    const {
+        cdpStatus,
+        startupModel,
+        startupMode,
+    } = buildStartupStatusSnapshot({
+        bridge,
+        cdpMode,
+        cdpModel,
+        modeService,
+        modelService,
+    });
 
     const startupText = [
         '<b>ClawGravity Online</b>',

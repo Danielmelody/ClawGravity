@@ -1127,6 +1127,34 @@ describe('createTelegramMessageHandler', () => {
         }
     });
 
+    it('renders thinking phase updates into the Telegram status message before final completion', async () => {
+        const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
+        const thinkingText = '我已经定位了最可能的根因。让我先看一下 cdpBridgeManager.ts，然后直接修复：';
+        GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
+            start: jest.fn().mockImplementation(async () => {
+                if (opts.onPhaseChange) {
+                    opts.onPhaseChange('thinking', thinkingText);
+                }
+            }),
+            stop: jest.fn().mockResolvedValue(undefined),
+            getPhase: jest.fn().mockReturnValue('thinking'),
+        }));
+
+        const mockCdp = createMockCdp();
+        const pool = createMockPool(mockCdp);
+        const bridge = createBridge(pool);
+        const binding = { chatId: 'chat-123', workspacePath: '/workspace/a' };
+        const telegramBindingRepo = createTelegramBindingRepo(binding);
+        const { message, channel } = createMockMessage();
+
+        const handler = createTelegramMessageHandler({ bridge, telegramBindingRepo });
+        await handler(message as any);
+        await flushMicrotasks();
+
+        const edits = channel._statusMsg.edit.mock.calls.map(([payload]: any[]) => payload.text);
+        expect(edits.some((text: string) => text.includes(thinkingText))).toBe(true);
+    });
+
     it('splits oversized rendered previews across status messages without truncation', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         const startMarker = 'START-MARKER';

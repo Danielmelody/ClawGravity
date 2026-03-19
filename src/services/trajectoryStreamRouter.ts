@@ -17,7 +17,7 @@
  * replacing manual setInterval / isFetching / isRunning flags.
  */
 
-import { Effect, Fiber, Schedule, Ref, Option } from 'effect';
+import { Effect, Fiber, Schedule } from 'effect';
 import { logger } from '../utils/logger';
 import { CdpService } from './cdpService';
 import { ApprovalDetector } from './approvalDetector';

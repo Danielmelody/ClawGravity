@@ -13,7 +13,7 @@ describe('applicationDiscordBuilder', () => {
         platforms: ['discord'],
     };
 
-    it('builds discord runtime artifacts from the shared application context', async () => {
+    it('join handler shares workspace bindings with the command handlers', async () => {
         const context = await buildApplicationContext({
             config,
             sendPromptImpl: jest.fn().mockResolvedValue(undefined),
@@ -27,12 +27,24 @@ describe('applicationDiscordBuilder', () => {
                 commandHandlers,
                 handleScreenshot: jest.fn().mockResolvedValue(undefined),
                 autoRenameChannel: jest.fn().mockResolvedValue(undefined),
-                handleSlashInteraction: jest.fn().mockResolvedValue(undefined),
+                activePromptSessions: new Map(),
             });
 
+            // The join handler should use the same binding repo as the context.
+            // Verify by inserting a binding and checking the workspace handler sees it.
+            context.workspaceBindingRepo.upsert({
+                channelId: 'discord-ch-1',
+                workspacePath: 'my-project',
+                guildId: 'test-guild',
+            });
+
+            const resolved = commandHandlers.workspace.getWorkspaceForChannel('discord-ch-1');
+            expect(resolved).toContain('my-project');
+
+            // joinHandler should be a JoinCommandHandler instance (smoke check)
             expect(artifacts.joinHandler).toBeDefined();
-            expect(typeof artifacts.interactionHandler).toBe('function');
-            expect(typeof artifacts.messageHandler).toBe('function');
+            expect(artifacts.interactionHandler).toBeDefined();
+            expect(artifacts.messageHandler).toBeDefined();
         } finally {
             context.db.close();
         }

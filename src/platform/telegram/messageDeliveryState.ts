@@ -118,15 +118,31 @@ export function deliveryReducer(
  * Determine the preferred content format based on register clocks.
  *
  * Steps wins when the stepsData register has been written to (native rendering).
- * Falls back to text otherwise.
+ * Otherwise the freshest non-empty preview channel wins between HTML and text.
  *
  * This is the CRDT merge function — commutative and idempotent.
  */
-export function resolvePreferredFormat(state: MessageDeliveryState): 'steps' | 'text' {
+export function resolvePreferredFormat(state: MessageDeliveryState): 'steps' | 'html' | 'text' {
     if (state.stepsData.clock > 0 && state.stepsData.value !== null
         && Array.isArray(state.stepsData.value.steps) && state.stepsData.value.steps.length > 0) {
         return 'steps';
     }
+
+    const hasHtml = state.html.clock > 0 && state.html.value.trim().length > 0;
+    const hasText = state.text.clock > 0 && state.text.value.trim().length > 0;
+
+    if (hasHtml && (!hasText || state.html.clock >= state.text.clock)) {
+        return 'html';
+    }
+
+    if (hasText) {
+        return 'text';
+    }
+
+    if (hasHtml) {
+        return 'html';
+    }
+
     return 'text';
 }
 
@@ -139,7 +155,7 @@ export interface DeliverySnapshot {
     readonly text: string;
     readonly html: string;
     readonly stepsData: StepsData | null;
-    readonly preferredFormat: 'steps' | 'text';
+    readonly preferredFormat: 'steps' | 'html' | 'text';
     readonly finalText: string;
     readonly textClock: number;
     readonly htmlClock: number;

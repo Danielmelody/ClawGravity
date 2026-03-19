@@ -74,6 +74,13 @@ describe('MessageDeliveryState CRDT', () => {
             expect(resolvePreferredFormat(state)).toBe('steps');
         });
 
+        it('returns html when html is the freshest non-empty preview', () => {
+            let state = initialDeliveryState();
+            state = deliveryReducer(state, { type: 'TEXT_UPDATE', text: 'plain text' });
+            state = deliveryReducer(state, { type: 'HTML_UPDATE', html: '<b>preview</b>' });
+            expect(resolvePreferredFormat(state)).toBe('html');
+        });
+
         it('returns text when html clock > 0 but value is whitespace', () => {
             let state = initialDeliveryState();
             state = deliveryReducer(state, { type: 'HTML_UPDATE', html: '   ' });
@@ -91,7 +98,7 @@ describe('MessageDeliveryState CRDT', () => {
             const snap = createDeliverySnapshot(state);
             expect(snap.text).toBe('hello');
             expect(snap.html).toBe('<b>hi</b>');
-            expect(snap.preferredFormat).toBe('text');
+            expect(snap.preferredFormat).toBe('html');
             expect(snap.finalText).toBe('final');
             expect(snap.textClock).toBe(1);
             expect(snap.htmlClock).toBe(1);

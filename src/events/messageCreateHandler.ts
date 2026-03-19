@@ -18,9 +18,10 @@ import {
 import { ChatSessionService } from '../services/chatSessionService';
 import { CdpService } from '../services/cdpService';
 import { ChannelManager } from '../services/channelManager';
-import { MODE_DISPLAY_NAMES, ModeService } from '../services/modeService';
+import { ModeService } from '../services/modeService';
 import { ModelService } from '../services/modelService';
 import { TitleGeneratorService } from '../services/titleGeneratorService';
+import { buildConnectedProjectsDescription, buildDiscordStatusFields } from '../ui/discordStatus';
 import {
     cleanupInboundImageAttachments as cleanupInboundImageAttachmentsFn,
     downloadInboundImageAttachments as downloadInboundImageAttachmentsFn,
@@ -113,24 +114,15 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                 const activeNames = deps.bridge.pool.getActiveWorkspaceNames();
                 const currentMode = deps.modeService.getCurrentMode();
 
-                const statusFields = [
-                    { name: 'CDP Connection', value: activeNames.length > 0 ? `🟢 ${activeNames.length} project(s) connected` : '⚪ Disconnected', inline: true },
-                    { name: 'Mode', value: MODE_DISPLAY_NAMES[currentMode] || currentMode, inline: true },
-                    { name: 'Auto Approve', value: deps.bridge.autoAccept.isEnabled() ? '🟢 ON' : '⚪ OFF', inline: true },
-                ];
-
-                let statusDescription: string;
-                if (activeNames.length > 0) {
-                    const lines = activeNames.map((name) => {
-                        const cdp = deps.bridge.pool.getConnected(name);
-                        const contexts = cdp ? cdp.getContexts().length : 0;
-                        const detectorActive = deps.bridge.pool.getApprovalDetector(name)?.isActive() ? ' [Detecting]' : '';
-                        return `• **${name}** — Contexts: ${contexts}${detectorActive}`;
-                    });
-                    statusDescription = `**Connected Projects:**\n${lines.join('\n')}`;
-                } else {
-                    statusDescription = 'Send a message to auto-connect to a project.';
-                }
+                const statusFields = buildDiscordStatusFields(
+                    activeNames.length,
+                    currentMode,
+                    deps.bridge.autoAccept.isEnabled(),
+                );
+                const statusDescription = buildConnectedProjectsDescription({
+                    bridge: deps.bridge,
+                    workspaceNames: activeNames,
+                });
 
                 const statusOutputFormat = deps.userPrefRepo?.getOutputFormat(message.author.id) ?? 'embed';
                 if (statusOutputFormat === 'plain') {

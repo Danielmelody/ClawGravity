@@ -263,13 +263,10 @@ export class WorkspaceRuntime {
                 Effect.tryPromise({
                     try: async () => {
                         const cdp = await this.getOrConnect();
-                        return operation(cdp);
+                        return await operation(cdp);
                     },
                     catch: (e) => e,
-                }).pipe(
-                    Effect.flatMap((result) => Effect.promise(() => result as Promise<T>)),
-                    Effect.catchAll((e) => Effect.fail(e)),
-                ),
+                }),
             ),
         ) as Promise<T>;
     }

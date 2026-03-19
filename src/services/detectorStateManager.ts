@@ -5,6 +5,8 @@
  * to eliminate duplicated start/stop/isActive/detection logic.
  */
 
+import { logger } from '../utils/logger';
+
 
 export interface DetectorState<TInfo> {
     isRunning: boolean;
@@ -141,7 +143,7 @@ export interface NotificationTracker<T> {
 /**
  * Create a fresh tracker state.
  */
-export function createNotificationTracker<T>(): NotificationTracker<T> {
+function createNotificationTracker<T>(): NotificationTracker<T> {
     return {
         lastDetectedKey: null,
         lastDetectedInfo: null,
@@ -152,7 +154,7 @@ export function createNotificationTracker<T>(): NotificationTracker<T> {
 /**
  * Reset detection state (but preserve notifiedKeys to prevent cross-session re-fires).
  */
-export function resetTrackerDetection<T>(tracker: NotificationTracker<T>): void {
+function resetTrackerDetection<T>(tracker: NotificationTracker<T>): void {
     tracker.lastDetectedKey = null;
     tracker.lastDetectedInfo = null;
 }
@@ -167,7 +169,7 @@ export function resetTrackerDetection<T>(tracker: NotificationTracker<T>): void 
  * @param onResolved  Called when a previously detected state disappears.
  * @param maxKeys     Maximum notifiedKeys size before pruning.
  */
-export function processDetection<T>(
+function processDetection<T>(
     tracker: NotificationTracker<T>,
     info: T | null,
     buildKey: (info: T) => string,
@@ -194,6 +196,63 @@ export function processDetection<T>(
         tracker.lastDetectedInfo = null;
         if (wasDetected && onResolved) {
             onResolved();
+        }
+    }
+}
+
+/**
+ * Shared lifecycle and evaluation flow for lightweight notification detectors.
+ */
+export abstract class NotificationDetector<T> {
+    private isRunning = false;
+    protected readonly tracker: NotificationTracker<T> = createNotificationTracker();
+
+    constructor(
+        private readonly label: string,
+        private readonly onResolved?: () => void,
+        private readonly maxNotifiedKeys: number = DEFAULT_MAX_NOTIFIED_KEYS,
+    ) {}
+
+    start(): void {
+        if (this.isRunning) return;
+        this.isRunning = true;
+        resetTrackerDetection(this.tracker);
+    }
+
+    async stop(): Promise<void> {
+        this.isRunning = false;
+    }
+
+    getLastDetectedInfo(): T | null {
+        return this.tracker.lastDetectedInfo;
+    }
+
+    isActive(): boolean {
+        return this.isRunning;
+    }
+
+    protected processEvaluation(
+        cascadeId: string,
+        steps: unknown[],
+        runStatus: string | null,
+        extractInfo: (steps: unknown[], runStatus: string | null) => T | null,
+        buildKey: (cascadeId: string, info: T) => string,
+        onDetected: (info: T) => void,
+    ): void {
+        if (!this.isRunning) return;
+
+        try {
+            const info = extractInfo(steps, runStatus);
+            processDetection(
+                this.tracker,
+                info,
+                (detected) => buildKey(cascadeId, detected),
+                onDetected,
+                this.onResolved,
+                this.maxNotifiedKeys,
+            );
+        } catch (error) {
+            logger.error(`[${this.label}] Error during evaluation:`, error);
         }
     }
 }

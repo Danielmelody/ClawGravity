@@ -17,7 +17,7 @@ import { CdpService } from './cdpService';
  * Execute a VS Code command via CDP and return success/failure.
  * Replaces the repeated try/catch + result?.ok pattern in every detector.
  */
-export function executeVscodeCommandSafe(
+function executeVscodeCommandSafe(
     cdp: CdpService,
     command: string,
     label: string,

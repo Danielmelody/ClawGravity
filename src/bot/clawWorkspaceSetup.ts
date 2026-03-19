@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { logger } from '../utils/logger';
+import { fetchCdpTargets, findFreeCdpPort } from '../utils/portUtils';
 
 const GEMINI_MD_CONTENT = [
     '# 🦞 ClawGravity Agent Instructions',
@@ -163,39 +164,21 @@ async function ensureDedicatedClawInstance(
         `[Claw] ${enabledScheduleCount} enabled schedule(s) found - ensuring Antigravity has agent workspace...`,
     );
 
-    const http = await import('http');
-    const net = await import('net');
     const { spawn } = await import('child_process');
     const { CDP_PORTS } = await import('../utils/cdpPorts');
     const { getAntigravityCliPath } = await import('../utils/pathUtils');
 
     const clawProjectName = path.basename(clawWorkspacePath);
-    const checkPort = (port: number): Promise<boolean> =>
-        new Promise((resolve) => {
-            const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
-                let data = '';
-                res.on('data', (chunk: string) => {
-                    data += chunk;
-                });
-                res.on('end', () => {
-                    try {
-                        const tabs = JSON.parse(data) as Array<{ type: string; url?: string; title?: string }>;
-                        resolve(
-                            tabs
-                                .filter((tab) => tab.type === 'page' && tab.url?.includes('workbench'))
-                                .some((tab) => (tab.title || '').includes(clawProjectName)),
-                        );
-                    } catch {
-                        resolve(false);
-                    }
-                });
-            });
-            req.on('error', () => resolve(false));
-            req.setTimeout(2000, () => {
-                req.destroy();
-                resolve(false);
-            });
-        });
+    const checkPort = async (port: number): Promise<boolean> => {
+        const tabs = await fetchCdpTargets(port);
+        if (!tabs) {
+            return false;
+        }
+
+        return tabs
+            .filter((tab) => tab.type === 'page' && tab.url?.includes('workbench'))
+            .some((tab) => (tab.title || '').includes(clawProjectName));
+    };
 
     for (const port of CDP_PORTS) {
         if (await checkPort(port)) {
@@ -204,23 +187,7 @@ async function ensureDedicatedClawInstance(
         }
     }
 
-    const isPortFree = (port: number): Promise<boolean> =>
-        new Promise((resolve) => {
-            const server = net.createServer();
-            server.once('error', () => resolve(false));
-            server.once('listening', () => {
-                server.close(() => resolve(true));
-            });
-            server.listen(port, '127.0.0.1');
-        });
-
-    let freePort: number | null = null;
-    for (const port of CDP_PORTS) {
-        if (await isPortFree(port)) {
-            freePort = port;
-            break;
-        }
-    }
+    const freePort = await findFreeCdpPort();
 
     if (!freePort) {
         logger.warn(
