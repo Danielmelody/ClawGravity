@@ -45,6 +45,8 @@ const ERROR_PATTERNS = [
     'service unavailable', 'server error', 'internal server error',
     'rate limit', 'too many requests', 'quota exceeded', 'capacity',
     'model is overloaded', 'model not available', 'temporarily unavailable',
+    'high traffic', 'servers are experiencing', 'please try again later',
+    'overloaded', 'resource exhausted', 'try again in a few',
 ];
 
 /**
@@ -124,7 +126,12 @@ export class ErrorPopupDetector {
             const responseText = step?.plannerResponse?.response || step?.response?.text || step?.assistantResponse?.text || '';
             if (typeof responseText === 'string') {
                 const normalized = responseText.toLowerCase();
-                if (ERROR_PATTERNS.some(p => normalized.includes(p)) && runStatus === 'CASCADE_RUN_STATUS_IDLE') {
+                // Detect when cascade is idle, errored, complete, or status unknown (server crash)
+                const isTerminalStatus = runStatus === null
+                    || runStatus === 'CASCADE_RUN_STATUS_IDLE'
+                    || runStatus.includes('ERROR')
+                    || runStatus.includes('COMPLETE');
+                if (ERROR_PATTERNS.some(p => normalized.includes(p)) && isTerminalStatus) {
                     return { title: 'Agent Error', body: responseText.slice(0, 1000), buttons: ['Retry'] };
                 }
             }

@@ -178,4 +178,39 @@ describe('ErrorPopupDetector', () => {
             }),
         );
     });
+
+    it('detects high traffic error patterns in response text', () => {
+        const { detector, onErrorPopup } = createDetector();
+        detector.start();
+
+        detector.evaluate(
+            'cascade-3',
+            [{ plannerResponse: { response: 'Our servers are experiencing high traffic right now, please try again later.' } }],
+            IDLE,
+        );
+
+        expect(onErrorPopup).toHaveBeenCalledWith(
+            expect.objectContaining({
+                title: 'Agent Error',
+                body: expect.stringContaining('high traffic'),
+            }),
+        );
+    });
+
+    it('detects error patterns even when cascade status is error (not just IDLE)', () => {
+        const { detector, onErrorPopup } = createDetector();
+        detector.start();
+
+        detector.evaluate(
+            'cascade-4',
+            [{ plannerResponse: { response: 'Our servers are experiencing high traffic right now.' } }],
+            'CASCADE_RUN_STATUS_ERROR',
+        );
+
+        expect(onErrorPopup).toHaveBeenCalledWith(
+            expect.objectContaining({
+                title: 'Agent Error',
+            }),
+        );
+    });
 });
