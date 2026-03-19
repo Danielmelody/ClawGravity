@@ -392,7 +392,7 @@ export class GrpcCascadeClient extends EventEmitter {
                     const text = await resp.text();
                     if (!resp.ok) {
                         const hint = resp.status === 401 ? ' (CSRF token may be invalid or missing)' : '';
-                        throw new Error('LS ${method}: ' + resp.status + ' — ' + text.slice(0, 200) + hint);
+                        throw new Error('LS ${method}: ' + resp.status + ' — ' + text.slice(0, 1000) + hint);
                     }
                     return text ? JSON.parse(text) : {};
                 } catch (e) {
