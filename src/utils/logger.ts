@@ -21,6 +21,8 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
     none: 4,
 };
 
+export type ErrorHookFn = (formattedMessage: string) => void | Promise<void>;
+
 export interface Logger {
     info(...args: unknown[]): void;
     warn(...args: unknown[]): void;
@@ -32,6 +34,12 @@ export interface Logger {
     divider(label?: string): void;
     setLogLevel(level: LogLevel): void;
     getLogLevel(): LogLevel;
+    /**
+     * Register a hook that fires (fire-and-forget) on every `error()` call.
+     * Errors are batched with a 10 s debounce window to avoid flooding.
+     * Pass `null` to remove the hook.
+     */
+    setErrorHook(fn: ErrorHookFn | null): void;
 }
 
 const getTimestamp = () => {
@@ -40,11 +48,76 @@ const getTimestamp = () => {
     return `${COLORS.dim}[${timeString}]${COLORS.reset}`;
 };
 
+/** Max errors batched before force-flush. */
+const ERROR_HOOK_MAX_BATCH = 10;
+/** Debounce window in ms — errors within this window are batched. */
+const ERROR_HOOK_DEBOUNCE_MS = 10_000;
+
 export function createLogger(initialLevel: LogLevel = 'info'): Logger {
     let currentLevel: LogLevel = initialLevel;
+    let errorHook: ErrorHookFn | null = null;
+    let errorHookQueue: string[] = [];
+    let errorHookTimer: ReturnType<typeof setTimeout> | null = null;
 
     function shouldLog(methodLevel: LogLevel): boolean {
         return LEVEL_PRIORITY[methodLevel] >= LEVEL_PRIORITY[currentLevel];
+    }
+
+    /** Deduplicate identical messages, preserving insertion order. */
+    function dedup(batch: readonly string[]): { msg: string; count: number }[] {
+        const map = new Map<string, number>();
+        const order: string[] = [];
+        for (const m of batch) {
+            const prev = map.get(m);
+            if (prev !== undefined) {
+                map.set(m, prev + 1);
+            } else {
+                map.set(m, 1);
+                order.push(m);
+            }
+        }
+        return order.map((msg) => ({ msg, count: map.get(msg)! }));
+    }
+
+    function flushErrorHook(): void {
+        if (errorHookTimer) {
+            clearTimeout(errorHookTimer);
+            errorHookTimer = null;
+        }
+        if (!errorHook || errorHookQueue.length === 0) return;
+        const batch = errorHookQueue.splice(0);
+        const unique = dedup(batch);
+        const totalCount = batch.length;
+
+        let text: string;
+        if (unique.length === 1 && unique[0].count === 1) {
+            text = `⚠️ <b>Error</b>\n<pre>${unique[0].msg}</pre>`;
+        } else {
+            const lines = unique.map((e, i) => {
+                const suffix = e.count > 1 ? ` (×${e.count})` : '';
+                return `<pre>${i + 1}. ${e.msg}${suffix}</pre>`;
+            });
+            text = `⚠️ <b>${totalCount} Errors</b>\n` + lines.join('\n');
+        }
+
+        try {
+            const result = errorHook(text);
+            if (result && typeof (result as Promise<void>).catch === 'function') {
+                (result as Promise<void>).catch(() => { /* swallow */ });
+            }
+        } catch { /* swallow — hook must never crash the logger */ }
+    }
+
+    function enqueueErrorHook(message: string): void {
+        if (!errorHook) return;
+        errorHookQueue.push(message.slice(0, 1000));
+        if (errorHookQueue.length >= ERROR_HOOK_MAX_BATCH) {
+            flushErrorHook();
+            return;
+        }
+        if (!errorHookTimer) {
+            errorHookTimer = setTimeout(flushErrorHook, ERROR_HOOK_DEBOUNCE_MS);
+        }
     }
 
     return {
@@ -66,7 +139,9 @@ export function createLogger(initialLevel: LogLevel = 'info'): Logger {
             if (shouldLog('error')) {
                 const formatted = `${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`;
                 console.error(formatted, ...args);
-                logBuffer.append('error', `[ERROR] ${args.join(' ')}`);
+                const plain = `[ERROR] ${args.join(' ')}`;
+                logBuffer.append('error', plain);
+                enqueueErrorHook(plain);
             }
         },
         debug(...args: unknown[]) {
@@ -114,6 +189,16 @@ export function createLogger(initialLevel: LogLevel = 'info'): Logger {
         },
         getLogLevel(): LogLevel {
             return currentLevel;
+        },
+        setErrorHook(fn: ErrorHookFn | null) {
+            errorHook = fn;
+            if (!fn) {
+                errorHookQueue = [];
+                if (errorHookTimer) {
+                    clearTimeout(errorHookTimer);
+                    errorHookTimer = null;
+                }
+            }
         },
     };
 }

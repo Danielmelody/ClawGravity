@@ -246,4 +246,100 @@ describe('createLogger', () => {
             expect(log.getLogLevel()).toBe('info');
         });
     });
+
+    describe('setErrorHook', () => {
+        beforeEach(() => {
+            jest.useFakeTimers();
+        });
+        afterEach(() => {
+            jest.useRealTimers();
+        });
+
+        it('calls the hook when logger.error() fires', () => {
+            const log = createLogger('info');
+            const hook = jest.fn();
+            log.setErrorHook(hook);
+
+            log.error('something broke');
+
+            // Flush debounce
+            jest.advanceTimersByTime(10_000);
+
+            expect(hook).toHaveBeenCalledTimes(1);
+            expect(hook.mock.calls[0][0]).toContain('something broke');
+        });
+
+        it('does NOT call the hook for info, warn, or debug', () => {
+            const log = createLogger('debug');
+            const hook = jest.fn();
+            log.setErrorHook(hook);
+
+            log.info('info');
+            log.warn('warn');
+            log.debug('debug');
+            jest.advanceTimersByTime(10_000);
+
+            expect(hook).not.toHaveBeenCalled();
+        });
+
+        it('batches multiple errors within the debounce window', () => {
+            const log = createLogger('info');
+            const hook = jest.fn();
+            log.setErrorHook(hook);
+
+            log.error('error 1');
+            log.error('error 2');
+            log.error('error 3');
+
+            jest.advanceTimersByTime(10_000);
+
+            expect(hook).toHaveBeenCalledTimes(1);
+            const msg = hook.mock.calls[0][0] as string;
+            expect(msg).toContain('3 Errors');
+            expect(msg).toContain('error 1');
+            expect(msg).toContain('error 3');
+        });
+
+        it('deduplicates identical errors with ×N count', () => {
+            const log = createLogger('info');
+            const hook = jest.fn();
+            log.setErrorHook(hook);
+
+            for (let i = 0; i < 6; i++) log.error('CDP timeout');
+            log.error('different error');
+
+            jest.advanceTimersByTime(10_000);
+
+            expect(hook).toHaveBeenCalledTimes(1);
+            const msg = hook.mock.calls[0][0] as string;
+            expect(msg).toContain('7 Errors');
+            expect(msg).toContain('(×6)');
+            expect(msg).toContain('different error');
+            // Should only have 2 numbered lines, not 7
+            expect(msg).not.toContain('3.');
+        });
+
+        it('does not crash if the hook throws', () => {
+            const log = createLogger('info');
+            const hook = jest.fn(() => { throw new Error('hook boom'); });
+            log.setErrorHook(hook);
+
+            expect(() => {
+                log.error('test');
+                jest.advanceTimersByTime(10_000);
+            }).not.toThrow();
+        });
+
+        it('removes the hook when set to null', () => {
+            const log = createLogger('info');
+            const hook = jest.fn();
+            log.setErrorHook(hook);
+            log.setErrorHook(null);
+
+            log.error('should not forward');
+            jest.advanceTimersByTime(10_000);
+
+            expect(hook).not.toHaveBeenCalled();
+        });
+    });
 });

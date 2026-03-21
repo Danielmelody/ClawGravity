@@ -733,7 +733,18 @@ async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): P
     try {
         const result = await resetChatSession(deps, resolved, chatId);
         if (result.ok) {
-            await message.reply({ text: 'New chat session started.' }).catch(logger.error);
+            const mode = deps.modeService
+                ? deps.modeService.getCurrentMode()
+                : 'unknown';
+
+            const cdp = getCurrentCdp(deps.bridge);
+            const currentModel = (cdp ? await cdp.getCurrentModel() : null)
+                || deps.modelService?.getDefaultModel()
+                || 'Auto (UI)';
+
+            await message.reply({ 
+                text: `New chat session started.\n\n<i>${escapeHtml(mode)} | ${escapeHtml(currentModel)}</i>`
+            }).catch(logger.error);
         } else {
             logger.warn('[TelegramCommand:new] startNewChat failed:', result.error);
             await message.reply({
@@ -764,7 +775,18 @@ async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage):
                 );
             }
 
-            await message.channel.send({ text: '\u{1F5D1}\uFE0F Conversation history cleared. Starting fresh.' }).catch(logger.error);
+            const mode = deps.modeService
+                ? deps.modeService.getCurrentMode()
+                : 'unknown';
+
+            const cdp = getCurrentCdp(deps.bridge);
+            const currentModel = (cdp ? await cdp.getCurrentModel() : null)
+                || deps.modelService?.getDefaultModel()
+                || 'Auto (UI)';
+
+            await message.channel.send({
+                text: `\u{1F5D1}\uFE0F Conversation history cleared. Starting fresh.\n\n<i>${escapeHtml(mode)} | ${escapeHtml(currentModel)}</i>`
+            }).catch(logger.error);
         } else {
             logger.warn('[TelegramCommand:clear] startNewChat failed:', result.error);
             await message.reply({

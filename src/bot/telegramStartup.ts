@@ -13,6 +13,7 @@ import { buildStartupStatusSnapshot } from '../services/startupStatus';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 import { WorkspaceService } from '../services/workspaceService';
 import { logger } from '../utils/logger';
+import { extractProjectNameFromPath } from '../utils/pathUtils';
 import { APP_VERSION } from '../utils/version';
 import { TelegramSessionStateStore } from './telegramJoinCommand';
 import { handlePassiveUserMessage, startMonitorForActiveSession } from './telegramMessageHandler';
@@ -78,9 +79,6 @@ async function sendTelegramStartupMessage({
     const bindings = telegramBindingRepo.findAll();
     if (bindings.length === 0) return;
 
-    const os = await import('os');
-    const projects = workspaceService.scanWorkspaces();
-
     let cdpModel: string | null = null;
     let cdpMode: string | null = null;
     try {
@@ -96,7 +94,6 @@ async function sendTelegramStartupMessage({
     }
 
     const {
-        cdpStatus,
         startupModel,
         startupMode,
     } = buildStartupStatusSnapshot({
@@ -107,17 +104,30 @@ async function sendTelegramStartupMessage({
         modelService,
     });
 
-    const startupText = [
-        '<b>ClawGravity Online</b>',
-        '',
-        `Version: ${APP_VERSION}`,
-        `Node.js: ${process.versions.node}`,
-        `OS: ${os.platform()} ${os.release()}`,
-        `CDP: ${cdpStatus}`,
-        `Projects: ${projects.length} registered`,
-        '',
-        `<i>${startupMode} | ${startupModel}</i>`,
-    ].join('\n');
+    const autoApprove = bridge.autoAccept.isEnabled();
+    const activeWorkspaces = new Set(bridge.pool.getActiveWorkspaceNames());
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+    const buildGreeting = (binding: { chatId: string; workspacePath: string }): string => {
+        const projectName = extractProjectNameFromPath(
+            workspaceService.getWorkspacePath(binding.workspacePath),
+        );
+        const isConnected = activeWorkspaces.has(projectName);
+        const connDot = isConnected ? '🟢' : '🟡';
+
+        const lines = [
+            `⚡ <b>ClawGravity Online</b>`,
+            '',
+            `${connDot}  <code>${projectName}</code>`,
+            `🤖  <b>${startupModel}</b> · <code>${startupMode}</code>`,
+            `🛡  Auto-approve: <b>${autoApprove ? 'ON' : 'OFF'}</b>`,
+            '',
+            `<i>v${APP_VERSION} · ${timeStr}</i>`,
+        ];
+
+        return lines.join('\n');
+    };
 
     const sendWithRetry = async (
         chatId: number | string,
@@ -144,7 +154,7 @@ async function sendTelegramStartupMessage({
     };
 
     const results = await Promise.allSettled(
-        bindings.map((binding) => sendWithRetry(binding.chatId, startupText)),
+        bindings.map((binding) => sendWithRetry(binding.chatId, buildGreeting(binding))),
     );
     const failed = results.filter((result) => result.status === 'rejected');
     if (failed.length > 0) {

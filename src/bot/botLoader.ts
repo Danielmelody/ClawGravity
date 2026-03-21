@@ -201,6 +201,11 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
             // Wire up the telegramNotify function so scheduled tasks can broadcast to Telegram
             telegramNotify = telegramRuntime.notify;
             globalTelegramNotifier = telegramNotify;
+
+            // Global error → Telegram: every logger.error() is forwarded automatically.
+            // The hook batches errors with a 10 s debounce window to avoid flooding.
+            logger.setErrorHook((msg) => globalTelegramNotifier?.(msg));
+
             logger.debug(`[Claw] Telegram notify wired up for schedule results and global notifications`);
 
             await telegramRuntime.start();

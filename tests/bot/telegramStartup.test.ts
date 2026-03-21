@@ -99,6 +99,7 @@ describe('telegramStartup', () => {
                 activeMonitors: new Map(),
                 bridge: {
                     pool: { getActiveWorkspaceNames: () => ['proj-a'] },
+                    autoAccept: { isEnabled: () => false },
                 } as any,
                 workspaceService: {
                     scanWorkspaces: () => ['proj-a'],
@@ -153,6 +154,7 @@ describe('telegramStartup', () => {
                 activeMonitors: new Map(),
                 bridge: {
                     pool: { getActiveWorkspaceNames: () => ['proj-a'] },
+                    autoAccept: { isEnabled: () => false },
                 } as any,
                 workspaceService: {
                     scanWorkspaces: () => ['proj-a'],
@@ -183,6 +185,7 @@ describe('telegramStartup', () => {
                     activeMonitors: new Map(),
                     bridge: {
                         pool: { getActiveWorkspaceNames: () => [] },
+                        autoAccept: { isEnabled: () => false },
                     } as any,
                     workspaceService: {
                         scanWorkspaces: () => [],
