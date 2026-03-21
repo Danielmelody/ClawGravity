@@ -223,6 +223,7 @@ export const startBot = async (cliLogLevel?: LogLevel) => {
                 modeService,
                 clawWorkspacePath,
                 clawInterceptor,
+                chatSessionService,
             });
         } catch (e: unknown) {
             const message = e instanceof Error ? e.message : String(e);

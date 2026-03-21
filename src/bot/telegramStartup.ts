@@ -1,4 +1,5 @@
 import { TelegramBindingRepository } from '../database/telegramBindingRepository';
+import { ChatSessionService } from '../services/chatSessionService';
 import { wrapTelegramChannel, type TelegramBotLike } from '../platform/telegram/wrappers';
 import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import {
@@ -29,6 +30,7 @@ export interface TelegramStartupTasksDeps {
     readonly modeService: ModeService;
     readonly clawWorkspacePath: string;
     readonly clawInterceptor?: ClawCommandInterceptor | null;
+    readonly chatSessionService?: ChatSessionService;
 }
 
 export async function getTelegramBotInfoWithRetry(
@@ -61,20 +63,24 @@ export async function getTelegramBotInfoWithRetry(
 async function sendTelegramStartupMessage({
     telegramBot,
     telegramBindingRepo,
+    sessionStateStore,
     bridge,
     workspaceService,
     modelService,
     modeService,
     clawWorkspacePath,
+    chatSessionService,
 }: Pick<
     TelegramStartupTasksDeps,
     'telegramBot'
     | 'telegramBindingRepo'
+    | 'sessionStateStore'
     | 'bridge'
     | 'workspaceService'
     | 'modelService'
     | 'modeService'
     | 'clawWorkspacePath'
+    | 'chatSessionService'
 >): Promise<void> {
     const bindings = telegramBindingRepo.findAll();
     if (bindings.length === 0) return;
@@ -104,6 +110,19 @@ async function sendTelegramStartupMessage({
         modelService,
     });
 
+    // Pre-fetch session list so we can resolve per-chat cascade → title
+    let allSessions: { title: string; cascadeId?: string; isActive?: boolean }[] = [];
+    try {
+        if (chatSessionService) {
+            const prepared = await ensureWorkspaceRuntime(bridge, clawWorkspacePath).catch(() => null);
+            if (prepared) {
+                allSessions = await chatSessionService.listAllSessions(prepared.cdp);
+            }
+        }
+    } catch {
+        // Non-critical — just skip session display
+    }
+
     const autoApprove = bridge.autoAccept.isEnabled();
     const activeWorkspaces = new Set(bridge.pool.getActiveWorkspaceNames());
     const now = new Date();
@@ -122,9 +141,27 @@ async function sendTelegramStartupMessage({
             `${connDot}  <code>${projectName}</code>`,
             `🤖  <b>${startupModel}</b> · <code>${startupMode}</code>`,
             `🛡  Auto-approve: <b>${autoApprove ? 'ON' : 'OFF'}</b>`,
-            '',
-            `<i>v${APP_VERSION} · ${timeStr}</i>`,
         ];
+
+        // Resolve session title for this specific chat
+        const chatCascadeId = sessionStateStore.getCurrentCascadeId(binding.chatId);
+        let sessionTitle: string | null = null;
+        if (chatCascadeId) {
+            const match = allSessions.find(s => s.cascadeId === chatCascadeId);
+            if (match) sessionTitle = match.title;
+        }
+        // Fallback: show the CDP-active session
+        if (!sessionTitle && allSessions.length > 0) {
+            const active = allSessions.find(s => s.isActive);
+            if (active) sessionTitle = active.title;
+        }
+
+        if (sessionTitle) {
+            lines.push(`💬  Session: ${sessionTitle}`);
+        }
+
+        lines.push('');
+        lines.push(`<i>v${APP_VERSION} · ${timeStr}</i>`);
 
         return lines.join('\n');
     };
