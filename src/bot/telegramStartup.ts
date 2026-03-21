@@ -150,11 +150,6 @@ async function sendTelegramStartupMessage({
             const match = allSessions.find(s => s.cascadeId === chatCascadeId);
             if (match) sessionTitle = match.title;
         }
-        // Fallback: show the CDP-active session
-        if (!sessionTitle && allSessions.length > 0) {
-            const active = allSessions.find(s => s.isActive);
-            if (active) sessionTitle = active.title;
-        }
 
         if (sessionTitle) {
             lines.push(`💬  Session: ${sessionTitle}`);
