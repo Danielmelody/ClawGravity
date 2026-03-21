@@ -364,11 +364,21 @@ async function handleStop(deps: TelegramCommandDeps, message: PlatformMessage): 
         await grpcClient.cancelCascade(cascadeId);
 
         if (workspace && deps.activeMonitors) {
-            const monitor = deps.activeMonitors.get(workspace);
+            const chatId = message.channel.id;
+            // Use composite key matching the handler's key scheme
+            const monitorKey = `${workspace}:${chatId}`;
+            const monitor = deps.activeMonitors.get(monitorKey);
             if (monitor?.isActive()) {
                 await monitor.stop().catch(() => { });
             }
-            deps.activeMonitors.delete(workspace);
+            deps.activeMonitors.delete(monitorKey);
+            // Also stop passive monitor for this channel
+            const passiveKey = `passive:${monitorKey}`;
+            const passiveMonitor = deps.activeMonitors.get(passiveKey);
+            if (passiveMonitor?.isActive()) {
+                await passiveMonitor.stop().catch(() => { });
+            }
+            deps.activeMonitors.delete(passiveKey);
         }
 
         logger.done('[TelegramCommand:stop] Cancelled via gRPC');
@@ -662,15 +672,32 @@ async function resolveWithSessionService(
 async function stopProjectMonitors(
     activeMonitors: TelegramCommandDeps['activeMonitors'],
     projectName: string,
+    chatId?: string,
 ): Promise<void> {
     if (!activeMonitors) return;
 
-    for (const key of [projectName, `passive:${projectName}`]) {
-        const monitor = activeMonitors.get(key);
-        if (monitor?.isActive()) {
-            await monitor.stop().catch(() => { });
+    // When chatId is provided, use composite key to only stop
+    // monitors belonging to this specific channel.
+    if (chatId) {
+        const monitorKey = `${projectName}:${chatId}`;
+        for (const key of [monitorKey, `passive:${monitorKey}`]) {
+            const monitor = activeMonitors.get(key);
+            if (monitor?.isActive()) {
+                await monitor.stop().catch(() => { });
+            }
+            activeMonitors.delete(key);
         }
-        activeMonitors.delete(key);
+        return;
+    }
+
+    // Fallback: stop all monitors for this project (any channel)
+    for (const [key, monitor] of activeMonitors.entries()) {
+        if (key === projectName || key.startsWith(`${projectName}:`) || key.startsWith(`passive:${projectName}:`)) {
+            if (monitor?.isActive()) {
+                await monitor.stop().catch(() => { });
+            }
+            activeMonitors.delete(key);
+        }
     }
 }
 
@@ -687,7 +714,7 @@ async function resetChatSession(
     const result = await (runtime.startNewChat as (service: unknown) => Promise<{ ok: boolean; error?: string }>)(resolved.chatSessionService);
     if (!result.ok) return { ok: false, error: result.error || 'unknown error' };
 
-    await stopProjectMonitors(deps.activeMonitors, resolved.projectName);
+    await stopProjectMonitors(deps.activeMonitors, resolved.projectName, chatId);
     deps.sessionStateStore?.clearSelectedSession(chatId);
     const newCascadeId = typeof runtime.getActiveCascadeId === 'function'
         ? await (runtime.getActiveCascadeId as () => Promise<string | null>)().catch(() => null)

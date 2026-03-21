@@ -341,6 +341,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
 
         const TIMEOUT_MS = 600_000;
 
+        // Use composite key (projectName:channelId) to prevent crosstalk
+        // when multiple Telegram chats bind to the same workspace.
+        const activeMonitorKey = `${projectName}:${chatId}`;
         let monitor: GrpcResponseMonitor | null = null;
         let safetyTimer: NodeJS.Timeout | null = null;
         let settled = false;
@@ -351,8 +354,8 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 clearTimeout(safetyTimer);
                 safetyTimer = null;
             }
-            if (monitor && deps.activeMonitors?.get(projectName) === monitor) {
-                deps.activeMonitors.delete(projectName);
+            if (monitor && deps.activeMonitors?.get(activeMonitorKey) === monitor) {
+                deps.activeMonitors.delete(activeMonitorKey);
             }
         };
 
@@ -471,7 +474,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
         }, TIMEOUT_MS);
 
         // Register the monitor so /stop can access and stop it
-        deps.activeMonitors?.set(projectName, monitor);
+        deps.activeMonitors?.set(activeMonitorKey, monitor);
 
         Promise.resolve(monitor.start()).catch((err: unknown) => {
             logger.error(`[TelegramHandler:${projectName}] monitor.start() failed:`, (err as Error)?.message || err);
@@ -1103,12 +1106,12 @@ function ensurePassiveMonitorCleanup(): void {
 }
 
 function clearPassiveMonitorState(
-    projectName: string,
+    monitorKey: string,
     activeMonitors?: Map<string, GrpcResponseMonitor>,
 ): void {
-    passiveResponseMonitors.delete(projectName);
-    passiveMonitorCreatedAt.delete(projectName);
-    activeMonitors?.delete(`passive:${projectName}`);
+    passiveResponseMonitors.delete(monitorKey);
+    passiveMonitorCreatedAt.delete(monitorKey);
+    activeMonitors?.delete(`passive:${monitorKey}`);
     maybeStopPassiveMonitorCleanup();
 }
 
@@ -1240,11 +1243,14 @@ export async function handlePassiveUserMessage(
         }
     }
 
+    // Use composite key (projectName:channelId) to prevent crosstalk
+    const passiveMonitorKey = `${projectName}:${channel.id}`;
+
     // Start passive backend response monitor to capture the AI response
     startPassiveResponseMonitor(
         channel,
         runtime,
-        projectName,
+        passiveMonitorKey,
         info,
         activeMonitors,
         clawInterceptor,
@@ -1283,8 +1289,11 @@ export async function startMonitorForActiveSession(
         streamRouter.connectToCascade(cascadeId);
     }
 
+    // Use composite key (projectName:channelId) to prevent crosstalk
+    const passiveMonitorKey = `${projectName}:${channel.id}`;
+
     startPassiveResponseMonitor(
-        channel, runtime, projectName,
+        channel, runtime, passiveMonitorKey,
         syntheticInfo, activeMonitors, clawInterceptor, sessionStateStore,
     );
 }
@@ -1297,7 +1306,7 @@ export async function startMonitorForActiveSession(
 async function startPassiveResponseMonitor(
     channel: PlatformChannel,
     runtime: WorkspaceRuntime,
-    projectName: string,
+    monitorKey: string,
     info: UserMessageInfo,
     activeMonitors?: Map<string, GrpcResponseMonitor>,
     clawInterceptor?: ClawCommandInterceptor,
@@ -1309,8 +1318,8 @@ async function startPassiveResponseMonitor(
         return !!currentCascadeId && currentCascadeId === info.cascadeId;
     };
 
-    // Stop previous passive monitor if still running
-    const prev = passiveResponseMonitors.get(projectName);
+    // Stop previous passive monitor for this channel if still running
+    const prev = passiveResponseMonitors.get(monitorKey);
     if (prev?.isActive()) {
         prev.stop().catch(() => { });
     }
@@ -1320,7 +1329,7 @@ async function startPassiveResponseMonitor(
 
     const initialMonitoringTarget = await runtime.getMonitoringTarget(info.cascadeId || null);
     let monitor: GrpcResponseMonitor | null = null;
-    const cleanupPassiveState = () => clearPassiveMonitorState(projectName, activeMonitors);
+    const cleanupPassiveState = () => clearPassiveMonitorState(monitorKey, activeMonitors);
     const passivePipeline = createPipelineSession('tg-passive');
     const monitorConfig = buildMonitorCallbacks({
         pipeline: passivePipeline,
@@ -1366,11 +1375,11 @@ async function startPassiveResponseMonitor(
                 initialCascadeId: initialMonitoringTarget?.cascadeId || info.cascadeId || null,
                 logPrefix: '[TelegramPassive]',
                 onFollowUpMonitor: (monitor) => {
-                    passiveResponseMonitors.set(projectName, monitor);
-                    passiveMonitorCreatedAt.set(projectName, Date.now());
-                    activeMonitors?.set(`passive:${projectName}`, monitor);
+                    passiveResponseMonitors.set(monitorKey, monitor);
+                    passiveMonitorCreatedAt.set(monitorKey, Date.now());
+                    activeMonitors?.set(`passive:${monitorKey}`, monitor);
                 },
-                onFollowUpComplete: () => clearPassiveMonitorState(projectName, activeMonitors),
+                onFollowUpComplete: () => clearPassiveMonitorState(monitorKey, activeMonitors),
             });
         },
         handleTimeoutNotice: async (_lastText: string, phase: string) => {
@@ -1403,13 +1412,13 @@ async function startPassiveResponseMonitor(
         ...monitorConfig
     });
 
-    passiveResponseMonitors.set(projectName, monitor);
-    passiveMonitorCreatedAt.set(projectName, Date.now());
+    passiveResponseMonitors.set(monitorKey, monitor);
+    passiveMonitorCreatedAt.set(monitorKey, Date.now());
     ensurePassiveMonitorCleanup();
-    activeMonitors?.set(`passive:${projectName}`, monitor);
+    activeMonitors?.set(`passive:${monitorKey}`, monitor);
     monitor.startPassive().catch((err: unknown) => {
         logger.error('[TelegramPassive] Failed to start response monitor:', (err as Error)?.message || err);
-        clearPassiveMonitorState(projectName, activeMonitors);
+        clearPassiveMonitorState(monitorKey, activeMonitors);
         mirror.dispose();
     });
 }
