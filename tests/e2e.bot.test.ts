@@ -450,11 +450,9 @@ describe('Bot E2E Flow', () => {
 
         await interactionHandler(modelInteractionList);
         expect(mockEditReply).toHaveBeenCalledWith(expect.objectContaining({
-            embeds: expect.arrayContaining([
+            components: expect.arrayContaining([
                 expect.objectContaining({
-                    data: expect.objectContaining({
-                        title: expect.stringMatching(/Model Management/)
-                    })
+                    components: expect.any(Array)
                 })
             ])
         }));

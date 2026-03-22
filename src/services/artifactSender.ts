@@ -52,7 +52,7 @@ const INLINE_MAX_CHARS = 3500;
  *
  * PURE FUNCTION — no side effects.
  */
-function extractArtifactsFromSteps(steps: unknown[]): ExtractedArtifact[] {
+export function extractArtifactsFromSteps(steps: unknown[]): ExtractedArtifact[] {
     if (!Array.isArray(steps)) return [];
 
     const seen = new Set<string>();
@@ -150,17 +150,25 @@ function parseToolArgs(tc: unknown): Record<string, unknown> | null {
  *   3. Wrap in `<blockquote expandable>` so users can tap to expand
  *   4. If content exceeds Telegram's limits, truncate inline + send
  *      full file as document attachment
+ *
+ * @param alreadySentPaths — paths that have already been sent in this session;
+ *        these are skipped to avoid duplicate delivery.
+ * @returns The set of artifact file paths that were actually sent (union of
+ *          alreadySentPaths + newly sent paths).
  */
 export async function sendArtifactsToTelegram(
     steps: unknown[],
     channel: PlatformChannel,
     botApi?: TelegramBotLike['api'],
-): Promise<void> {
-    const artifacts = extractArtifactsFromSteps(steps);
-    if (artifacts.length === 0) return;
+    alreadySentPaths?: Set<string>,
+): Promise<Set<string>> {
+    const allArtifacts = extractArtifactsFromSteps(steps);
+    const sent = new Set<string>(alreadySentPaths);
+    const artifacts = allArtifacts.filter(a => !sent.has(a.filePath));
+    if (artifacts.length === 0) return sent;
 
     const chatId = Number(channel.id);
-    if (isNaN(chatId)) return;
+    if (isNaN(chatId)) return sent;
 
     for (const artifact of artifacts) {
         try {
@@ -219,10 +227,13 @@ export async function sendArtifactsToTelegram(
                 }
             }
 
+        sent.add(artifact.filePath);
             logger.info(`[ArtifactSender] Sent artifact: ${artifact.name} → chat ${chatId} (inline=${isShort})`);
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             logger.warn(`[ArtifactSender] Failed to send artifact ${artifact.name}: ${msg}`);
         }
     }
+
+    return sent;
 }

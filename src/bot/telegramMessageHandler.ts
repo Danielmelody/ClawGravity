@@ -51,9 +51,23 @@ import type { TrajectoryStep } from '../services/trajectoryToolState';
 import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../services/trajectoryStepRenderer';
 import type { StepRenderOptions } from '../services/trajectoryStepRenderer';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
-import { sendArtifactsToTelegram } from '../services/artifactSender';
+
+import type { TelegramBotLike } from '../platform/telegram/wrappers';
 
 const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
+
+/**
+ * Per-chat active mirror tracking.
+ * When a new message arrives for a chat that already has a streaming mirror,
+ * the old mirror is flushed and disposed so the old message card freezes,
+ * and the old monitor is stopped before the new one starts.
+ */
+interface ActiveStreamingSession {
+    mirror: TelegramMirrorSession;
+    monitor: GrpcResponseMonitor | null;
+    safetyTimer: NodeJS.Timeout | null;
+}
+const activeSessions = new Map<string, ActiveStreamingSession>();
 
 /**
  * Sentinel text the AI must include when its inspect analysis is complete.
@@ -337,16 +351,44 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             modeName: deps.modeService ? (MODE_UI_NAMES[deps.modeService.getCurrentMode()] || deps.modeService.getCurrentMode()) : '',
             modelName: (await cdp.getCurrentModel()) || '',
         };
+        // Use composite key (projectName:channelId) to prevent crosstalk
+        // when multiple Telegram chats bind to the same workspace.
+        const activeMonitorKey = `${projectName}:${chatId}`;
+
+        // Stop any previous streaming session for this chat so the old
+        // message card freezes and stops updating.
+        const prevSession = activeSessions.get(activeMonitorKey);
+        if (prevSession) {
+            logger.info(`[TelegramHandler:${projectName}] New message while streaming — freezing previous mirror (chat=${chatId})`);
+            // Flush the old mirror so whatever content it had is committed as-is,
+            // then dispose so it never receives another update.
+            await prevSession.mirror.flush().catch(() => { });
+            prevSession.mirror.dispose();
+            // Stop the old monitor so it stops polling and firing callbacks.
+            if (prevSession.monitor?.isActive()) {
+                await prevSession.monitor.stop().catch(() => { });
+            }
+            if (prevSession.safetyTimer) {
+                clearTimeout(prevSession.safetyTimer);
+            }
+            if (deps.activeMonitors?.get(activeMonitorKey) === prevSession.monitor) {
+                deps.activeMonitors.delete(activeMonitorKey);
+            }
+            activeSessions.delete(activeMonitorKey);
+        }
+
         const mirror = await createTelegramMirrorSession(channel, 'Generating...', mirrorRenderOpts);
 
         const TIMEOUT_MS = 600_000;
 
-        // Use composite key (projectName:channelId) to prevent crosstalk
-        // when multiple Telegram chats bind to the same workspace.
-        const activeMonitorKey = `${projectName}:${chatId}`;
         let monitor: GrpcResponseMonitor | null = null;
         let safetyTimer: NodeJS.Timeout | null = null;
         let settled = false;
+
+        // Register the session immediately so subsequent messages can find & stop it.
+        const currentSession: ActiveStreamingSession = { mirror, monitor: null, safetyTimer: null };
+        activeSessions.set(activeMonitorKey, currentSession);
+
         const settle = () => {
             if (settled) return;
             settled = true;
@@ -356,6 +398,10 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             }
             if (monitor && deps.activeMonitors?.get(activeMonitorKey) === monitor) {
                 deps.activeMonitors.delete(activeMonitorKey);
+            }
+            // Clean up tracking — only if we're still the current session
+            if (activeSessions.get(activeMonitorKey) === currentSession) {
+                activeSessions.delete(activeMonitorKey);
             }
         };
 
@@ -403,14 +449,10 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
                 await mirror.clear();
             },
-            afterComplete: async (_finalText: string, deliveredText: string | null, steps: TrajectoryStep[]) => {
+            afterComplete: async (_finalText: string, deliveredText: string | null, _steps: TrajectoryStep[]) => {
                     // Session switched — silently discard
                     if (!isCurrentChatSession()) return;
 
-                    // Send artifact documents inline (expandable blockquotes)
-                    await sendArtifactsToTelegram(steps, channel, deps.botApi).catch((err: unknown) =>
-                        logger.warn(`[TelegramHandler] Artifact send failed: ${(err as Error)?.message || err}`),
-                    );
                     // Detect inspect-complete sentinel: LLM confirmed no issues → auto-disable inspect mode.
                     if (deliveredText?.includes(INSPECT_DONE_SENTINEL)) {
                         deps.sessionStateStore?.setInspect(chatId, false);
@@ -502,6 +544,10 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             monitor?.stop().catch(() => { });
             settle();
         }, TIMEOUT_MS);
+
+        // Update the tracked session with the concrete monitor + timer
+        currentSession.monitor = monitor;
+        currentSession.safetyTimer = safetyTimer;
 
         // Register the monitor so /stop can access and stop it
         deps.activeMonitors?.set(activeMonitorKey, monitor);
@@ -1067,7 +1113,7 @@ function buildMonitorCallbacks(options: MonitorCallbackOptions) {
                     await executeDelivery(pipeline, plan, channel, existingMessages);
                 }
 
-                // 6. Post-delivery hooks (pass steps for artifact extraction)
+                // 6. Post-delivery hooks (pass steps + already-sent artifact paths)
                 await afterComplete?.(finalText, plan.deliveredText, artifactSteps as TrajectoryStep[]);
             } finally {
                 pipeline.flush();
@@ -1379,13 +1425,7 @@ async function startPassiveResponseMonitor(
                 await mirror.clear();
             }
         },
-        afterComplete: async (_finalText: string, deliveredText: string | null, steps: TrajectoryStep[]) => {
-            // Send artifact documents inline (expandable blockquotes)
-            if (isCurrentChatSession()) {
-                await sendArtifactsToTelegram(steps, channel).catch((err: unknown) =>
-                    logger.warn(`[TelegramPassive] Artifact send failed: ${(err as Error)?.message || err}`),
-                );
-            }
+        afterComplete: async (_finalText: string, deliveredText: string | null, _steps: TrajectoryStep[]) => {
             // Detect inspect-complete sentinel in passive path: LLM confirmed no issues → auto-disable.
             if (deliveredText?.includes(INSPECT_DONE_SENTINEL) && isCurrentChatSession()) {
                 sessionStateStore?.setInspect(channel.id, false);

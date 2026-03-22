@@ -1,15 +1,7 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 
 import { CdpService } from '../services/cdpService';
 import type { MessagePayload, ComponentRow } from '../platform/types';
-import {
-    createRichContent,
-    withTitle,
-    withDescription,
-    withColor,
-    withFooter,
-    withTimestamp,
-} from '../platform/richContentBuilder';
 
 export interface QuotaInfo {
     remainingFraction?: number;
@@ -28,7 +20,7 @@ export interface ModelsUiDeps {
 }
 
 export interface ModelsUiPayload {
-    embeds: EmbedBuilder[];
+    embeds: unknown[];
     components: ActionRowBuilder<ButtonBuilder>[];
 }
 
@@ -105,33 +97,6 @@ export function buildModelsPayload(
 ): MessagePayload | null {
     if (models.length === 0) return null;
 
-    const currentModelFormatted = currentModel ? formatQuota(currentModel, true, quotaData) : 'Unknown';
-    const defaultLine = defaultModel
-        ? `\n**Default:** ⭐ ${defaultModel}`
-        : '\n**Default:** Not set';
-
-    const modelLines = models.map(m => {
-        const isCurrent = m === currentModel;
-        const isDefault = defaultModel != null && m.toLowerCase() === defaultModel.toLowerCase();
-        const star = isDefault ? ' ⭐' : '';
-        return `${formatQuota(m, isCurrent, quotaData)}${star}`;
-    }).join('\n');
-
-    const rc = withTimestamp(
-        withFooter(
-            withDescription(
-                withColor(
-                    withTitle(createRichContent(), 'Model Management'),
-                    0x5865F2,
-                ),
-                `**Current Model:**\n${currentModelFormatted}${defaultLine}\n\n` +
-                `**Available Models (${models.length})**\n` +
-                modelLines,
-            ),
-            'Latest quota information retrieved',
-        ),
-    );
-
     // Use 1 button per row so model names are fully readable on Telegram.
     // Telegram inline keyboard buttons are narrow; 5-per-row truncates names.
     const rows: ComponentRow[] = [];
@@ -141,11 +106,13 @@ export function buildModelsPayload(
         const isDefault = defaultModel != null && mName.toLowerCase() === defaultModel.toLowerCase();
         const prefix = mName === currentModel ? '✓ ' : '';
         const suffix = isDefault ? ' ⭐' : '';
+        const qi = resolveQuotaInfo(mName, quotaData);
+        const quotaSuffix = qi && qi.percent !== null ? ` ${qi.percent}%` : '';
         rows.push({
             components: [{
                 type: 'button',
                 customId: `model_btn_${mName}`,
-                label: `${prefix}${safeName}${suffix}`,
+                label: `${prefix}${safeName}${suffix}${quotaSuffix}`,
                 style: mName === currentModel ? 'success' : 'secondary',
             }],
         });
@@ -173,12 +140,12 @@ export function buildModelsPayload(
         components: [{
             type: 'button',
             customId: 'model_refresh_btn',
-            label: 'Refresh',
+            label: '🔄 Refresh',
             style: 'primary',
         }],
     });
 
-    return { richContent: rc, components: rows };
+    return { components: rows };
 }
 
 /**
@@ -194,18 +161,6 @@ export async function buildModelsUI(
     const quotaData = await fetchQuota();
 
     if (models.length === 0) return null;
-
-    const currentModelFormatted = currentModel ? formatQuota(currentModel, true, quotaData, true) : 'Unknown';
-
-    const embed = new EmbedBuilder()
-        .setTitle('Model Management')
-        .setColor(0x5865F2)
-        .setDescription(`**Current Model:**\n${currentModelFormatted}\n\n` +
-            `**Available Models (${models.length})**\n` +
-            models.map(m => formatQuota(m, m === currentModel, quotaData, true)).join('\n'),
-        )
-        .setFooter({ text: 'Latest quota information retrieved' })
-        .setTimestamp();
 
     const rows: ActionRowBuilder<ButtonBuilder>[] = [];
     let currentRow = new ActionRowBuilder<ButtonBuilder>();
@@ -226,7 +181,7 @@ export async function buildModelsUI(
     if (currentRow.components.length < 5) {
         currentRow.addComponents(new ButtonBuilder()
             .setCustomId('model_refresh_btn')
-            .setLabel('Refresh')
+            .setLabel('🔄 Refresh')
             .setStyle(ButtonStyle.Primary),
         );
         rows.push(currentRow);
@@ -236,14 +191,14 @@ export async function buildModelsUI(
             const refreshRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder()
                     .setCustomId('model_refresh_btn')
-                    .setLabel('Refresh')
+                    .setLabel('🔄 Refresh')
                     .setStyle(ButtonStyle.Primary),
             );
             rows.push(refreshRow);
         }
     }
 
-    return { embeds: [embed], components: rows };
+    return { embeds: [], components: rows };
 }
 
 /**

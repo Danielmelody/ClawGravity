@@ -325,6 +325,15 @@ function renderToolCalls(toolCalls: ToolCall[], showArgs: boolean, showResults: 
         if (showResults && summary.resultPreview) {
             lines.push(`<blockquote expandable><pre>${escapeHtml(summary.resultPreview)}</pre></blockquote>`);
         }
+        // Embed artifact content inline at the point it appears in the trajectory
+        if (summary.artifactContent) {
+            const ARTIFACT_INLINE_MAX = 3500;
+            const truncated = summary.artifactContent.length > ARTIFACT_INLINE_MAX
+                ? summary.artifactContent.slice(0, ARTIFACT_INLINE_MAX) + '\n\n…(truncated)'
+                : summary.artifactContent;
+            const contentHtml = markdownToTelegramHtml(truncated);
+            lines.push(`<blockquote expandable>${contentHtml}</blockquote>`);
+        }
     }
 
     return lines.length > 0 ? lines.join('\n') : null;
@@ -360,6 +369,10 @@ interface CompactToolSummary {
     codePreview?: string;
     /** Brief result output excerpt — shown in a separate expandable block after the line */
     resultPreview?: string;
+    /** Inline artifact content (markdown) — embedded as expandable blockquote for IsArtifact write_to_file calls */
+    artifactContent?: string;
+    /** Artifact type for icon selection (implementation_plan, walkthrough, task, other) */
+    artifactType?: string;
 }
 
 /** Parse tool arguments into a raw object for compact summary extraction. */
@@ -598,7 +611,23 @@ function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
         case 'writetofile': {
             const fn = fileBasename((argsRecord.TargetFile as string) || '');
             const desc = argsRecord.Description;
-            return { icon: '📝', label: 'Created', subject: fn, resultBrief: typeof desc === 'string' ? desc.slice(0, 60) : '' };
+            const isArtifact = !!(argsRecord.IsArtifact || argsRecord.isArtifact);
+            const artifactMeta = (argsRecord.ArtifactMetadata || argsRecord.artifactMetadata || {}) as Record<string, unknown>;
+            const artifactType = isArtifact && typeof artifactMeta.ArtifactType === 'string' ? artifactMeta.ArtifactType : undefined;
+            const artifactIcon = artifactType === 'implementation_plan' ? '📋'
+                : artifactType === 'walkthrough' ? '📝'
+                : artifactType === 'task' ? '✅'
+                : isArtifact ? '📄' : '📝';
+            // For artifacts, embed the CodeContent inline in the trajectory
+            const codeContent = isArtifact ? (argsRecord.CodeContent as string | undefined) : undefined;
+            return {
+                icon: artifactIcon,
+                label: isArtifact ? 'Artifact' : 'Created',
+                subject: fn,
+                resultBrief: typeof desc === 'string' ? desc.slice(0, 60) : '',
+                artifactContent: codeContent || undefined,
+                artifactType,
+            };
         }
         case 'replace_file_content':
         case 'multi_replace_file_content':
