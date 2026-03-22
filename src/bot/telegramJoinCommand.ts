@@ -100,7 +100,7 @@ async function resolveBindingRuntime(
     deps: TelegramJoinCommandDeps,
     chatId: string,
     replyTarget: { reply: (opts: { text: string }) => Promise<unknown> },
-): Promise<{ runtime: WorkspaceRuntime } | null> {
+): Promise<{ runtime: WorkspaceRuntime; projectName: string } | null> {
     const binding = deps.telegramBindingRepo.findByChatId(chatId);
     if (!binding) {
         await replyTarget.reply({
@@ -115,12 +115,32 @@ async function resolveBindingRuntime(
 
     try {
         const prepared = await ensureWorkspaceRuntime(deps.bridge, workspacePath);
-        return { runtime: prepared.runtime as WorkspaceRuntime };
+        return { runtime: prepared.runtime as WorkspaceRuntime, projectName: prepared.projectName };
     } catch (err: unknown) {
         await replyTarget.reply({
             text: `Failed to connect to project: ${escapeHtml((err as Error)?.message || 'unknown error')}`,
         }).catch(logger.error);
         return null;
+    }
+}
+
+/**
+ * Stop all active and passive monitors for a specific chat within a project.
+ * Mirrors the logic in telegramCommands.ts stopProjectMonitors.
+ */
+async function stopChatMonitors(
+    activeMonitors: Map<string, GrpcResponseMonitor> | undefined,
+    projectName: string,
+    chatId: string,
+): Promise<void> {
+    if (!activeMonitors) return;
+    const monitorKey = `${projectName}:${chatId}`;
+    for (const key of [monitorKey, `passive:${monitorKey}`]) {
+        const monitor = activeMonitors.get(key);
+        if (monitor?.isActive()) {
+            await monitor.stop().catch(() => { });
+        }
+        activeMonitors.delete(key);
     }
 }
 
@@ -186,7 +206,10 @@ export async function handleTelegramJoinSelect(
     const chatId = interaction.channel.id;
     const resolved = await resolveBindingRuntime(deps, chatId, interaction);
     if (!resolved) return;
-    const { runtime } = resolved;
+    const { runtime, projectName } = resolved;
+
+    // Stop any monitors streaming from the previous session before switching
+    await stopChatMonitors(deps.activeMonitors, projectName, chatId);
 
     const sessions = await runtime.listAllSessions(deps.chatSessionService);
     // Exact match first; fall back to prefix match in case callback_data was

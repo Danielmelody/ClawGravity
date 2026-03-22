@@ -368,18 +368,45 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
         }
         const { grpcClient, cascadeId } = monitoringTarget;
         const pipeline = createPipelineSession('tg-active');
+
+        // Guard: suppress output if the user switches sessions while this monitor runs.
+        // The captured cascadeId is the cascade we injected into — if sessionStateStore
+        // now points to a different cascade, the user has moved on.
+        const activeCascadeSnapshot = injectResult.cascadeId || cascadeId;
+        const isCurrentChatSession = (): boolean => {
+            if (!deps.sessionStateStore || !activeCascadeSnapshot) return true;
+            const currentCascadeId = deps.sessionStateStore.getCurrentCascadeId(chatId);
+            // If no stored cascade, the message handler hasn't received a response yet — still ours
+            if (!currentCascadeId) return true;
+            return currentCascadeId === activeCascadeSnapshot;
+        };
+
         const monitorConfig = buildMonitorCallbacks({
             pipeline,
             mirror,
             channel,
             getPhase: () => monitor?.getPhase?.() || 'timeout',
             renderOnlyOnComplete: true,
-            resolveFinalText: (finalText: string) => finalText,
+            resolveFinalText: (finalText: string) => {
+                if (!isCurrentChatSession()) {
+                    logger.debug(`[TelegramHandler:${projectName}] Session switched — discarding active monitor output`);
+                    return null;
+                }
+                return finalText;
+            },
+            shouldForward: isCurrentChatSession,
             handleEmptyComplete: async () => {
+                if (!isCurrentChatSession()) {
+                    await mirror.clear();
+                    return;
+                }
                 await channel.send({ text: '(Empty response from Antigravity)' }).catch(logger.error);
                 await mirror.clear();
             },
             afterComplete: async (_finalText: string, deliveredText: string | null, steps: TrajectoryStep[]) => {
+                    // Session switched — silently discard
+                    if (!isCurrentChatSession()) return;
+
                     // Send artifact documents inline (expandable blockquotes)
                     await sendArtifactsToTelegram(steps, channel, deps.botApi).catch((err: unknown) =>
                         logger.warn(`[TelegramHandler] Artifact send failed: ${(err as Error)?.message || err}`),
@@ -429,6 +456,9 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     });
             },
             handleTimeoutNotice: async (_lastText: string, phase: string) => {
+                // Session switched — don't show timeout/error to the user
+                if (!isCurrentChatSession()) return;
+
                 const isError = phase === 'error';
                 const isQuota = phase === 'quotaReached';
 
