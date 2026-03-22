@@ -492,18 +492,30 @@ export class GrpcResponseMonitor {
 
         const latestTextIsEmpty = latestText !== null && latestText.trim().length === 0;
 
+        // Explicit DONE/IDLE status + no pending tool calls → complete even if text is empty.
+        // The AI may have finished with only tool calls (edits, commands) and no prose.
+        const isExplicitlyDone = snapshot.hasExplicitRunStatus
+            && snapshot.runStatus !== 'CASCADE_RUN_STATUS_RUNNING';
+
         // Don't complete if:
         //  - Still RUNNING
         //  - Latest step has tool calls (model is mid-turn, waiting for tool results)
-        //  - Latest role isn't assistant
+        //  - Latest role isn't assistant (unless explicitly done with empty text)
+        //  - Text is empty AND we don't have an explicit done status
         if (
             snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING'
             || snapshot.latestAssistantHasToolCalls
-            || snapshot.latestRole !== 'assistant'
-            || latestTextIsEmpty
         ) {
             this.pendingTerminalAssistantSignature = null;
             return false;
+        }
+
+        // When we have no explicit "done" status, require assistant role + non-empty text
+        if (!isExplicitlyDone) {
+            if (snapshot.latestRole !== 'assistant' || latestTextIsEmpty) {
+                this.pendingTerminalAssistantSignature = null;
+                return false;
+            }
         }
 
         if (!snapshot.hasExplicitRunStatus) {
