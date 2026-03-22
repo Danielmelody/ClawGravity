@@ -134,6 +134,39 @@ function enrichToolCallsWithResults(steps: TrajectoryStep[]) {
 }
 
 /**
+ * Build a map from CommandId → CommandLine by scanning all run_command tool calls.
+ * Used so that `command_status` can display the actual command instead of just the UUID.
+ */
+function buildCommandIndex(steps: TrajectoryStep[]): Map<string, string> {
+    const index = new Map<string, string>();
+    for (const step of steps) {
+        const tcs = step?.plannerResponse?.toolCalls;
+        if (!Array.isArray(tcs)) continue;
+        for (const tc of tcs) {
+            const name = (tc.name || tc.toolName || tc.function?.name || '').toLowerCase();
+            if (name !== 'run_command' && name !== 'runcommand') continue;
+            const args = getToolArgsObject(tc);
+            if (!args) continue;
+            const cmdLine = (args.CommandLine as string) || (args.command as string) || '';
+            if (!cmdLine) continue;
+            const resultText = extractToolResult(tc);
+            // Extract command ID from the result (typically contains "command id: <uuid>")
+            if (resultText) {
+                const idMatch = resultText.match(/(?:command[_\s-]*id|CommandId)[:\s]+([a-f0-9-]{8,})/i);
+                if (idMatch) {
+                    index.set(idMatch[1], cmdLine);
+                }
+            }
+            // Also map by tool call ID (the AI may reference it directly)
+            if (tc.id) {
+                index.set(tc.id, cmdLine);
+            }
+        }
+    }
+    return index;
+}
+
+/**
  * Render trajectory steps into Telegram-safe HTML.
  *
  * This is the primary entry point. It receives the raw steps array from
@@ -161,6 +194,7 @@ export function renderStepsToTelegramHtml(
     }
 
     enrichToolCallsWithResults(steps);
+    const commandIndex = buildCommandIndex(steps);
 
     // Render only steps after the anchor (the current turn's assistant response)
     const renderFrom = anchorIndex >= 0 ? anchorIndex + 1 : 0;
@@ -168,7 +202,7 @@ export function renderStepsToTelegramHtml(
 
     for (let i = renderFrom; i < steps.length; i++) {
         const step = steps[i];
-        const rendered = renderStep(step, opts);
+        const rendered = renderStep(step, opts, commandIndex);
         if (rendered) {
             fragments.push(rendered);
         }
@@ -192,11 +226,11 @@ export function renderStepsToTelegramHtml(
 // Per-step rendering
 // ---------------------------------------------------------------------------
 
-function renderStep(step: TrajectoryStep, opts: Required<StepRenderOptions>): string | null {
+function renderStep(step: TrajectoryStep, opts: Required<StepRenderOptions>, commandIndex?: Map<string, string>): string | null {
     const type = step?.type;
 
     if (type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || type === 'CORTEX_STEP_TYPE_RESPONSE') {
-        return renderAssistantStep(step, opts);
+        return renderAssistantStep(step, opts, commandIndex);
     }
 
     // Catch error-only steps that aren't planner/response type
@@ -207,7 +241,7 @@ function renderStep(step: TrajectoryStep, opts: Required<StepRenderOptions>): st
     return null;
 }
 
-function renderAssistantStep(step: TrajectoryStep, opts: Required<StepRenderOptions>): string | null {
+function renderAssistantStep(step: TrajectoryStep, opts: Required<StepRenderOptions>, commandIndex?: Map<string, string>): string | null {
     const parts: string[] = [];
     const planner = step?.plannerResponse;
 
@@ -219,7 +253,7 @@ function renderAssistantStep(step: TrajectoryStep, opts: Required<StepRenderOpti
 
     // 2. Tool calls
     if (opts.showToolCalls && Array.isArray(planner?.toolCalls) && planner.toolCalls.length > 0) {
-        const toolLines = renderToolCalls(planner.toolCalls, opts.showToolArgs, opts.showToolResults);
+        const toolLines = renderToolCalls(planner.toolCalls, opts.showToolArgs, opts.showToolResults, commandIndex);
         if (toolLines) parts.push(toolLines);
     }
 
@@ -296,7 +330,7 @@ function renderThinking(thinking: string, maxChars: number): string | null {
  *   ✅ <b>Ran command</b>
  *   <blockquote expandable><pre>npx jscpd src/ 2>&1</pre></blockquote>
  */
-function renderToolCalls(toolCalls: ToolCall[], showArgs: boolean, showResults: boolean): string | null {
+function renderToolCalls(toolCalls: ToolCall[], showArgs: boolean, showResults: boolean, commandIndex?: Map<string, string>): string | null {
     const lines: string[] = [];
 
     for (const tc of toolCalls) {
@@ -306,7 +340,7 @@ function renderToolCalls(toolCalls: ToolCall[], showArgs: boolean, showResults: 
             : status === 'error'
                 ? '<tg-emoji emoji-id="5465465565741634628">✖️</tg-emoji>'
                 : '<tg-emoji emoji-id="5465665476971471369">✔️</tg-emoji>';
-        const summary = buildCompactToolSummary(tc);
+        const summary = buildCompactToolSummary(tc, commandIndex);
 
         let line = `${statusIcon} ${summary.icon}`;
         if (showArgs && summary.subject) {
@@ -538,7 +572,7 @@ function extractCommandResultBrief(cmdLine: string, result: string | null, exitB
  * Build a compact Antigravity-style summary for a tool call.
  * Maps raw tool names to human-readable labels and extracts key details.
  */
-function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
+function buildCompactToolSummary(tc: ToolCall, commandIndex?: Map<string, string>): CompactToolSummary {
     const name = (tc.name || tc.toolName || tc.function?.name || '').toLowerCase();
     const args = getToolArgsObject(tc);
     const result = extractToolResult(tc);
@@ -676,7 +710,17 @@ function buildCompactToolSummary(tc: ToolCall): CompactToolSummary {
         case 'command_status': {
             const statusBrief = extractBriefStatus(result, [/status[:\s]+"?(running|done|completed)"?/i]);
             const commandId = argsRecord.CommandId as string | undefined;
-            return { icon: '▶️', label: 'Checked command', subject: commandId ? `#${commandId}` : '', resultBrief: statusBrief };
+            // Resolve actual command line from the index
+            const resolvedCmd = commandId && commandIndex?.get(commandId);
+            let cmdSubject = '';
+            if (resolvedCmd) {
+                // Show a short version of the actual command
+                const shortCmd = resolvedCmd.length > 50 ? resolvedCmd.slice(0, 47) + '...' : resolvedCmd;
+                cmdSubject = shortCmd;
+            } else if (commandId) {
+                cmdSubject = `#${commandId.slice(0, 8)}`;
+            }
+            return { icon: '▶️', label: 'Checked command', subject: cmdSubject, resultBrief: statusBrief };
         }
         case 'send_command_input':
         case 'sendcommandinput': {
