@@ -86,6 +86,16 @@ function formatQuota(
         : `${prefix} ${mName} (${qi.timeStr})`;
 }
 
+/** Build a compact quota suffix for button labels, e.g. " 80% ⏱3h32m". */
+function formatQuotaSuffix(mName: string, quotaData: QuotaData[]): string {
+    const qi = resolveQuotaInfo(mName, quotaData);
+    if (!qi) return '';
+    const parts: string[] = [];
+    if (qi.percent !== null) parts.push(`${qi.percent}%`);
+    if (qi.timeStr && qi.timeStr !== 'Ready') parts.push(`⏱${qi.timeStr}`);
+    return parts.length > 0 ? ` ${parts.join(' ')}` : '';
+}
+
 /**
  * Build a platform-agnostic MessagePayload for model selection UI.
  */
@@ -106,8 +116,7 @@ export function buildModelsPayload(
         const isDefault = defaultModel != null && mName.toLowerCase() === defaultModel.toLowerCase();
         const prefix = mName === currentModel ? '✓ ' : '';
         const suffix = isDefault ? ' ⭐' : '';
-        const qi = resolveQuotaInfo(mName, quotaData);
-        const quotaSuffix = qi && qi.percent !== null ? ` ${qi.percent}%` : '';
+        const quotaSuffix = formatQuotaSuffix(mName, quotaData);
         rows.push({
             components: [{
                 type: 'button',
@@ -171,9 +180,10 @@ export async function buildModelsUI(
             currentRow = new ActionRowBuilder<ButtonBuilder>();
         }
         const safeName = mName.length > 80 ? mName.substring(0, 77) + '...' : mName;
+        const quotaSuffix = formatQuotaSuffix(mName, quotaData);
         currentRow.addComponents(new ButtonBuilder()
             .setCustomId(`model_btn_${mName}`)
-            .setLabel(safeName)
+            .setLabel(`${safeName}${quotaSuffix}`)
             .setStyle(mName === currentModel ? ButtonStyle.Success : ButtonStyle.Secondary),
         );
     }
