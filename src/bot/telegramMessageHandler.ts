@@ -507,12 +507,16 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 if (isQuota) {
                     await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(logger.error);
                 } else if (isError) {
-                    await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(logger.error);
+                    const errorPreview = _lastText?.trim().slice(0, 300) || '';
+                    const userMsg = errorPreview
+                        ? `❌ Agent error:\n${errorPreview}`
+                        : '❌ An error occurred while generating the response.';
+                    await channel.send({ text: userMsg }).catch(logger.error);
                     try {
                         const { globalTelegramNotifier } = await import('./index');
                         if (globalTelegramNotifier) {
                             await globalTelegramNotifier(
-                                `🚨 <b>Antigravity Generation Error</b>\nAn error occurred while generating the response for project <code>${escapeHtml(projectName)}</code>.`,
+                                `🚨 <b>Antigravity Generation Error</b>\n<code>${escapeHtml(projectName)}</code>: ${escapeHtml(errorPreview || 'Unknown error')}`,
                             );
                         }
                     } catch {

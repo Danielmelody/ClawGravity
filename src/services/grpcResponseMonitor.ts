@@ -46,6 +46,26 @@ export interface GrpcResponseMonitorOptions {
 /** Polling interval for trajectory fetches (ms). */
 const POLLING_INTERVAL_MS = 500;
 
+/** Error patterns in response text that indicate a backend/server error, not a real AI response. */
+const ERROR_RESPONSE_PATTERNS = [
+    'servers are experiencing high traffic',
+    'our servers are experiencing',
+    'model is overloaded',
+    'service unavailable',
+    'temporarily unavailable',
+    'resource exhausted',
+    'please try again later',
+    'please try again in a few',
+    'internal server error',
+    'rate limit exceeded',
+    'quota exceeded',
+    'too many requests',
+    'capacity limit',
+];
+
+/** Max response length to consider for error detection — real responses are typically longer. */
+const ERROR_RESPONSE_MAX_LENGTH = 500;
+
 interface TrajectoryRecoverySnapshot {
     steps: unknown[];
     renderSteps: unknown[];
@@ -590,12 +610,36 @@ export class GrpcResponseMonitor {
     }
 
     private async finishSuccessfully(): Promise<void> {
-        if (this.currentPhase === 'complete') return; // guard against double-fire
-        this.setPhase('complete', this.lastResponseText);
+        if (this.currentPhase === 'complete' || this.currentPhase === 'error') return; // guard against double-fire
         const text = this.lastResponseText ?? '';
+
+        // Detect backend error responses (short messages with known error patterns).
+        // These should be surfaced as errors, not delivered as normal AI responses.
+        if (this.isErrorResponse(text)) {
+            logger.warn(`[GrpcMonitor] Response detected as backend error: "${text.slice(0, 150)}"`);
+            this.setPhase('error', text);
+            this.stop().catch(() => { });
+            this.onTimeout?.(text);
+            return;
+        }
+
+        this.setPhase('complete', this.lastResponseText);
 
         this.stop().catch(() => { });
         this.onComplete?.(text);
+    }
+
+    /**
+     * Check if a response text is actually a backend/server error message.
+     * Short responses matching known error patterns are treated as errors.
+     */
+    private isErrorResponse(text: string): boolean {
+        if (!text.trim()) return false;
+        // Only check short responses — a long response that happens to contain
+        // "please try again" in context is a real response, not an error.
+        if (text.length > ERROR_RESPONSE_MAX_LENGTH) return false;
+        const normalized = text.toLowerCase();
+        return ERROR_RESPONSE_PATTERNS.some(p => normalized.includes(p));
     }
 
     private emitThinkingDetails(thinking: unknown): void {
