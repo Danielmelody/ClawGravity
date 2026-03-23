@@ -135,6 +135,11 @@ export class GrpcResponseMonitor {
     private anchorEverMatched = false;
     private anchorLossLogged = false;
 
+    // Stale trajectory heuristic: detect when RUNNING but nothing is changing
+    private lastTrajectoryFingerprint: string | null = null;
+    private trajectoryStaleStart: number | null = null;
+    private static readonly STALE_COMPLETION_MS = 30_000; // 30s without trajectory changes → complete
+
     // Polling state
     private pollingTimer: NodeJS.Timeout | null = null;
     private activeTrajectoryRPC: Promise<TrajectoryRecoverySnapshot | null> | null = null;
@@ -390,6 +395,8 @@ export class GrpcResponseMonitor {
 
                     // Only count PENDING tool calls (no result yet) as "still working".
                     // Resolved tool calls (with results/output) should not block completion.
+                    // Also scan forward to subsequent concrete tool steps for completion
+                    // (LS sometimes records results there, not on plannerResponse.toolCalls).
                     if (Array.isArray(plannerResponse?.toolCalls) && (plannerResponse.toolCalls as unknown[]).length > 0) {
                         const pendingToolCalls = (plannerResponse.toolCalls as unknown[]).filter((tc: unknown) => {
                             const tcRecord = tc as Record<string, unknown> | null | undefined;
@@ -397,12 +404,30 @@ export class GrpcResponseMonitor {
                             const hasResult = tcRecord?.result !== undefined
                                 || tcRecord?.output !== undefined
                                 || tcRecord?.toolCallResult !== undefined;
-                            const status = tcRecord?.status || tcRecord?.toolCallStatus || '';
+                            const status = String(tcRecord?.status || tcRecord?.toolCallStatus || '');
                             const isCompleted = status === 'completed'
                                 || status === 'done'
                                 || status === 'success'
                                 || status === 'error';
-                            return !hasResult && !isCompleted;
+                            if (hasResult || isCompleted) return false;
+
+                            // Scan forward for a concrete tool execution step with this tool call ID
+                            const tcId = typeof tcRecord?.id === 'string' ? tcRecord.id.trim() : '';
+                            if (tcId) {
+                                for (let j = i + 1; j < steps.length; j++) {
+                                    const execStep = steps[j] as Record<string, unknown> | null | undefined;
+                                    const meta = execStep?.metadata as Record<string, unknown> | undefined;
+                                    const execTc = meta?.toolCall as Record<string, unknown> | undefined;
+                                    if (execTc && String(execTc.id || '').trim() === tcId) {
+                                        // Found a concrete step — check if it's terminal
+                                        const execStatus = String(execStep?.status || '').toLowerCase();
+                                        if (['done', 'completed', 'success', 'error', 'canceled', 'cancelled'].some(s => execStatus.includes(s))) {
+                                            return false; // not pending
+                                        }
+                                    }
+                                }
+                            }
+                            return true;
                         });
                         latestAssistantHasToolCalls = pendingToolCalls.length > 0;
                     } else {
@@ -497,28 +522,57 @@ export class GrpcResponseMonitor {
         const isExplicitlyDone = snapshot.hasExplicitRunStatus
             && snapshot.runStatus !== 'CASCADE_RUN_STATUS_RUNNING';
 
-        // Don't complete if:
-        //  - Still RUNNING
-        //  - Latest step has tool calls (model is mid-turn, waiting for tool results)
-        //  - Latest role isn't assistant (unless explicitly done with empty text)
-        //  - Text is empty AND we don't have an explicit done status
-        if (
-            snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING'
-            || snapshot.latestAssistantHasToolCalls
-        ) {
+        // Don't complete if latest step has tool calls (model is mid-turn, waiting for tool results)
+        if (snapshot.latestAssistantHasToolCalls) {
             this.pendingTerminalAssistantSignature = null;
+            this.lastTrajectoryFingerprint = null;
+            this.trajectoryStaleStart = null;
             return false;
         }
 
-        // When we have no explicit "done" status, require assistant role + non-empty text
-        if (!isExplicitlyDone) {
+        // Stale trajectory heuristic: if RUNNING but trajectory unchanged for 30s
+        // with no pending tool calls, treat as done. This handles the case where
+        // the AI finishes with a tool call (e.g. notify_user) but runStatus
+        // never transitions to DONE.
+        let staleCompleted = false;
+        if (snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
+            if (!isExplicitlyDone && snapshot.latestRole === 'assistant') {
+                const fingerprint = `${snapshot.latestAssistantSignature}|${snapshot.steps?.length ?? 0}`;
+                if (fingerprint !== this.lastTrajectoryFingerprint) {
+                    this.lastTrajectoryFingerprint = fingerprint;
+                    this.trajectoryStaleStart = Date.now();
+                    return false;
+                } else if (this.trajectoryStaleStart) {
+                    const staleDuration = Date.now() - this.trajectoryStaleStart;
+                    if (staleDuration >= GrpcResponseMonitor.STALE_COMPLETION_MS) {
+                        logger.info(
+                            `[GrpcMonitor] Stale trajectory heuristic: RUNNING but unchanged for ${Math.round(staleDuration / 1000)}s — completing`,
+                        );
+                        staleCompleted = true;
+                        // Fall through — bypass downstream guards
+                    } else {
+                        return false;
+                    }
+                } else {
+                    this.trajectoryStaleStart = Date.now();
+                    return false;
+                }
+            } else {
+                this.pendingTerminalAssistantSignature = null;
+                return false;
+            }
+        }
+
+        // When we have no explicit "done" status and no stale-heuristic completion,
+        // require assistant role + non-empty text
+        if (!isExplicitlyDone && !staleCompleted) {
             if (snapshot.latestRole !== 'assistant' || latestTextIsEmpty) {
                 this.pendingTerminalAssistantSignature = null;
                 return false;
             }
         }
 
-        if (!snapshot.hasExplicitRunStatus) {
+        if (!snapshot.hasExplicitRunStatus && !staleCompleted) {
             if (!snapshot.latestAssistantSignature) return false;
             if (this.pendingTerminalAssistantSignature !== snapshot.latestAssistantSignature) {
                 this.pendingTerminalAssistantSignature = snapshot.latestAssistantSignature;
@@ -530,7 +584,7 @@ export class GrpcResponseMonitor {
 
         this.lastResponseText = latestText ?? this.lastResponseText ?? '';
         this.hasSeenActivity = true;
-        logger.info(`[GrpcMonitor] Completed response from trajectory (${this.lastResponseText.length} chars)`);
+        logger.info(`[GrpcMonitor] Completed response from trajectory (${this.lastResponseText.length} chars, stale=${staleCompleted})`);
         this.finishSuccessfully();
         return true;
     }

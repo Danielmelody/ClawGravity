@@ -134,6 +134,30 @@ function enrichToolCallsWithResults(steps: TrajectoryStep[]) {
 }
 
 /**
+ * Recursively search an object for a command ID value.
+ * Looks for keys like "commandId", "CommandId", "command_id" at any depth.
+ */
+function findCommandIdInObject(obj: unknown): string | null {
+    if (obj == null || typeof obj !== 'object') return null;
+    const record = obj as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+        const lk = key.toLowerCase();
+        if ((lk === 'commandid' || lk === 'command_id') && typeof record[key] === 'string') {
+            const val = record[key] as string;
+            if (/^[a-f0-9-]{8,}$/i.test(val)) return val;
+        }
+    }
+    // Recurse one level into object values
+    for (const val of Object.values(record)) {
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+            const found = findCommandIdInObject(val);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+/**
  * Build a map from CommandId → CommandLine by scanning all run_command tool calls.
  * Used so that `command_status` can display the actual command instead of just the UUID.
  */
@@ -149,16 +173,50 @@ function buildCommandIndex(steps: TrajectoryStep[]): Map<string, string> {
             if (!args) continue;
             const cmdLine = (args.CommandLine as string) || (args.command as string) || '';
             if (!cmdLine) continue;
+
+            // 1. Try to find commandId in the raw structured result object
+            const rawResult = tc?.result ?? tc?.output ?? tc?.toolCallResult;
+            if (rawResult && typeof rawResult === 'object') {
+                const structuredId = findCommandIdInObject(rawResult);
+                if (structuredId) {
+                    index.set(structuredId, cmdLine);
+                }
+            }
+
+            // 2. Try regex on the text representation of the result
             const resultText = extractToolResult(tc);
-            // Extract command ID from the result (typically contains "command id: <uuid>")
             if (resultText) {
-                const idMatch = resultText.match(/(?:command[_\s-]*id|CommandId)[:\s]+([a-f0-9-]{8,})/i);
+                const idMatch = resultText.match(/(?:command[_\s-]*id|CommandId)[:\s"]+([a-f0-9-]{8,})/i);
                 if (idMatch) {
                     index.set(idMatch[1], cmdLine);
                 }
             }
-            // Also map by tool call ID (the AI may reference it directly)
+
+            // 3. Scan the matching execution step directly for command IDs
+            //    (covers cases where enrichment didn't properly attach results)
             if (tc.id) {
+                const execStep = steps.find(s => s?.metadata?.toolCall?.id === tc.id && s !== step);
+                if (execStep) {
+                    // Search all non-standard keys of the execution step for a command ID
+                    for (const key of Object.keys(execStep)) {
+                        if (['type', 'status', 'metadata', 'error', 'userInput', 'plannerResponse'].includes(key)) continue;
+                        const payload = execStep[key];
+                        if (payload && typeof payload === 'object') {
+                            const foundId = findCommandIdInObject(payload);
+                            if (foundId) {
+                                index.set(foundId, cmdLine);
+                            }
+                        }
+                        // Also check text content for command IDs
+                        if (typeof payload === 'string') {
+                            const textMatch = payload.match(/(?:command[_\s-]*id|CommandId)[:\s"]+([a-f0-9-]{8,})/i);
+                            if (textMatch) {
+                                index.set(textMatch[1], cmdLine);
+                            }
+                        }
+                    }
+                }
+                // Also map by tool call ID (the AI may reference it directly)
                 index.set(tc.id, cmdLine);
             }
         }
