@@ -5,6 +5,7 @@ import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor'
 import {
     CdpBridge,
     ensureWorkspaceRuntime,
+    registerApprovalWorkspaceChannel,
 } from '../services/cdpBridgeManager';
 import { extractCascadeRunStatus } from '../services/grpcCascadeClient';
 import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
@@ -249,6 +250,10 @@ async function startTelegramEagerMirroring({
                 },
             });
             runtime = prepared.runtime;
+            
+            bridge.lastActiveWorkspace = prepared.projectName;
+            bridge.lastActiveChannel = channel;
+            registerApprovalWorkspaceChannel(bridge, prepared.projectName, channel);
 
             const cascadeId = await runtime.getActiveCascadeId().catch(() => null);
             if (cascadeId) {

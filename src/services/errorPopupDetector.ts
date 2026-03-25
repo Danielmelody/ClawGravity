@@ -93,31 +93,6 @@ export class ErrorPopupDetector {
         return null;
     }
 
-    
-    async clickDynamicButton(label: string): Promise<boolean> {
-        try {
-            const script = "(() => { const els = Array.from(document.querySelectorAll('.monaco-button, a[role=button]')); const btn = els.find(b => (b.textContent || '').includes('" + label.replace(/'/g, "\'") + "')); if (btn) { btn.click(); return true; } return false; })()";
-            const clicked = await this.cdpService.evaluateRuntime<boolean>(script);
-            if (clicked) {
-                logger.debug('[ErrorPopupDetector] Clicked dynamic button: ' + label);
-                return true;
-            }
-            return false;
-        } catch (error) {
-            logger.error('[ErrorPopupDetector] Dynamic button click failed:', error);
-            return false;
-        }
-    }
-
-    private async extractButtonsFromDom(): Promise<string[]> {
-        const script = "(() => { const getBtnTexts = (parent) => Array.from(parent.querySelectorAll('.monaco-button, a[role=button]')).map(b => b.textContent?.trim()).filter(Boolean); const dialogs = document.querySelectorAll('.monaco-dialog-box'); for (const d of dialogs) { const buttons = getBtnTexts(d); if (buttons.length > 0) return buttons; } const notifs = document.querySelectorAll('.notification-list-item'); for (const n of notifs) { if (!n.querySelector('.codicon-error')) continue; const buttons = getBtnTexts(n); if (buttons.length > 0) return buttons; } return []; })()";
-        try {
-            const result = await this.cdpService.evaluateRuntime<string[]>(script);
-            return result || [];
-        } catch {
-            return [];
-        }
-    }
 
     evaluate(cascadeId: string, steps: unknown[], runStatus: string | null): void {
         if (!this.state.isRunning) return;
@@ -129,18 +104,10 @@ export class ErrorPopupDetector {
             return;
         }
 
-        // Fire-and-forget DOM extraction to find real buttons instead of adhoc "Retry"
-        (async () => {
-            const domButtons = await this.extractButtonsFromDom();
-            if (domButtons.length > 0) {
-                coreInfo.buttons = domButtons;
-            } else if (coreInfo.buttons.length === 0) {
-                coreInfo.buttons = ['Retry'];
-            }
-            const key = cascadeId + '::' + coreInfo.title + '::' + coreInfo.body.slice(0, 100);
-            processDetectorResult(this.state, ErrorPopupDetector.CONFIG, coreInfo, key,
-                (detected) => this.onErrorPopup(detected), this.onResolved);
-        })().catch(err => logger.error('[ErrorPopupDetector] evaluate error:', err));
+        coreInfo.buttons = ['Continue'];
+        const key = cascadeId + '::' + coreInfo.title + '::' + coreInfo.body.slice(0, 100);
+        processDetectorResult(this.state, ErrorPopupDetector.CONFIG, coreInfo, key,
+            (detected) => this.onErrorPopup(detected), this.onResolved);
     }
 
     private extractErrorFromTrajectory(steps: unknown[], runStatus: string | null): ErrorPopupInfo | null {
@@ -164,11 +131,9 @@ export class ErrorPopupDetector {
             const responseText = step?.plannerResponse?.response || step?.response?.text || step?.assistantResponse?.text || '';
             if (typeof responseText === 'string') {
                 const normalized = responseText.toLowerCase();
-                // Detect when cascade is idle, errored, complete, or status unknown (server crash)
-                const isTerminalStatus = runStatus === null
-                    || runStatus === 'CASCADE_RUN_STATUS_IDLE'
-                    || runStatus.includes('ERROR')
-                    || runStatus.includes('COMPLETE');
+                // Terminal = anything that is NOT actively running.
+                // Whitelist the single non-terminal state so future unknown statuses are caught.
+                const isTerminalStatus = runStatus !== 'CASCADE_RUN_STATUS_RUNNING';
                 if (ERROR_PATTERNS.some(p => normalized.includes(p)) && isTerminalStatus) {
                     return { title: 'Agent Error', body: responseText.slice(0, 1000), buttons: [] };
                 }

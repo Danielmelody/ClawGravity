@@ -17,10 +17,7 @@ export const PLANNING_OPEN_ACTION_PREFIX = 'planning_open_action';
 export const PLANNING_PROCEED_ACTION_PREFIX = 'planning_proceed_action';
 
 // Error popup action prefixes
-export const ERROR_POPUP_DISMISS_ACTION_PREFIX = 'error_popup_dismiss_action';
-export const ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX = 'error_popup_copy_debug_action';
-export const ERROR_POPUP_RETRY_ACTION_PREFIX = 'error_popup_retry_action';
-export const ERROR_POPUP_BTN_ACTION_PREFIX = 'error_popup_btn_action';
+export const ERROR_POPUP_CONTINUE_ACTION_PREFIX = 'error_popup_continue_action';
 
 // Run command action prefixes
 export const RUN_COMMAND_RUN_ACTION_PREFIX = 'run_command_run_action';
