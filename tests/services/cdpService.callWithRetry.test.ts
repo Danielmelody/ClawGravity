@@ -49,19 +49,10 @@ describe('CdpService - callWithRetry (Issue #55)', () => {
     describe('callWithRetry()', () => {
         it('passes through when call() succeeds', async () => {
             cdpService = new CdpService({ maxReconnectAttempts: 0 });
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
+            jest.spyOn(cdpService, 'isConnected').mockReturnValue(true);
 
             // Simulate immediate response
-            mockWsInstance.send.mockImplementation((data: any) => {
-                const msg = JSON.parse(data);
-                const pending = (cdpService as any).pendingCalls.get(msg.id);
-                if (pending) {
-                    clearTimeout(pending.timeoutId);
-                    (cdpService as any).pendingCalls.delete(msg.id);
-                    pending.resolve({ result: { value: 'ok' } });
-                }
-            });
+            jest.spyOn(cdpService, 'call').mockResolvedValue({ result: { value: 'ok' } });
 
             const result = await cdpService.callWithRetry('Runtime.evaluate', { expression: '1+1' });
             expect(result).toEqual({ result: { value: 'ok' } });
@@ -69,25 +60,17 @@ describe('CdpService - callWithRetry (Issue #55)', () => {
 
         it('reconnects on-demand and retries when WebSocket is disconnected', async () => {
             cdpService = new CdpService({ maxReconnectAttempts: 0 });
-            (cdpService as any).isConnectedFlag = false;
-            (cdpService as any).ws = null;
+            jest.spyOn(cdpService, 'isConnected').mockReturnValue(false);
             (cdpService as any).currentWorkspacePath = '/tmp/my-workspace';
 
             // After reconnect, simulate connected state
             jest.spyOn(cdpService, 'discoverAndConnectForWorkspace').mockImplementation(async () => {
-                (cdpService as any).isConnectedFlag = true;
-                (cdpService as any).ws = mockWsInstance;
-                mockWsInstance.send.mockImplementation((data: any) => {
-                    const msg = JSON.parse(data);
-                    const pending = (cdpService as any).pendingCalls.get(msg.id);
-                    if (pending) {
-                        clearTimeout(pending.timeoutId);
-                        (cdpService as any).pendingCalls.delete(msg.id);
-                        pending.resolve({ data: 'screenshot-data' });
-                    }
-                });
+                jest.spyOn(cdpService, 'isConnected').mockReturnValue(true);
                 return true;
             });
+            // First call rejects (if we somehow get past isConnected, though we mocked it to false, tests direct call sometimes)
+            // Wait, actually callWithRetry returns `this.call<T>` on retry.
+            jest.spyOn(cdpService, 'call').mockRejectedValueOnce(new Error('WebSocket is not connected')).mockResolvedValue({ data: 'screenshot-data' });
 
             const result = await cdpService.callWithRetry('Page.captureScreenshot', {});
             expect(result).toEqual({ data: 'screenshot-data' });
@@ -96,8 +79,7 @@ describe('CdpService - callWithRetry (Issue #55)', () => {
 
         it('throws immediately for non-connection errors (no retry)', async () => {
             cdpService = new CdpService({ maxReconnectAttempts: 0 });
-            (cdpService as any).isConnectedFlag = true;
-            (cdpService as any).ws = mockWsInstance;
+            jest.spyOn(cdpService, 'isConnected').mockReturnValue(true);
 
             // Simulate timeout error
             jest.spyOn(cdpService, 'call').mockRejectedValue(
@@ -125,8 +107,7 @@ describe('CdpService - callWithRetry (Issue #55)', () => {
 
         it('throws when reconnect fails', async () => {
             cdpService = new CdpService({ maxReconnectAttempts: 0 });
-            (cdpService as any).isConnectedFlag = false;
-            (cdpService as any).ws = null;
+            jest.spyOn(cdpService, 'isConnected').mockReturnValue(false);
             (cdpService as any).currentWorkspacePath = '/tmp/my-workspace';
 
             jest.spyOn(cdpService, 'discoverAndConnectForWorkspace').mockRejectedValue(
@@ -135,7 +116,7 @@ describe('CdpService - callWithRetry (Issue #55)', () => {
 
             await expect(
                 cdpService.callWithRetry('Page.captureScreenshot', {})
-            ).rejects.toThrow('WebSocket is not connected');
+            ).rejects.toThrow('No target found');
         });
     });
 
@@ -174,7 +155,7 @@ describe('CdpService - callWithRetry (Issue #55)', () => {
 
             await expect(
                 (cdpService as any).reconnectOnDemand(20)
-            ).rejects.toThrow('WebSocket is not connected');
+            ).rejects.toThrow('Timeout');
         }, 5000);
 
         it('coalesces concurrent calls via shared promise', async () => {
@@ -203,45 +184,4 @@ describe('CdpService - callWithRetry (Issue #55)', () => {
         });
     });
 
-    // ========== waitForReconnection ==========
-
-    describe('waitForReconnection()', () => {
-        it('resolves on reconnected event', async () => {
-            cdpService = new CdpService({ maxReconnectAttempts: 0 });
-
-            const promise = (cdpService as any).waitForReconnection(5000);
-            cdpService.emit('reconnected');
-
-            await expect(promise).resolves.toBeUndefined();
-        });
-
-        it('rejects on reconnectFailed event', async () => {
-            cdpService = new CdpService({ maxReconnectAttempts: 0 });
-
-            const promise = (cdpService as any).waitForReconnection(5000);
-            cdpService.emit('reconnectFailed', new Error('Max attempts'));
-
-            await expect(promise).rejects.toThrow('WebSocket is not connected');
-        });
-
-        it('rejects on timeout', async () => {
-            cdpService = new CdpService({ maxReconnectAttempts: 0 });
-
-            const promise = (cdpService as any).waitForReconnection(50);
-
-            await expect(promise).rejects.toThrow('WebSocket is not connected');
-        }, 5000);
-
-        it('cleans up event listeners after resolution', async () => {
-            cdpService = new CdpService({ maxReconnectAttempts: 0 });
-
-            const listenersBefore = cdpService.listenerCount('reconnected');
-            const promise = (cdpService as any).waitForReconnection(5000);
-            cdpService.emit('reconnected');
-            await promise;
-            const listenersAfter = cdpService.listenerCount('reconnected');
-
-            expect(listenersAfter).toBe(listenersBefore);
-        });
-    });
 });

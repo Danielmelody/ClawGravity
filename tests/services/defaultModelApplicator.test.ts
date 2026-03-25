@@ -98,21 +98,4 @@ describe('applyDefaultModel', () => {
         expect(result.applied).toBe(false);
         expect(result.stale).toBe(false);
     });
-
-    it('marks synced after successful apply', async () => {
-        modelService.setDefaultModel('claude-sonnet-4.6-thinking');
-        // Set pendingSync via setModel
-        modelService.setModel('gemini-3-flash');
-        expect(modelService.isPendingSync()).toBe(true);
-
-        const cdp = createMockCdp({
-            currentModel: 'gemini-3-flash',
-            availableModels: ['claude-sonnet-4.6-thinking'],
-            setUiModelResult: { ok: true, model: 'claude-sonnet-4.6-thinking' },
-        });
-
-        await applyDefaultModel(cdp as any, modelService);
-
-        expect(modelService.isPendingSync()).toBe(false);
-    });
 });

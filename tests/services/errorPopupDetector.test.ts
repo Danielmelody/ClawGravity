@@ -37,12 +37,13 @@ describe('ErrorPopupDetector', () => {
 
     const IDLE = 'CASCADE_RUN_STATUS_IDLE';
 
-    it('calls the onErrorPopup callback when an error step is detected', () => {
+    it('calls the onErrorPopup callback when an error step is detected', async () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
 
-        detector.evaluate('cascade-1', [{ error: 'Something went wrong badly' }], IDLE);
+        detector.evaluate('cascade-1', [{ error: 'Something went wrong badly' }], IDLE); await new Promise(setImmediate);
 
+        await new Promise(process.nextTick);
         expect(onErrorPopup).toHaveBeenCalledWith(
             expect.objectContaining({
                 title: 'Agent Error',
@@ -51,13 +52,14 @@ describe('ErrorPopupDetector', () => {
         );
     });
 
-    it('does not call the callback multiple times when the same error is detected consecutively', () => {
+    it('does not call the callback multiple times when the same error is detected consecutively', async () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
 
-        detector.evaluate('cascade-1', [{ error: 'Repeated error message' }], IDLE);
-        detector.evaluate('cascade-1', [{ error: 'Repeated error message' }], IDLE);
+        detector.evaluate('cascade-1', [{ error: 'Repeated error message' }], IDLE); await new Promise(setImmediate);
+        detector.evaluate('cascade-1', [{ error: 'Repeated error message' }], IDLE); await new Promise(setImmediate);
 
+        await new Promise(process.nextTick);
         expect(onErrorPopup).toHaveBeenCalledTimes(1);
     });
 
@@ -66,56 +68,62 @@ describe('ErrorPopupDetector', () => {
         detector.start();
         await detector.stop();
 
-        detector.evaluate('cascade-1', [{ error: 'Error after stop' }], IDLE);
+        detector.evaluate('cascade-1', [{ error: 'Error after stop' }], IDLE); await new Promise(setImmediate);
 
+        await new Promise(process.nextTick);
         expect(onErrorPopup).not.toHaveBeenCalled();
     });
 
-    it('continues working even when evaluate data varies', () => {
+    it('continues working even when evaluate data varies', async () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
 
         // First call with no error
-        detector.evaluate('cascade-1', [], IDLE);
+        detector.evaluate('cascade-1', [], IDLE); await new Promise(setImmediate);
+        await new Promise(process.nextTick);
         expect(onErrorPopup).not.toHaveBeenCalled();
 
         // Second call with error
-        detector.evaluate('cascade-1', [{ error: 'Real error after recovery' }], IDLE);
+        detector.evaluate('cascade-1', [{ error: 'Real error after recovery' }], IDLE); await new Promise(setImmediate);
+        await new Promise(process.nextTick);
         expect(onErrorPopup).toHaveBeenCalled();
     });
 
-    it('getLastDetectedInfo() returns the detected ErrorPopupInfo', () => {
+    it('getLastDetectedInfo() returns the detected ErrorPopupInfo', async () => {
         const { detector } = createDetector();
         detector.start();
 
-        detector.evaluate('cascade-1', [{ plannerResponse: { error: 'Test error' } }], IDLE);
+        detector.evaluate('cascade-1', [{ plannerResponse: { error: 'Test error' } }], IDLE); await new Promise(setImmediate);
 
         const info = detector.getLastDetectedInfo();
         expect(info).not.toBeNull();
         expect(info?.title).toBe('Agent Error');
     });
 
-    it('getLastDetectedInfo() returns null when error disappears', () => {
+    it('getLastDetectedInfo() returns null when error disappears', async () => {
         const { detector } = createDetector();
         detector.start();
 
-        detector.evaluate('cascade-1', [{ error: 'Transient' }], IDLE);
+        detector.evaluate('cascade-1', [{ error: 'Transient' }], IDLE); await new Promise(setImmediate);
+        await new Promise(process.nextTick);
         expect(detector.getLastDetectedInfo()).not.toBeNull();
 
         // Error resolved
-        detector.evaluate('cascade-1', [{ type: 'CORTEX_STEP_TYPE_USER_INPUT' }], IDLE);
+        detector.evaluate('cascade-1', [{ type: 'CORTEX_STEP_TYPE_USER_INPUT' }], IDLE); await new Promise(setImmediate);
+        await new Promise(process.nextTick);
         expect(detector.getLastDetectedInfo()).toBeNull();
     });
 
-    it('calls onResolved when error state disappears', () => {
+    it('calls onResolved when error state disappears', async () => {
         const { detector, onResolved } = createDetector();
         detector.start();
 
-        detector.evaluate('cascade-1', [{ error: 'Will resolve' }], IDLE);
+        detector.evaluate('cascade-1', [{ error: 'Will resolve' }], IDLE); await new Promise(setImmediate);
 
         // Error resolved
-        detector.evaluate('cascade-1', [], IDLE);
+        detector.evaluate('cascade-1', [], IDLE); await new Promise(setImmediate);
 
+        await new Promise(process.nextTick);
         expect(onResolved).toHaveBeenCalled();
     });
 
@@ -144,7 +152,7 @@ describe('ErrorPopupDetector', () => {
         expect(result).toBeNull();
     });
 
-    it('detects error patterns in response text when IDLE', () => {
+    it('detects error patterns in response text when IDLE', async () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
 
@@ -154,6 +162,7 @@ describe('ErrorPopupDetector', () => {
             IDLE,
         );
 
+        await new Promise(process.nextTick);
         expect(onErrorPopup).toHaveBeenCalledWith(
             expect.objectContaining({
                 title: 'Agent Error',
@@ -161,7 +170,7 @@ describe('ErrorPopupDetector', () => {
         );
     });
 
-    it('detects network error patterns in response text when IDLE', () => {
+    it('detects network error patterns in response text when IDLE', async () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
 
@@ -171,6 +180,7 @@ describe('ErrorPopupDetector', () => {
             IDLE,
         );
 
+        await new Promise(process.nextTick);
         expect(onErrorPopup).toHaveBeenCalledWith(
             expect.objectContaining({
                 title: 'Agent Error',
@@ -179,7 +189,7 @@ describe('ErrorPopupDetector', () => {
         );
     });
 
-    it('detects high traffic error patterns in response text', () => {
+    it('detects high traffic error patterns in response text', async () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
 
@@ -189,6 +199,7 @@ describe('ErrorPopupDetector', () => {
             IDLE,
         );
 
+        await new Promise(process.nextTick);
         expect(onErrorPopup).toHaveBeenCalledWith(
             expect.objectContaining({
                 title: 'Agent Error',
@@ -197,7 +208,7 @@ describe('ErrorPopupDetector', () => {
         );
     });
 
-    it('detects error patterns even when cascade status is error (not just IDLE)', () => {
+    it('detects error patterns even when cascade status is error (not just IDLE)', async () => {
         const { detector, onErrorPopup } = createDetector();
         detector.start();
 
@@ -207,6 +218,7 @@ describe('ErrorPopupDetector', () => {
             'CASCADE_RUN_STATUS_ERROR',
         );
 
+        await new Promise(process.nextTick);
         expect(onErrorPopup).toHaveBeenCalledWith(
             expect.objectContaining({
                 title: 'Agent Error',

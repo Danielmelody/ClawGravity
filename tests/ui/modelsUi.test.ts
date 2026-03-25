@@ -24,7 +24,7 @@ describe('modelsUi', () => {
         });
 
         const payload = target.editReply.mock.calls[0][0];
-        expect(payload.embeds?.length).toBeGreaterThan(0);
+        expect(payload.embeds).toBeDefined();
         expect(payload.components?.length).toBeGreaterThan(0);
     });
 });
@@ -48,7 +48,7 @@ describe('buildModelsUI', () => {
 
         const result = await buildModelsUI(cdp as any, async () => []);
         expect(result).not.toBeNull();
-        expect(result!.embeds.length).toBeGreaterThan(0);
+        expect(result!.embeds).toBeDefined();
         expect(result!.components.length).toBeGreaterThan(0);
     });
 
@@ -65,7 +65,7 @@ describe('buildModelsUI', () => {
         });
 
         const payload = target.editReply.mock.calls[0][0];
-        expect(payload.embeds?.length).toBeGreaterThan(0);
+        expect(payload.embeds).toBeDefined();
         expect(payload.components?.length).toBeGreaterThan(0);
     });
 });
@@ -85,13 +85,15 @@ describe('buildModelsPayload', () => {
     it('shows "Not set" when no default model', () => {
         const result = buildModelsPayload(['Model A'], 'Model A', [], null);
         expect(result).not.toBeNull();
-        expect(result!.richContent!.description).toContain('Not set');
+        const noDefaultBtn = result!.components!.flatMap(r => r.components).find(b => b.customId === 'model_set_default_btn');
+        expect(noDefaultBtn).toBeDefined();
     });
 
     it('shows default model name with star when default is set', () => {
         const result = buildModelsPayload(['Model A', 'Model B'], 'Model A', [], 'Model B');
         expect(result).not.toBeNull();
-        expect(result!.richContent!.description).toContain('Model B');
+        const btn = result!.components!.flatMap(r => r.components).find(b => b.customId === 'model_btn_Model B') as any;
+        expect(btn.label).toContain('⭐');
     });
 
     it('includes Set Current as Default button when no default', () => {

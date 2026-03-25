@@ -50,6 +50,7 @@ function createSession(overrides: Record<string, any> = {}) {
         injectMessageWithImageFiles: jest.fn().mockResolvedValue({ ok: true, cascadeId: 'cascade-1' }),
         getGrpcClient: jest.fn().mockResolvedValue({}),
         getActiveCascadeId: jest.fn().mockResolvedValue('cascade-1'),
+        getCurrentModel: jest.fn().mockResolvedValue('claude-3-5-sonnet'),
     } as any;
 
     const onFullCompletion = jest.fn();

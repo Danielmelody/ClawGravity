@@ -53,12 +53,13 @@ describe('CdpService - error handling and timeout processing (Step 12)', () => {
     describe('pendingCalls cleanup on disconnection', () => {
         it('rejects all unresolved pendingCalls when WebSocket disconnects', async () => {
             cdpService = new CdpService({ cdpCallTimeout: 5000, maxReconnectAttempts: 0 });
+            (cdpService as any).connection = new (require('../../src/services/cdpConnection').CdpConnection)('ws://dummy-target', 5000);
             (cdpService as any).isConnectedFlag = true;
             (cdpService as any).ws = mockWsInstance;
 
             // Add unresolved Promises to pendingCalls
             const pendingPromise = new Promise<void>((_, reject) => {
-                (cdpService as any).pendingCalls.set(999, {
+                (cdpService as any).connection.pendingCalls.set(999, {
                     resolve: jest.fn(),
                     reject,
                     timeoutId: setTimeout(() => { }, 999999),
@@ -69,7 +70,7 @@ describe('CdpService - error handling and timeout processing (Step 12)', () => {
             (cdpService as any).isConnectedFlag = false;
             (cdpService as any).ws = null;
             // Call the clearPendingCalls method
-            (cdpService as any).clearPendingCalls(new Error('WebSocket切断'));
+            (cdpService as any).connection.clearPendingCalls(new Error('WebSocket切断'));
 
             // Verify pendingCalls reject is called
             await expect(pendingPromise).rejects.toThrow('WebSocket切断');
@@ -77,22 +78,23 @@ describe('CdpService - error handling and timeout processing (Step 12)', () => {
 
         it('pendingCalls is empty after disconnection', () => {
             cdpService = new CdpService({ cdpCallTimeout: 5000, maxReconnectAttempts: 0 });
-            (cdpService as any).pendingCalls.set(1, {
+            (cdpService as any).connection = new (require('../../src/services/cdpConnection').CdpConnection)('ws://dummy-target', 5000);
+            (cdpService as any).connection.pendingCalls.set(1, {
                 resolve: jest.fn(),
                 reject: jest.fn(),
                 timeoutId: setTimeout(() => { }, 999999),
             });
-            (cdpService as any).pendingCalls.set(2, {
+            (cdpService as any).connection.pendingCalls.set(2, {
                 resolve: jest.fn(),
                 reject: jest.fn(),
                 timeoutId: setTimeout(() => { }, 999999),
             });
 
-            expect((cdpService as any).pendingCalls.size).toBe(2);
+            expect((cdpService as any).connection.pendingCalls.size).toBe(2);
 
-            (cdpService as any).clearPendingCalls(new Error('切断'));
+            (cdpService as any).connection.clearPendingCalls(new Error('切断'));
 
-            expect((cdpService as any).pendingCalls.size).toBe(0);
+            expect((cdpService as any).connection.pendingCalls.size).toBe(0);
         });
     });
 

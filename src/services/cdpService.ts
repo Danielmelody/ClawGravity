@@ -509,7 +509,7 @@ export class CdpService extends EventEmitter {
 
         const nestedChoice = (modelOrAlias?.choice as Record<string, unknown> | undefined) ?? modelOrAlias;
         const ncv = nestedChoice?.value as Record<string, unknown> | undefined;
-        const nested = (ncv?.model as string | undefined) ?? (ncv?.alias as string | undefined) ?? (nestedChoice as unknown as string | undefined);
+        const nested = (typeof ncv === 'string' ? ncv : (ncv?.model as string | undefined) ?? (ncv?.alias as string | undefined)) ?? (nestedChoice as unknown as string | undefined);
         if (nested != null && String(nested).trim()) return String(nested);
         return 'unknown';
     }

@@ -76,7 +76,7 @@ describe('CdpService injection preflight', () => {
             cascadeId: 'running-cascade',
         });
         expect(mockClient.rawRPC).toHaveBeenCalledWith('GetCascadeTrajectory', { cascadeId: 'running-cascade' });
-        expect(mockClient.sendMessage).toHaveBeenCalledWith('running-cascade', 'hi', undefined);
+        expect(mockClient.sendMessage).toHaveBeenCalledWith('running-cascade', 'hi', undefined, undefined);
         expect(mockClient.createCascade).not.toHaveBeenCalled();
     });
 
@@ -107,7 +107,7 @@ describe('CdpService injection preflight', () => {
             error: 'LS SendUserCascadeMessage: 409 - conflict',
             cascadeId: 'existing-cascade',
         });
-        expect(mockClient.sendMessage).toHaveBeenCalledWith('existing-cascade', 'retry me', undefined);
+        expect(mockClient.sendMessage).toHaveBeenCalledWith('existing-cascade', 'retry me', undefined, undefined);
         expect(mockClient.createCascade).not.toHaveBeenCalled();
     });
 });

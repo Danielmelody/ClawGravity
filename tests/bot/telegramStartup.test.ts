@@ -95,7 +95,10 @@ describe('telegramStartup', () => {
                 telegramBindingRepo: {
                     findAll: () => [{ chatId: '1001', workspacePath: 'proj-a' }],
                 } as any,
-                sessionStateStore: { setCurrentCascadeId: jest.fn() } as any,
+                sessionStateStore: {
+                    setCurrentCascadeId: jest.fn(),
+                    getCurrentCascadeId: jest.fn().mockReturnValue(null),
+                } as any,
                 activeMonitors: new Map(),
                 bridge: {
                     pool: { getActiveWorkspaceNames: () => ['proj-a'] },
@@ -139,8 +142,10 @@ describe('telegramStartup', () => {
                     projectName: 'proj-a',
                 });
             (extractCascadeRunStatus as jest.Mock).mockReturnValue('CASCADE_RUN_STATUS_RUNNING');
-
-            const sessionStateStore = { setCurrentCascadeId: jest.fn() };
+            const sessionStateStore = {
+                setCurrentCascadeId: jest.fn(),
+                getCurrentCascadeId: jest.fn().mockReturnValue(null),
+            };
 
             await runTelegramStartupTasks({
                 telegramBot: {

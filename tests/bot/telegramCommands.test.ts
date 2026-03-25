@@ -8,7 +8,7 @@ jest.mock('../../src/utils/logger', () => ({
     logger: {
         info: jest.fn(),
         warn: jest.fn(),
-        error: jest.fn(),
+        error: (m,e) => console.log(m,e),
         debug: jest.fn(),
         done: jest.fn(),
     },
@@ -315,7 +315,7 @@ describe('handleTelegramCommand — /stop', () => {
             isActive: jest.fn().mockReturnValue(true),
             stop: jest.fn().mockResolvedValue(undefined),
         };
-        const activeMonitors = new Map<string, any>([['test-project', mockMonitor]]);
+        const activeMonitors = new Map<string, any>([["test-project:chat-123", mockMonitor]]);
         const mockCdp = {
             getGrpcClient: jest.fn().mockResolvedValue({ cancelCascade }),
             getActiveCascadeId: jest.fn().mockResolvedValue('cascade-123'),
@@ -394,7 +394,7 @@ describe('handleTelegramCommand — /stop', () => {
             isActive: jest.fn().mockReturnValue(false),
             stop: jest.fn(),
         };
-        const activeMonitors = new Map<string, any>([['test-project', mockMonitor]]);
+        const activeMonitors = new Map<string, any>([["test-project:chat-123", mockMonitor]]);
         const mockCdp = {
             getGrpcClient: jest.fn().mockResolvedValue({ cancelCascade }),
             getActiveCascadeId: jest.fn().mockResolvedValue('cascade-123'),
@@ -1047,6 +1047,7 @@ describe('handleTelegramCommand — /project_create', () => {
 describe('handleTelegramCommand — /new', () => {
     beforeEach(() => {
         (ensureWorkspaceRuntime as jest.Mock).mockReset();
+        (getCurrentCdp as jest.Mock).mockReturnValue(null);
     });
 
     it('returns error when chatSessionService is not available', async () => {
@@ -1108,8 +1109,8 @@ describe('handleTelegramCommand — /new', () => {
             stop: jest.fn().mockResolvedValue(undefined),
         };
         const activeMonitors = new Map<string, any>([
-            ['TestProject', activeMonitor],
-            ['passive:TestProject', passiveMonitor],
+            ["TestProject:chat-123", activeMonitor],
+            ["passive:TestProject:chat-123", passiveMonitor],
         ]);
         const sessionStateStore = {
             clearSelectedSession: jest.fn(),
@@ -1120,14 +1121,21 @@ describe('handleTelegramCommand — /new', () => {
             getActiveCascadeId: jest.fn().mockResolvedValue('cascade-new'),
         };
         const bridge = createMockBridge();
-        (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({ runtime: mockRuntime, projectName: 'TestProject', cdp: {} });
+        (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue({ 
+            runtime: mockRuntime, 
+            projectName: 'TestProject', 
+            cdp: { getCurrentModel: jest.fn().mockResolvedValue('test-model') } 
+        });
         const chatSessionService = {} as any;
         const telegramBindingRepo = {
             findByChatId: jest.fn().mockReturnValue({ chatId: 'chat-123', workspacePath: 'TestProject' }),
         } as any;
 
+        const modelService = { getDefaultModel: jest.fn().mockReturnValue('mock-model') } as any;
+        const modeService = { getCurrentMode: jest.fn().mockReturnValue('mock-mode') } as any;
+
         await handleTelegramCommand(
-            { bridge, chatSessionService, telegramBindingRepo, activeMonitors, sessionStateStore: sessionStateStore as any },
+            { bridge, chatSessionService, telegramBindingRepo, activeMonitors, sessionStateStore: sessionStateStore as any, modelService, modeService },
             message as any,
             { command: 'new', args: '' },
         );

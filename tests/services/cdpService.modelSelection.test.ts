@@ -40,7 +40,7 @@ describe('CdpService model selection', () => {
             cascadeId: 'cascade-123',
         });
 
-        expect(mockClient.sendMessage).toHaveBeenCalledWith('cascade-123', 'hello', 1154);
+        expect(mockClient.sendMessage).toHaveBeenCalledWith('cascade-123', 'hello', 1154, undefined);
     });
 
     it('matches the UI label to a config label even when the config has a quota suffix', async () => {
@@ -70,7 +70,7 @@ describe('CdpService model selection', () => {
             cascadeId: 'cascade-456',
         });
 
-        expect(mockClient.sendMessage).toHaveBeenCalledWith('cascade-456', 'hello again', 1154);
+        expect(mockClient.sendMessage).toHaveBeenCalledWith('cascade-456', 'hello again', 1154, undefined);
     });
 
     it('passes through string model identifiers returned by newer GetUserStatus payloads', async () => {
@@ -100,7 +100,7 @@ describe('CdpService model selection', () => {
             cascadeId: 'cascade-789',
         });
 
-        expect(mockClient.sendMessage).toHaveBeenCalledWith('cascade-789', 'hello string model', 'MODEL_PLACEHOLDER_M26');
+        expect(mockClient.sendMessage).toHaveBeenCalledWith('cascade-789', 'hello string model', 'MODEL_PLACEHOLDER_M26', undefined);
         expect(service.getSelectedModelId()).toBe('MODEL_PLACEHOLDER_M26');
     });
 
