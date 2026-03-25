@@ -34,6 +34,7 @@ import { parseTelegramProjectCommand, handleTelegramProjectCommand } from './tel
 import { parseTelegramCommand, handleTelegramCommand } from './telegramCommands';
 
 import { ModeService, MODE_UI_NAMES } from '../services/modeService';
+import { buildErrorPopupNotification } from '../services/notificationSender';
 import type { ModelService } from '../services/modelService';
 import { applyDefaultModel } from '../services/defaultModelApplicator';
 import { logger } from '../utils/logger';
@@ -51,8 +52,6 @@ import type { TrajectoryStep } from '../services/trajectoryToolState';
 import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../services/trajectoryStepRenderer';
 import type { StepRenderOptions } from '../services/trajectoryStepRenderer';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
-
-import type { TelegramBotLike } from '../platform/telegram/wrappers';
 
 const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
 
@@ -508,10 +507,18 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                     await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(logger.error);
                 } else if (isError) {
                     const errorPreview = _lastText?.trim().slice(0, 300) || '';
-                    const userMsg = errorPreview
-                        ? `❌ Agent error:\n${errorPreview}`
-                        : '❌ An error occurred while generating the response.';
-                    await channel.send({ text: userMsg }).catch(logger.error);
+                    if (errorPreview) {
+                        const payload = buildErrorPopupNotification({
+                            title: 'Agent Error',
+                            errorMessage: errorPreview,
+                            projectName: projectName,
+                            channelId: chatId,
+                            includeActions: true,
+                        });
+                        await channel.send(payload).catch(logger.error);
+                    } else {
+                        await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(logger.error);
+                    }
                     try {
                         const { globalTelegramNotifier } = await import('./index');
                         if (globalTelegramNotifier) {
