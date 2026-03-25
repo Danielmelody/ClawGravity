@@ -372,7 +372,7 @@ function renderThinking(thinking: string, maxChars: number): string | null {
         text = text.slice(0, maxChars) + '…';
     }
 
-    return `💭 <blockquote expandable>${escapeHtml(text)}</blockquote>`;
+    return `💭 <blockquote expandable>\n${markdownToTelegramHtml(text)}\n</blockquote>`;
 }
 
 // ---------------------------------------------------------------------------
