@@ -93,16 +93,54 @@ export class ErrorPopupDetector {
         return null;
     }
 
+    
+    async clickDynamicButton(label: string): Promise<boolean> {
+        try {
+            const script = "(() => { const els = Array.from(document.querySelectorAll('.monaco-button, a[role=button]')); const btn = els.find(b => (b.textContent || '').includes('" + label.replace(/'/g, "\'") + "')); if (btn) { btn.click(); return true; } return false; })()";
+            const clicked = await this.cdpService.evaluateRuntime<boolean>(script);
+            if (clicked) {
+                logger.debug('[ErrorPopupDetector] Clicked dynamic button: ' + label);
+                return true;
+            }
+            return false;
+        } catch (error) {
+            logger.error('[ErrorPopupDetector] Dynamic button click failed:', error);
+            return false;
+        }
+    }
+
+    private async extractButtonsFromDom(): Promise<string[]> {
+        const script = "(() => { const getBtnTexts = (parent) => Array.from(parent.querySelectorAll('.monaco-button, a[role=button]')).map(b => b.textContent?.trim()).filter(Boolean); const dialogs = document.querySelectorAll('.monaco-dialog-box'); for (const d of dialogs) { const buttons = getBtnTexts(d); if (buttons.length > 0) return buttons; } const notifs = document.querySelectorAll('.notification-list-item'); for (const n of notifs) { if (!n.querySelector('.codicon-error')) continue; const buttons = getBtnTexts(n); if (buttons.length > 0) return buttons; } return []; })()";
+        try {
+            const result = await this.cdpService.evaluateRuntime<string[]>(script);
+            return result || [];
+        } catch {
+            return [];
+        }
+    }
+
     evaluate(cascadeId: string, steps: unknown[], runStatus: string | null): void {
         if (!this.state.isRunning) return;
-        try {
-            const info = this.extractErrorFromTrajectory(steps, runStatus);
-            const key = info ? `${cascadeId}::${info.title}::${info.body.slice(0, 100)}` : null;
-            processDetectorResult(this.state, ErrorPopupDetector.CONFIG, info, key,
+        
+        const coreInfo = this.extractErrorFromTrajectory(steps, runStatus);
+        if (!coreInfo) {
+            processDetectorResult(this.state, ErrorPopupDetector.CONFIG, null, null,
                 (detected) => this.onErrorPopup(detected), this.onResolved);
-        } catch (error) {
-            logger.error('[ErrorPopupDetector] Error during evaluation:', error);
+            return;
         }
+
+        // Fire-and-forget DOM extraction to find real buttons instead of adhoc "Retry"
+        (async () => {
+            const domButtons = await this.extractButtonsFromDom();
+            if (domButtons.length > 0) {
+                coreInfo.buttons = domButtons;
+            } else if (coreInfo.buttons.length === 0) {
+                coreInfo.buttons = ['Retry'];
+            }
+            const key = cascadeId + '::' + coreInfo.title + '::' + coreInfo.body.slice(0, 100);
+            processDetectorResult(this.state, ErrorPopupDetector.CONFIG, coreInfo, key,
+                (detected) => this.onErrorPopup(detected), this.onResolved);
+        })().catch(err => logger.error('[ErrorPopupDetector] evaluate error:', err));
     }
 
     private extractErrorFromTrajectory(steps: unknown[], runStatus: string | null): ErrorPopupInfo | null {
@@ -119,7 +157,7 @@ export class ErrorPopupDetector {
                 const errorMessage = typeof errorField === 'string'
                     ? errorField
                     : (errorField as { message?: string })?.message || JSON.stringify(errorField);
-                return { title: 'Agent Error', body: String(errorMessage).slice(0, 1000), buttons: ['Retry'] };
+                return { title: 'Agent Error', body: String(errorMessage).slice(0, 1000), buttons: [] };
             }
 
             // Check error patterns in response text
@@ -132,14 +170,14 @@ export class ErrorPopupDetector {
                     || runStatus.includes('ERROR')
                     || runStatus.includes('COMPLETE');
                 if (ERROR_PATTERNS.some(p => normalized.includes(p)) && isTerminalStatus) {
-                    return { title: 'Agent Error', body: responseText.slice(0, 1000), buttons: ['Retry'] };
+                    return { title: 'Agent Error', body: responseText.slice(0, 1000), buttons: [] };
                 }
             }
 
             // Check error status
             const stepStatus = step?.status || step?.cascadeRunStatus;
             if (typeof stepStatus === 'string' && stepStatus.toLowerCase().includes('error')) {
-                return { title: 'Agent Error', body: `Step status: ${stepStatus}`, buttons: ['Retry'] };
+                return { title: 'Agent Error', body: `Step status: ${stepStatus}`, buttons: [] };
             }
         }
         return null;

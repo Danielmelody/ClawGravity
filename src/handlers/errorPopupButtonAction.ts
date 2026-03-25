@@ -26,7 +26,7 @@ export function createErrorPopupButtonAction(
         getDetector: (pool, name) => pool.getErrorPopupDetector(name),
         label: 'ErrorPopupAction',
         resolveOpts: { skipDefer: true },
-        async handler(interaction, detector, action) {
+        async handler(interaction, detector, action: string) {
             // Acknowledge immediately so Telegram doesn't time out
             await interaction.deferUpdate().catch(() => { });
 
@@ -75,7 +75,7 @@ export function createErrorPopupButtonAction(
                         .followUp({ text: 'Could not read debug info from clipboard.' })
                         .catch(() => { });
                 }
-            } else {
+            } else if (action === 'retry') {
                 // Retry action
                 await executeDetectorClick(
                     interaction,
@@ -84,6 +84,17 @@ export function createErrorPopupButtonAction(
                     'Retry button not found.',
                     'ErrorPopupAction',
                 );
+            } else if (action.startsWith('dynamic_')) {
+                const label = action.substring('dynamic_'.length);
+                await executeDetectorClick(
+                    interaction,
+                    () => detector.clickDynamicButton(label),
+                    { text: `🖱️ Clicked: ${label}` },
+                    `Button '${label}' not found or no longer active.`,
+                    'ErrorPopupAction'
+                );
+            } else {
+                logger.warn(`[ErrorPopupAction] Unknown action: ${action}`);
             }
         },
     });

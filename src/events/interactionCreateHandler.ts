@@ -64,7 +64,7 @@ export interface InteractionCreateHandlerDeps {
     getCurrentCdp: (bridge: CdpBridge) => CdpService | null;
     parseApprovalCustomId: (customId: string) => { action: 'approve' | 'always_allow' | 'deny'; projectName: string | null; channelId: string | null } | null;
     parsePlanningCustomId: (customId: string) => { action: 'open' | 'proceed'; projectName: string | null; channelId: string | null } | null;
-    parseErrorPopupCustomId: (customId: string) => { action: 'dismiss' | 'copy_debug' | 'retry'; projectName: string | null; channelId: string | null } | null;
+    parseErrorPopupCustomId: (customId: string) => { action: string; projectName: string | null; channelId: string | null } | null;
     parseRunCommandCustomId: (customId: string) => { action: 'run' | 'reject'; projectName: string | null; channelId: string | null } | null;
     handleSlashInteraction: (
         interaction: ChatInputCommandInteraction,

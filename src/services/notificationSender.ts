@@ -32,6 +32,7 @@ import {
     ERROR_POPUP_DISMISS_ACTION_PREFIX,
     ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX,
     ERROR_POPUP_RETRY_ACTION_PREFIX,
+    ERROR_POPUP_BTN_ACTION_PREFIX,
     RUN_COMMAND_RUN_ACTION_PREFIX,
     RUN_COMMAND_REJECT_ACTION_PREFIX,
 } from './actionPrefixes';
@@ -184,10 +185,11 @@ export function buildErrorPopupNotification(opts: {
     readonly projectName: string;
     readonly channelId: string | null;
     readonly includeActions?: boolean;
+    readonly errorButtons?: readonly string[];
     /** Additional fields appended before footer. */
     readonly extraFields?: readonly { readonly name: string; readonly value: string; readonly inline?: boolean }[];
 }): MessagePayload {
-    const { title, errorMessage, projectName, channelId, extraFields, includeActions = true } = opts;
+    const { title, errorMessage, projectName, channelId, extraFields, includeActions = true, errorButtons } = opts;
 
     const richContent = pipe(
         createRichContent(),
@@ -199,15 +201,26 @@ export function buildErrorPopupNotification(opts: {
         (rc) => withTimestamp(rc),
     );
 
-    const components: readonly ComponentRow[] | undefined = includeActions
-        ? [
+    let components: readonly ComponentRow[] | undefined = undefined;
+    if (includeActions && (!errorButtons || errorButtons.length === 0)) {
+        // Fallback backward-compatibility when no generic buttons are read
+        components = [
             buttonRow(
                 button(customId(ERROR_POPUP_DISMISS_ACTION_PREFIX, projectName, channelId), 'Dismiss', 'secondary'),
                 button(customId(ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX, projectName, channelId), 'Copy Debug', 'primary'),
                 button(customId(ERROR_POPUP_RETRY_ACTION_PREFIX, projectName, channelId), 'Retry', 'success'),
             ),
-        ]
-        : undefined;
+        ];
+    } else if (errorButtons && errorButtons.length > 0) {
+        // Build dynamic buttons! Maximum 5 buttons per row in Discord/Telegram wrappers.
+        const inlineBtns = errorButtons.slice(0, 5).map(label => {
+            // Encode the label into the prefix so standard `customId` appends projectName + channelId.
+            // E.g. "error_popup_btn_action_Retry"
+            const safeLabel = label.trim().substring(0, 15).replace(/:/g, '-');
+            return button(customId(ERROR_POPUP_BTN_ACTION_PREFIX + '_' + safeLabel, projectName, channelId), label.trim(), 'primary');
+        });
+        components = [buttonRow(...inlineBtns)];
+    }
 
     return { richContent, components };
 }

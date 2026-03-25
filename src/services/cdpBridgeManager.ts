@@ -25,7 +25,7 @@ import { isDangerousCommand } from '../utils/dangerousCommandClassifier';
 import {
     APPROVE_ACTION_PREFIX, ALWAYS_ALLOW_ACTION_PREFIX, DENY_ACTION_PREFIX,
     PLANNING_OPEN_ACTION_PREFIX, PLANNING_PROCEED_ACTION_PREFIX,
-    ERROR_POPUP_DISMISS_ACTION_PREFIX, ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX, ERROR_POPUP_RETRY_ACTION_PREFIX,
+    ERROR_POPUP_DISMISS_ACTION_PREFIX, ERROR_POPUP_COPY_DEBUG_ACTION_PREFIX, ERROR_POPUP_RETRY_ACTION_PREFIX, ERROR_POPUP_BTN_ACTION_PREFIX,
     RUN_COMMAND_RUN_ACTION_PREFIX, RUN_COMMAND_REJECT_ACTION_PREFIX,
 } from './actionPrefixes';
 
@@ -74,7 +74,14 @@ export function buildApprovalCustomId(action: 'approve' | 'always_allow' | 'deny
 export function parseApprovalCustomId(customId: string) { return parseCustomId(APPROVAL_PREFIX_MAP, customId); }
 export function buildPlanningCustomId(action: 'open' | 'proceed', projectName: string, channelId?: string): string { return buildCustomId(PLANNING_PREFIX_MAP, action, projectName, channelId); }
 export function parsePlanningCustomId(customId: string) { return parseCustomId(PLANNING_PREFIX_MAP, customId); }
-export function parseErrorPopupCustomId(customId: string) { return parseCustomId(ERROR_POPUP_PREFIX_MAP, customId); }
+export function parseErrorPopupCustomId(customId: string) {
+    if (customId.startsWith(ERROR_POPUP_BTN_ACTION_PREFIX + '_')) {
+        const rest = customId.substring(ERROR_POPUP_BTN_ACTION_PREFIX.length + 1);
+        const [label, projectName, channelId] = rest.split(':');
+        return { action: 'dynamic_' + label, projectName: projectName || null, channelId: channelId || null };
+    }
+    return parseCustomId(ERROR_POPUP_PREFIX_MAP, customId);
+}
 export function buildRunCommandCustomId(action: 'run' | 'reject', projectName: string, channelId?: string): string { return buildCustomId(RUN_COMMAND_PREFIX_MAP, action, projectName, channelId); }
 export function parseRunCommandCustomId(customId: string) { return parseCustomId(RUN_COMMAND_PREFIX_MAP, customId); }
 
@@ -254,11 +261,10 @@ function ensureErrorPopupDetector(bridge: CdpBridge, cdp: CdpService, projectNam
             const target = await resolveDetectorChannel(bridge, cdp, projectName, 'ErrorPopupDetector');
             if (!target) return;
 
-            const supportsActions = info.buttons.some((l) => ['dismiss', 'copy debug info', 'retry'].includes(l.trim().toLowerCase()));
             await sendAndTrackNotification(notifState, target.channel, buildErrorPopupNotification({
                 title: info.title || t('Agent Error'),
                 errorMessage: (info.body || t('An error occurred in the Antigravity agent.')).substring(0, 4096),
-                projectName, channelId: target.channelId, includeActions: supportsActions,
+                projectName, channelId: target.channelId, errorButtons: info.buttons,
                 extraFields: [
                     { name: t('Buttons'), value: info.buttons.join(', ') || t('(None)'), inline: true },
                     { name: t('Workspace'), value: projectName, inline: true },

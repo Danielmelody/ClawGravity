@@ -403,7 +403,7 @@ export class CdpService extends EventEmitter {
         return client;
     }
 
-    private async evaluateRuntime<T>(
+    public async evaluateRuntime<T>(
         expression: string,
         options: { awaitPromise?: boolean; contextId?: number; timeout?: number } = {},
     ): Promise<T | undefined> {

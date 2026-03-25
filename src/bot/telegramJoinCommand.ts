@@ -128,7 +128,7 @@ async function resolveBindingRuntime(
  * Stop all active and passive monitors for a specific chat within a project.
  * Mirrors the logic in telegramCommands.ts stopProjectMonitors.
  */
-async function stopChatMonitors(
+export async function stopChatMonitors(
     activeMonitors: Map<string, GrpcResponseMonitor> | undefined,
     projectName: string,
     chatId: string,

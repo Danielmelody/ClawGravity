@@ -41,7 +41,7 @@ import { logBuffer } from '../utils/logBuffer';
 import { logger } from '../utils/logger';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 import type { TelegramSessionStateStore } from './telegramJoinCommand';
-import { handleTelegramJoinCommand } from './telegramJoinCommand';
+import { handleTelegramJoinCommand, stopChatMonitors } from './telegramJoinCommand';
 import { restartCurrentProcess } from '../services/processRestartService';
 import type { TelegramMessageTracker } from '../services/telegramMessageTracker';
 import { APP_VERSION } from '../utils/version';
@@ -676,17 +676,10 @@ async function stopProjectMonitors(
 ): Promise<void> {
     if (!activeMonitors) return;
 
-    // When chatId is provided, use composite key to only stop
+    // When chatId provided, delegate to shared helper that stops per-chat
     // monitors belonging to this specific channel.
     if (chatId) {
-        const monitorKey = `${projectName}:${chatId}`;
-        for (const key of [monitorKey, `passive:${monitorKey}`]) {
-            const monitor = activeMonitors.get(key);
-            if (monitor?.isActive()) {
-                await monitor.stop().catch(() => { });
-            }
-            activeMonitors.delete(key);
-        }
+        await stopChatMonitors(activeMonitors, projectName, chatId);
         return;
     }
 
@@ -725,6 +718,26 @@ async function resetChatSession(
     return { ok: true };
 }
 
+/**
+ * Build a status footer string with current mode and model.
+ */
+async function buildStatusFooter(
+    modeService: TelegramCommandDeps['modeService'],
+    bridge: TelegramCommandDeps['bridge'],
+    modelService: TelegramCommandDeps['modelService'],
+): Promise<string> {
+    const mode = modeService
+        ? modeService.getCurrentMode()
+        : 'unknown';
+
+    const cdp = getCurrentCdp(bridge);
+    const currentModel = (cdp ? await cdp.getCurrentModel() : null)
+        || modelService?.getDefaultModel()
+        || 'Auto (UI)';
+
+    return `<i>${escapeHtml(mode)} | ${escapeHtml(currentModel)}</i>`;
+}
+
 async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
     const resolved = await resolveWithSessionService(deps, message, 'new');
     if (!resolved) return;
@@ -733,17 +746,9 @@ async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): P
     try {
         const result = await resetChatSession(deps, resolved, chatId);
         if (result.ok) {
-            const mode = deps.modeService
-                ? deps.modeService.getCurrentMode()
-                : 'unknown';
-
-            const cdp = getCurrentCdp(deps.bridge);
-            const currentModel = (cdp ? await cdp.getCurrentModel() : null)
-                || deps.modelService?.getDefaultModel()
-                || 'Auto (UI)';
-
-            await message.reply({ 
-                text: `New chat session started.\n\n<i>${escapeHtml(mode)} | ${escapeHtml(currentModel)}</i>`
+            const footer = await buildStatusFooter(deps.modeService, deps.bridge, deps.modelService);
+            await message.reply({
+                text: `New chat session started.\n\n${footer}`
             }).catch(logger.error);
         } else {
             logger.warn('[TelegramCommand:new] startNewChat failed:', result.error);
@@ -775,17 +780,9 @@ async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage):
                 );
             }
 
-            const mode = deps.modeService
-                ? deps.modeService.getCurrentMode()
-                : 'unknown';
-
-            const cdp = getCurrentCdp(deps.bridge);
-            const currentModel = (cdp ? await cdp.getCurrentModel() : null)
-                || deps.modelService?.getDefaultModel()
-                || 'Auto (UI)';
-
+            const footer = await buildStatusFooter(deps.modeService, deps.bridge, deps.modelService);
             await message.channel.send({
-                text: `\u{1F5D1}\uFE0F Conversation history cleared. Starting fresh.\n\n<i>${escapeHtml(mode)} | ${escapeHtml(currentModel)}</i>`
+                text: `\u{1F5D1}\uFE0F Conversation history cleared. Starting fresh.\n\n${footer}`
             }).catch(logger.error);
         } else {
             logger.warn('[TelegramCommand:clear] startNewChat failed:', result.error);

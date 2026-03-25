@@ -62,7 +62,7 @@ function resolveQuotaInfo(mName: string, quotaData: QuotaData[]): QuotaResult | 
 }
 
 /** Format a model name with quota info for display. */
-function formatQuota(
+function _formatQuota(
     mName: string,
     current: boolean,
     quotaData: QuotaData[],
