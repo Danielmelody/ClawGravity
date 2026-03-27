@@ -137,6 +137,6 @@ describe('scheduleJobRunner', () => {
 
         // Both should be called — a new chat is created, then the prompt is sent
         expect(startNewChat).toHaveBeenCalled();
-        expect(sendPrompt).toHaveBeenCalledWith({ text: 'scheduled task' });
+        expect(sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('scheduled task') }));
     });
 });

@@ -1,0 +1,25 @@
+--- src/services/grpcResponseMonitor.ts
++++ src/services/grpcResponseMonitor.ts
+@@ -607,13 +607,15 @@
+         logger.info(`[GrpcMonitor] Completed response from trajectory (${this.lastResponseText.length} chars, stale=${staleCompleted})`);
+-        this.finishSuccessfully();
++        this.finishSuccessfully(snapshot.runStatus);
+         return true;
+     }
+ 
+-    private async finishSuccessfully(): Promise<void> {
++    private async finishSuccessfully(runStatus: string | null = null): Promise<void> {
+         if (this.currentPhase === 'complete' || this.currentPhase === 'error') return; // guard against double-fire
+         const text = this.lastResponseText ?? '';
+ 
++        const isRunStatusError = typeof runStatus === 'string' && (runStatus.includes('ERROR') || runStatus.includes('FAILED'));
++
+-        // Detect backend error responses (short messages with known error patterns).
+-        // These should be surfaced as errors, not delivered as normal AI responses.
+-        if (this.isErrorResponse(text)) {
+-            logger.warn(`[GrpcMonitor] Response detected as backend error: "${text.slice(0, 150)}"`);
++        // Detect backend error responses (short messages with known error patterns) or explicit runStatus errors.
++        // These should be surfaced as errors, not delivered as normal AI responses.
++        if (isRunStatusError || this.isErrorResponse(text)) {
++            logger.warn(`[GrpcMonitor] Response detected as backend error (status: ${runStatus || 'none'}): "${text.slice(0, 150)}"`);
+             this.setPhase('error', text);

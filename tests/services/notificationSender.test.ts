@@ -218,35 +218,29 @@ describe('buildErrorPopupNotification', () => {
         expect(payload.richContent!.timestamp).toBeInstanceOf(Date);
     });
 
-    it('contains exactly 3 buttons in one row', () => {
+    it('contains exactly 1 button in one row', () => {
         const payload = buildErrorPopupNotification(baseOpts);
         expect(payload.components).toHaveLength(1);
         const buttons = extractButtons(payload);
-        expect(buttons).toHaveLength(3);
+        expect(buttons).toHaveLength(1);
     });
 
-    it('has Dismiss, Copy Debug, and Retry buttons with correct styles', () => {
+    it('has a Continue button with correct style', () => {
         const payload = buildErrorPopupNotification(baseOpts);
         const buttons = extractButtons(payload);
-        expect(buttons[0]).toMatchObject({ label: 'Dismiss', style: 'secondary' });
-        expect(buttons[1]).toMatchObject({ label: 'Copy Debug', style: 'primary' });
-        expect(buttons[2]).toMatchObject({ label: 'Retry', style: 'success' });
+        expect(buttons[0]).toMatchObject({ label: 'Continue', style: 'success' });
     });
 
     it('builds customIds with projectName and channelId', () => {
         const payload = buildErrorPopupNotification(baseOpts);
         const ids = extractCustomIds(payload);
-        expect(ids[0]).toBe('error_popup_dismiss_action:err-proj:ch-err');
-        expect(ids[1]).toBe('error_popup_copy_debug_action:err-proj:ch-err');
-        expect(ids[2]).toBe('error_popup_retry_action:err-proj:ch-err');
+        expect(ids[0]).toBe('error_popup_continue_action:err-proj:ch-err');
     });
 
     it('builds customIds without channelId when null', () => {
         const payload = buildErrorPopupNotification({ ...baseOpts, channelId: null });
         const ids = extractCustomIds(payload);
-        expect(ids[0]).toBe('error_popup_dismiss_action:err-proj');
-        expect(ids[1]).toBe('error_popup_copy_debug_action:err-proj');
-        expect(ids[2]).toBe('error_popup_retry_action:err-proj');
+        expect(ids[0]).toBe('error_popup_continue_action:err-proj');
     });
 });
 

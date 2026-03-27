@@ -101,7 +101,26 @@ export function createScheduleJobCallback(
                 logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Could not open new session: ${newChatResult.error}`);
             }
 
-            const injectResult = await prepared.runtime.sendPrompt({ text: schedule.prompt });
+            const d = new Date();
+            const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const svFormatter = new Intl.DateTimeFormat('sv-SE', {
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit',
+                hour12: false, timeZone
+            });
+            const localTimeStr = svFormatter.format(d).replace('T', ' ');
+            const utcTimeStr = d.toISOString().replace('T', ' ').substring(0, 16) + ' UTC';
+
+            const cronPrompt = [
+                'A scheduled reminder has been triggered. The reminder content is:',
+                '',
+                schedule.prompt,
+                '',
+                'Please relay this reminder to the user in a helpful and friendly way.',
+                `Current time: ${localTimeStr} (${timeZone}) / ${utcTimeStr}`
+            ].join('\n');
+
+            const injectResult = await prepared.runtime.sendPrompt({ text: cronPrompt });
             if (!injectResult.ok) {
                 logger.error(`[ScheduleJob] Schedule #${schedule.id} inject failed: ${injectResult.error}`);
                 return;

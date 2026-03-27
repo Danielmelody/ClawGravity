@@ -73,6 +73,7 @@ interface TrajectoryRecoverySnapshot {
     runStatus: string | null;
     hasExplicitRunStatus: boolean;
     anchorMatched: boolean;
+    anchorRecovered: boolean;
     latestRole: 'user' | 'assistant' | null;
     latestResponseText: string | null;
     /** True if the latest assistant step contains PENDING tool calls (no result yet — model is mid-turn) */
@@ -124,6 +125,16 @@ function buildAssistantSignature(step: unknown, stepIndex: number): string {
     return `${stepIndex}:${stepType}:${toolCalls}:${text}`;
 }
 
+function findLastUserInputIndex(steps: unknown[]): number {
+    for (let i = steps.length - 1; i >= 0; i--) {
+        const stepRecord = steps[i] as Record<string, unknown> | null | undefined;
+        if (stepRecord?.type === 'CORTEX_STEP_TYPE_USER_INPUT') {
+            return i;
+        }
+    }
+    return -1;
+}
+
 // ---------------------------------------------------------------------------
 // GrpcResponseMonitor
 // ---------------------------------------------------------------------------
@@ -148,6 +159,7 @@ export class GrpcResponseMonitor {
     private hasSeenActivity = false;
     private startTime = 0;
     private pendingTerminalAssistantSignature: string | null = null;
+    private lastSnapshotLogKey: string | null = null;
 
     // Diagnostic: poll failure tracking
     private consecutivePollFailures = 0;
@@ -189,6 +201,7 @@ export class GrpcResponseMonitor {
         this.lastThinkingText = null;
         this.hasSeenActivity = false;
         this.pendingTerminalAssistantSignature = null;
+        this.lastSnapshotLogKey = null;
 
         this.setPhase('waiting', null);
 
@@ -287,6 +300,8 @@ export class GrpcResponseMonitor {
                     return;
                 }
 
+                this.logSnapshotState(snapshot);
+
                 // Apply snapshot (handles text updates + completion detection)
                 this.applyTrajectorySnapshot(snapshot);
             } else {
@@ -316,6 +331,40 @@ export class GrpcResponseMonitor {
         }
     }
 
+    private logSnapshotState(snapshot: TrajectoryRecoverySnapshot): void {
+        const anchorState = !this.expectedUserMessage
+            ? 'none'
+            : snapshot.anchorMatched
+                ? (snapshot.anchorRecovered ? 'recovered' : 'matched')
+                : 'missing';
+        const textLen = snapshot.latestResponseText?.length ?? 0;
+        const logKey = [
+            snapshot.runStatus ?? 'null',
+            snapshot.steps.length,
+            snapshot.renderSteps.length,
+            anchorState,
+            snapshot.latestRole ?? 'none',
+            snapshot.latestAssistantHasToolCalls ? 'pending' : 'idle',
+            snapshot.latestAssistantSignature ?? 'no-sig',
+            textLen,
+        ].join('|');
+
+        if (logKey === this.lastSnapshotLogKey) {
+            return;
+        }
+        this.lastSnapshotLogKey = logKey;
+
+        const elapsedSec = this.startTime > 0
+            ? Math.max(0, Math.round((Date.now() - this.startTime) / 1000))
+            : 0;
+        logger.info(
+            `[GrpcMonitor] Snapshot t=${elapsedSec}s runStatus=${snapshot.runStatus ?? 'null'}`
+            + ` steps=${snapshot.steps.length} renderSteps=${snapshot.renderSteps.length}`
+            + ` anchor=${anchorState} latestRole=${snapshot.latestRole ?? 'none'}`
+            + ` textLen=${textLen} pendingTools=${snapshot.latestAssistantHasToolCalls ? 'yes' : 'no'}`,
+        );
+    }
+
     // ─── Trajectory Fetch & Apply ───────────────────────────────────
 
     private async readTrajectorySnapshot(): Promise<TrajectoryRecoverySnapshot | null> {
@@ -336,6 +385,8 @@ export class GrpcResponseMonitor {
             let latestResponseText: string | null = null;
             let latestAssistantHasToolCalls = false;
             let latestAssistantSignature: string | null = null;
+            let anchorRecovered = false;
+            let matchedAnchorDirectly = false;
 
             let anchorIndex = -1;
             if (this.expectedUserMessage) {
@@ -347,32 +398,46 @@ export class GrpcResponseMonitor {
                     if (stepText === this.expectedUserMessage ||
                         (stepText && this.expectedUserMessage && (stepText.includes(this.expectedUserMessage) || this.expectedUserMessage.includes(stepText)))) {
                         anchorIndex = i;
+                        matchedAnchorDirectly = true;
                         break;
                     }
                 }
 
                 if (anchorIndex === -1) {
-                    // Only log details on first anchor-miss (avoid flooding)
-                    if (!this.anchorLossLogged) {
-                        this.anchorLossLogged = true;
-                        const prevMatched = this.anchorEverMatched ? ' (was previously matched!)' : '';
-                        logger.warn(`[GrpcMonitor] Anchor not matched${prevMatched}. Expected: "${this.expectedUserMessage.slice(0, 80)}...", steps=${steps.length}`);
+                    if (this.anchorEverMatched) {
+                        anchorRecovered = true;
+                        const fallbackUserIndex = findLastUserInputIndex(steps);
+                        anchorIndex = fallbackUserIndex >= 0 ? fallbackUserIndex : 0;
+                        if (!this.anchorLossLogged) {
+                            this.anchorLossLogged = true;
+                            logger.warn(
+                                `[GrpcMonitor] Anchor dropped after prior match; recovering from truncated trajectory tail (steps=${steps.length}, fallbackIndex=${anchorIndex})`,
+                            );
+                        }
+                    } else {
+                        // Only log details on first anchor-miss (avoid flooding)
+                        if (!this.anchorLossLogged) {
+                            this.anchorLossLogged = true;
+                            const prevMatched = this.anchorEverMatched ? ' (was previously matched!)' : '';
+                            logger.warn(`[GrpcMonitor] Anchor not matched${prevMatched}. Expected: "${this.expectedUserMessage.slice(0, 80)}...", steps=${steps.length}`);
+                        }
+                        return {
+                            steps,
+                            renderSteps: steps.slice(0),
+                            renderTrajectory: {
+                                ...(trajectory || {}),
+                                steps: steps.slice(0),
+                            },
+                            runStatus,
+                            hasExplicitRunStatus,
+                            anchorMatched: false,
+                            anchorRecovered: false,
+                            latestRole: null,
+                            latestResponseText: null,
+                            latestAssistantHasToolCalls: false,
+                            latestAssistantSignature: null,
+                        };
                     }
-                    return {
-                        steps,
-                        renderSteps: steps.slice(0),
-                        renderTrajectory: {
-                            ...(trajectory || {}),
-                            steps: steps.slice(0),
-                        },
-                        runStatus,
-                        hasExplicitRunStatus,
-                        anchorMatched: false,
-                        latestRole: null,
-                        latestResponseText: null,
-                        latestAssistantHasToolCalls: false,
-                        latestAssistantSignature: null,
-                    };
                 }
             }
 
@@ -467,13 +532,16 @@ export class GrpcResponseMonitor {
                 runStatus,
                 hasExplicitRunStatus,
                 anchorMatched: (() => {
-                    const matched = !this.expectedUserMessage || anchorIndex !== -1;
+                    const matched = !this.expectedUserMessage || anchorIndex !== -1 || anchorRecovered;
                     if (matched && this.expectedUserMessage) {
                         this.anchorEverMatched = true;
-                        this.anchorLossLogged = false; // reset so we log if it's lost again
+                        if (matchedAnchorDirectly) {
+                            this.anchorLossLogged = false; // reset so we log if it's lost again
+                        }
                     }
                     return matched;
                 })(),
+                anchorRecovered,
                 latestRole,
                 latestResponseText,
                 latestAssistantHasToolCalls,
@@ -502,9 +570,9 @@ export class GrpcResponseMonitor {
 
 
         // Emit raw step data for native rendering (no CDP required)
-        if (this.onStepsUpdate && snapshot.steps && snapshot.steps.length > 0) {
+        if (this.onStepsUpdate && snapshot.renderSteps && snapshot.renderSteps.length > 0) {
             this.onStepsUpdate({
-                steps: snapshot.steps,
+                steps: snapshot.renderSteps,
                 runStatus: snapshot.runStatus ?? null,
             });
         }
@@ -605,11 +673,11 @@ export class GrpcResponseMonitor {
         this.lastResponseText = latestText ?? this.lastResponseText ?? '';
         this.hasSeenActivity = true;
         logger.info(`[GrpcMonitor] Completed response from trajectory (${this.lastResponseText.length} chars, stale=${staleCompleted})`);
-        this.finishSuccessfully();
+        this.finishSuccessfully(snapshot.runStatus);
         return true;
     }
 
-    private async finishSuccessfully(): Promise<void> {
+    private async finishSuccessfully(_runStatus: string | null = null): Promise<void> {
         if (this.currentPhase === 'complete' || this.currentPhase === 'error') return; // guard against double-fire
         const text = this.lastResponseText ?? '';
 

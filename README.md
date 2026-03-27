@@ -193,6 +193,14 @@ Then start the bot:
 npm run start
 ```
 
+From source, `npm run start` now launches the bot in the background and returns immediately.
+Logs are written to `logs/claw-gravity.log`.
+If you want the old foreground behavior in the current terminal, use:
+
+```bash
+npm run start:foreground
+```
+
 #### Adding Telegram Support (Optional)
 
 1. Install grammy: `npm install grammy`
@@ -261,6 +269,8 @@ If the bot is unresponsive or you've updated the code, restart it:
    claw-gravity start
    # or, from source: npm run start
    ```
+
+For source checkouts, background logs are available at `logs/claw-gravity.log`.
 
 If Antigravity is restarted, the bot automatically attempts CDP reconnection. Sending a message triggers automatic project reconnection.
 

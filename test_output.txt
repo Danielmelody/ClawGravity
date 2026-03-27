@@ -1,0 +1,2025 @@
+
+> claw-gravity@0.3.0 test
+> npm run test:unit
+
+
+> claw-gravity@0.3.0 test:unit
+> jest
+
+(node:4000) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+FAIL tests/bot/telegramStartup.test.ts
+  ● telegramStartup › runTelegramStartupTasks › resumes passive monitoring when a cascade is still running
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: "1001", "cascade-abc"
+
+    Number of calls: 0
+
+    [0m [90m 173 |[39m
+     [90m 174 |[39m             [90m// The cascade ID should be persisted for the chat[39m
+    [31m[1m>[22m[39m[90m 175 |[39m             expect(sessionStateStore[33m.[39msetCurrentCascadeId)[33m.[39mtoHaveBeenCalledWith(
+     [90m     |[39m                                                           [31m[1m^[22m[39m
+     [90m 176 |[39m                 [32m'1001'[39m[33m,[39m
+     [90m 177 |[39m                 [32m'cascade-abc'[39m[33m,[39m
+     [90m 178 |[39m             )[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/bot/telegramStartup.test.ts:175:59)
+
+(node:11520) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/commands/chatCommandHandler.test.ts
+(node:1428) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/services/cdpService.injectPreflight.test.ts
+  ● Console
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [CdpService] sendToCascade: creating new cascade model=default
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.error
+      [2m[23:07:38][0m [31m[ERROR][0m [CdpService] createCascade returned null: LS SendUserCascadeMessage: 400 - missing required field
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at CdpService.error [as sendToCascade] (src/services/cdpService.ts:462:16)
+      at Object.<anonymous> (tests/services/cdpService.injectPreflight.test.ts:42:24)
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [CdpService] cascade running-cascade... running; queueing turn
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [CdpService] sendToCascade: cascade=running-cascade... model=default
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [CdpService] sendToCascade: cascade=existing-cascade... model=default
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [CdpService] sendMessage failed: LS SendUserCascadeMessage: 409 - conflict
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at CdpService.warn [as sendToCascade] (src/services/cdpService.ts:441:20)
+      at Object.<anonymous> (tests/services/cdpService.injectPreflight.test.ts:103:24)
+
+(node:36916) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/services/screenshotService.test.ts
+  ● Console
+
+    console.error
+      [2m[23:07:38][0m [31m[ERROR][0m [ScreenshotService] Error during capture: Error: CDP connection error
+          at Object.<anonymous> (C:\Users\Daniel\Projects\ClawGravity\tests\services\screenshotService.test.ts:85:56)
+          at Promise.finally.completed (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1557:28)
+          at new Promise (<anonymous>)
+          at callAsyncCircusFn (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1497:10)
+          at _callCircusTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1007:40)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at _runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:947:3)
+          at c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:849:7
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:862:11)
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:857:11)
+          at run (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:761:3)
+          at runAndTransformResultsToJestFormat (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1918:21)
+          at jestAdapter (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\runner.js:101:19)
+          at runTestInternal (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:275:16)
+          at runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:343:7)
+          at Object.worker (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:497:12)
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at ScreenshotService.capture (src/services/screenshotService.ts:55:28)
+      at Object.<anonymous> (tests/services/screenshotService.test.ts:88:24)
+
+(node:38232) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/services/cdpService.uiSync.test.ts
+  ● Console
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [CdpService] Mode set to 'plan'
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [CdpService] Mode set to 'fast'
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [CdpService] Mode set to 'plan'
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [CdpService] Mode set to 'plan'
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [CdpService] Mode set to 'plan'
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+(node:44588) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/bot/discordStartup.test.ts
+(node:19136) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/handlers/approvalButtonAction.test.ts
+  ● Console
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ApprovalAction] No detector for project=nonexistent
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at warn (src/handlers/buttonActionUtils.ts:72:16)
+      at Object.execute (src/handlers/buttonActionUtils.ts:159:30)
+      at Object.<anonymous> (tests/handlers/approvalButtonAction.test.ts:184:13)
+
+PASS tests/platform/discord/discordAdapter.test.ts
+(node:43136) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/commands/cleanupCommandHandler.test.ts
+(node:2944) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/events/interactionCreateHandler.test.ts
+(node:38800) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/bot/telegramJoinCommand.test.ts
+(node:39612) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+FAIL tests/handlers/errorPopupButtonAction.test.ts
+  ● Console
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] Unknown action: dismiss
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at Object.warn [as handler] (src/handlers/errorPopupButtonAction.ts:53:24)
+      at Object.execute (src/handlers/buttonActionUtils.ts:164:13)
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:122:13)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] Unknown action: dismiss
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at Object.warn [as handler] (src/handlers/errorPopupButtonAction.ts:53:24)
+      at Object.execute (src/handlers/buttonActionUtils.ts:164:13)
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:143:13)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] Unknown action: copy_debug
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at Object.warn [as handler] (src/handlers/errorPopupButtonAction.ts:53:24)
+      at Object.execute (src/handlers/buttonActionUtils.ts:164:13)
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:167:13)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] Unknown action: copy_debug
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at Object.warn [as handler] (src/handlers/errorPopupButtonAction.ts:53:24)
+      at Object.execute (src/handlers/buttonActionUtils.ts:164:13)
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:196:13)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] Unknown action: copy_debug
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at Object.warn [as handler] (src/handlers/errorPopupButtonAction.ts:53:24)
+      at Object.execute (src/handlers/buttonActionUtils.ts:164:13)
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:217:13)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] Unknown action: copy_debug
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at Object.warn [as handler] (src/handlers/errorPopupButtonAction.ts:53:24)
+      at Object.execute (src/handlers/buttonActionUtils.ts:164:13)
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:239:13)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] Unknown action: retry
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at Object.warn [as handler] (src/handlers/errorPopupButtonAction.ts:53:24)
+      at Object.execute (src/handlers/buttonActionUtils.ts:164:13)
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:260:13)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] Unknown action: retry
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at Object.warn [as handler] (src/handlers/errorPopupButtonAction.ts:53:24)
+      at Object.execute (src/handlers/buttonActionUtils.ts:164:13)
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:281:13)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] No detector for project=nonexistent
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at warn (src/handlers/buttonActionUtils.ts:72:16)
+      at Object.resolveDetector [as execute] (src/handlers/buttonActionUtils.ts:159:36)
+      at Object.execute (tests/handlers/errorPopupButtonAction.test.ts:301:26)
+
+    console.warn
+      [2m[23:07:38][0m [33m[WARN][0m [ErrorPopupAction] Unknown action: retry
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at Object.warn [as handler] (src/handlers/errorPopupButtonAction.ts:53:24)
+      at Object.execute (src/handlers/buttonActionUtils.ts:164:13)
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:338:13)
+
+  ● createErrorPopupButtonAction › match › matches error_popup_dismiss_action customId
+
+    expect(received).toEqual(expected) // deep equality
+
+    Expected: {"action": "dismiss", "channelId": "ch-1", "projectName": "proj"}
+    Received: null
+
+    [0m [90m 74 |[39m             [36mconst[39m action [33m=[39m createErrorPopupButtonAction({ bridge })[33m;[39m
+     [90m 75 |[39m             [36mconst[39m result [33m=[39m action[33m.[39mmatch([32m'error_popup_dismiss_action:proj:ch-1'[39m)[33m;[39m
+    [31m[1m>[22m[39m[90m 76 |[39m             expect(result)[33m.[39mtoEqual({
+     [90m    |[39m                            [31m[1m^[22m[39m
+     [90m 77 |[39m                 action[33m:[39m [32m'dismiss'[39m[33m,[39m
+     [90m 78 |[39m                 projectName[33m:[39m [32m'proj'[39m[33m,[39m
+     [90m 79 |[39m                 channelId[33m:[39m [32m'ch-1'[39m[33m,[39m[0m
+
+      at Object.toEqual (tests/handlers/errorPopupButtonAction.test.ts:76:28)
+
+  ● createErrorPopupButtonAction › match › matches error_popup_copy_debug_action customId
+
+    expect(received).toEqual(expected) // deep equality
+
+    Expected: {"action": "copy_debug", "channelId": "", "projectName": "proj"}
+    Received: null
+
+    [0m [90m 85 |[39m             [36mconst[39m action [33m=[39m createErrorPopupButtonAction({ bridge })[33m;[39m
+     [90m 86 |[39m             [36mconst[39m result [33m=[39m action[33m.[39mmatch([32m'error_popup_copy_debug_action:proj'[39m)[33m;[39m
+    [31m[1m>[22m[39m[90m 87 |[39m             expect(result)[33m.[39mtoEqual({
+     [90m    |[39m                            [31m[1m^[22m[39m
+     [90m 88 |[39m                 action[33m:[39m [32m'copy_debug'[39m[33m,[39m
+     [90m 89 |[39m                 projectName[33m:[39m [32m'proj'[39m[33m,[39m
+     [90m 90 |[39m                 channelId[33m:[39m [32m''[39m[33m,[39m[0m
+
+      at Object.toEqual (tests/handlers/errorPopupButtonAction.test.ts:87:28)
+
+  ● createErrorPopupButtonAction › match › matches error_popup_retry_action customId
+
+    expect(received).toEqual(expected) // deep equality
+
+    Expected: {"action": "retry", "channelId": "ch-2", "projectName": "proj"}
+    Received: null
+
+    [0m [90m  96 |[39m             [36mconst[39m action [33m=[39m createErrorPopupButtonAction({ bridge })[33m;[39m
+     [90m  97 |[39m             [36mconst[39m result [33m=[39m action[33m.[39mmatch([32m'error_popup_retry_action:proj:ch-2'[39m)[33m;[39m
+    [31m[1m>[22m[39m[90m  98 |[39m             expect(result)[33m.[39mtoEqual({
+     [90m     |[39m                            [31m[1m^[22m[39m
+     [90m  99 |[39m                 action[33m:[39m [32m'retry'[39m[33m,[39m
+     [90m 100 |[39m                 projectName[33m:[39m [32m'proj'[39m[33m,[39m
+     [90m 101 |[39m                 channelId[33m:[39m [32m'ch-2'[39m[33m,[39m[0m
+
+      at Object.toEqual (tests/handlers/errorPopupButtonAction.test.ts:98:28)
+
+  ● createErrorPopupButtonAction › execute - dismiss › clicks dismiss button and updates message
+
+    expect(jest.fn()).toHaveBeenCalled()
+
+    Expected number of calls: >= 1
+    Received number of calls:    0
+
+    [0m [90m 126 |[39m             })[33m;[39m
+     [90m 127 |[39m
+    [31m[1m>[22m[39m[90m 128 |[39m             expect(mockDetector[33m.[39mclickDismissButton)[33m.[39mtoHaveBeenCalled()[33m;[39m
+     [90m     |[39m                                                     [31m[1m^[22m[39m
+     [90m 129 |[39m             expect(interaction[33m.[39mupdate)[33m.[39mtoHaveBeenCalledWith({
+     [90m 130 |[39m                 text[33m:[39m [32m'🗑️ Dismissed'[39m[33m,[39m
+     [90m 131 |[39m                 components[33m:[39m [][33m,[39m[0m
+
+      at Object.toHaveBeenCalled (tests/handlers/errorPopupButtonAction.test.ts:128:53)
+
+  ● createErrorPopupButtonAction › execute - dismiss › replies with error when dismiss button not found
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"text": "Dismiss button not found."}
+
+    Number of calls: 0
+
+    [0m [90m 147 |[39m             })[33m;[39m
+     [90m 148 |[39m
+    [31m[1m>[22m[39m[90m 149 |[39m             expect(interaction[33m.[39mreply)[33m.[39mtoHaveBeenCalledWith({
+     [90m     |[39m                                       [31m[1m^[22m[39m
+     [90m 150 |[39m                 text[33m:[39m [32m'Dismiss button not found.'[39m[33m,[39m
+     [90m 151 |[39m             })[33m;[39m
+     [90m 152 |[39m         })[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/handlers/errorPopupButtonAction.test.ts:149:39)
+
+  ● createErrorPopupButtonAction › execute - copy_debug › clicks copy debug button, reads clipboard, and sends followUp
+
+    expect(jest.fn()).toHaveBeenCalled()
+
+    Expected number of calls: >= 1
+    Received number of calls:    0
+
+    [0m [90m 172 |[39m
+     [90m 173 |[39m             expect(interaction[33m.[39mdeferUpdate)[33m.[39mtoHaveBeenCalled()[33m;[39m
+    [31m[1m>[22m[39m[90m 174 |[39m             expect(mockDetector[33m.[39mclickCopyDebugInfoButton)[33m.[39mtoHaveBeenCalled()[33m;[39m
+     [90m     |[39m                                                           [31m[1m^[22m[39m
+     [90m 175 |[39m             expect(interaction[33m.[39mupdate)[33m.[39mtoHaveBeenCalledWith({
+     [90m 176 |[39m                 text[33m:[39m [32m'📋 Debug info copied'[39m[33m,[39m
+     [90m 177 |[39m                 components[33m:[39m [][33m,[39m[0m
+
+      at Object.toHaveBeenCalled (tests/handlers/errorPopupButtonAction.test.ts:174:59)
+
+  ● createErrorPopupButtonAction › execute - copy_debug › truncates debug content over 4096 chars
+
+    TypeError: Cannot read properties of undefined (reading '0')
+
+    [0m [90m 200 |[39m             })[33m;[39m
+     [90m 201 |[39m
+    [31m[1m>[22m[39m[90m 202 |[39m             [36mconst[39m followUpCall [33m=[39m (interaction[33m.[39mfollowUp [36mas[39m jest[33m.[39m[33mMock[39m)[33m.[39mmock[33m.[39mcalls[[35m0[39m][[35m0[39m][33m;[39m
+     [90m     |[39m                                                                                   [31m[1m^[22m[39m
+     [90m 203 |[39m             expect(followUpCall[33m.[39mtext[33m.[39mlength)[33m.[39mtoBeLessThanOrEqual([35m4096[39m)[33m;[39m
+     [90m 204 |[39m             expect(followUpCall[33m.[39mtext)[33m.[39mtoContain([32m'(truncated)'[39m)[33m;[39m
+     [90m 205 |[39m         })[33m;[39m[0m
+
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:202:83)
+
+  ● createErrorPopupButtonAction › execute - copy_debug › replies with error when copy button not found
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"text": "Copy debug info button not found."}
+
+    Number of calls: 0
+
+    [0m [90m 221 |[39m             })[33m;[39m
+     [90m 222 |[39m
+    [31m[1m>[22m[39m[90m 223 |[39m             expect(interaction[33m.[39mreply)[33m.[39mtoHaveBeenCalledWith({
+     [90m     |[39m                                       [31m[1m^[22m[39m
+     [90m 224 |[39m                 text[33m:[39m [32m'Copy debug info button not found.'[39m[33m,[39m
+     [90m 225 |[39m             })[33m;[39m
+     [90m 226 |[39m         })[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/handlers/errorPopupButtonAction.test.ts:223:39)
+
+  ● createErrorPopupButtonAction › execute - copy_debug › sends fallback message when clipboard is empty
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"text": "Could not read debug info from clipboard."}
+
+    Number of calls: 0
+
+    [0m [90m 243 |[39m             })[33m;[39m
+     [90m 244 |[39m
+    [31m[1m>[22m[39m[90m 245 |[39m             expect(interaction[33m.[39mfollowUp)[33m.[39mtoHaveBeenCalledWith({
+     [90m     |[39m                                          [31m[1m^[22m[39m
+     [90m 246 |[39m                 text[33m:[39m [32m'Could not read debug info from clipboard.'[39m[33m,[39m
+     [90m 247 |[39m             })[33m;[39m
+     [90m 248 |[39m         })[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/handlers/errorPopupButtonAction.test.ts:245:42)
+
+  ● createErrorPopupButtonAction › execute - retry › clicks retry button and updates message
+
+    expect(jest.fn()).toHaveBeenCalled()
+
+    Expected number of calls: >= 1
+    Received number of calls:    0
+
+    [0m [90m 264 |[39m             })[33m;[39m
+     [90m 265 |[39m
+    [31m[1m>[22m[39m[90m 266 |[39m             expect(mockDetector[33m.[39mclickRetryButton)[33m.[39mtoHaveBeenCalled()[33m;[39m
+     [90m     |[39m                                                   [31m[1m^[22m[39m
+     [90m 267 |[39m             expect(interaction[33m.[39mupdate)[33m.[39mtoHaveBeenCalledWith({
+     [90m 268 |[39m                 text[33m:[39m [32m'🔄 Retry initiated'[39m[33m,[39m
+     [90m 269 |[39m                 components[33m:[39m [][33m,[39m[0m
+
+      at Object.toHaveBeenCalled (tests/handlers/errorPopupButtonAction.test.ts:266:51)
+
+  ● createErrorPopupButtonAction › execute - retry › replies with error when retry button not found
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"text": "Retry button not found."}
+
+    Number of calls: 0
+
+    [0m [90m 285 |[39m             })[33m;[39m
+     [90m 286 |[39m
+    [31m[1m>[22m[39m[90m 287 |[39m             expect(interaction[33m.[39mreply)[33m.[39mtoHaveBeenCalledWith({
+     [90m     |[39m                                       [31m[1m^[22m[39m
+     [90m 288 |[39m                 text[33m:[39m [32m'Retry button not found.'[39m[33m,[39m
+     [90m 289 |[39m             })[33m;[39m
+     [90m 290 |[39m         })[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/handlers/errorPopupButtonAction.test.ts:287:39)
+
+(node:45232) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/services/workspaceRuntime.test.ts
+(node:9072) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/services/approvalDetector.test.ts
+(node:37448) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:45116) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/services/cdpConnectionPool.test.ts
+PASS tests/services/planningDetector.test.ts
+(node:15228) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/services/runCommandDetector.test.ts
+  ● Console
+
+    console.error
+      [2m[23:07:39][0m [31m[ERROR][0m [RunCommandDetector] antigravity.terminalCommand.reject failed: Error: command failed
+          at Object.<anonymous> (C:\Users\Daniel\Projects\ClawGravity\tests\services\runCommandDetector.test.ts:309:63)
+          at Promise.finally.completed (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1557:28)
+          at new Promise (<anonymous>)
+          at callAsyncCircusFn (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1497:10)
+          at _callCircusTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1007:40)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at _runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:947:3)
+          at c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:849:7
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:862:11)
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:857:11)
+          at run (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:761:3)
+          at runAndTransformResultsToJestFormat (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1918:21)
+          at jestAdapter (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\runner.js:101:19)
+          at runTestInternal (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:275:16)
+          at runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:343:7)
+          at Object.worker (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:497:12)
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at Object.error [as onFailure] (src/services/baseDetector.ts:35:20)
+      at EffectPrimitive.onFailure [as effect_instruction_i1] (node_modules/effect/src/internal/core.ts:910:24)
+      at effect_instruction_i1 (node_modules/effect/src/internal/fiberRuntime.ts:1199:44)
+      at body (node_modules/effect/src/Utils.ts:779:12)
+      at FiberRuntime.Failure (node_modules/effect/src/internal/fiberRuntime.ts:1199:32)
+      at node_modules/effect/src/internal/fiberRuntime.ts:1397:53
+      at Object.f [as context] (node_modules/effect/src/internal/tracer.ts:101:19)
+      at FiberRuntime.context (node_modules/effect/src/internal/fiberRuntime.ts:1383:34)
+      at FiberRuntime.runLoop [as evaluateEffect] (node_modules/effect/src/internal/fiberRuntime.ts:949:27)
+      at FiberRuntime.evaluateEffect [as evaluateMessageWhileSuspended] (node_modules/effect/src/internal/fiberRuntime.ts:917:14)
+      at FiberRuntime.evaluateMessageWhileSuspended [as drainQueueOnCurrentThread] (node_modules/effect/src/internal/fiberRuntime.ts:676:18)
+      at Array.drainQueueOnCurrentThread (node_modules/effect/src/internal/fiberRuntime.ts:1434:10)
+      at MixedScheduler.starveInternal (node_modules/effect/src/Scheduler.ts:89:17)
+      at starveInternal (node_modules/effect/src/Scheduler.ts:106:47)
+
+(node:37460) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/commands/workspaceCommandHandler.test.ts
+(node:43028) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/events/interactionCreateHandler.errorPopup.test.ts (5.155 s)
+(node:43312) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/bot.test.ts (5.349 s)
+(node:11044) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/events/interactionCreateHandler.planning.test.ts (5.543 s)
+PASS tests/ui/templateUi.test.ts
+PASS tests/services/cdpService.rpcBridge.test.ts
+PASS tests/ui/modeUi.test.ts
+PASS tests/services/trajectoryStreamRouter.test.ts
+(node:40800) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/services/agentRouter.test.ts (6.172 s)
+  ● Console
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [AgentRouter] Delegating task to "NonExistent" from "Parent" (4 chars)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [AgentRouter] Delegating task to "Target" from "Parent" (4 chars)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:38][0m [36m[INFO][0m [AgentRouter] Delegating task to "Target" from "Parent" (18 chars)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:40][0m [36m[INFO][0m [AgentRouter] Task injected into "Target" — waiting for completion...
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:40][0m [32m[DONE][0m [AgentRouter] Task completed by "Target" — summary: 43 chars, full: 151 chars
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+PASS tests/services/errorPopupDetector.test.ts
+  ● Console
+
+    console.warn
+      [2m[23:07:40][0m [33m[WARN][0m [ErrorPopupDetector] Copy debug info not available without DOM
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at ErrorPopupDetector.warn [as clickCopyDebugInfoButton] (src/services/errorPopupDetector.ts:83:16)
+      at Object.clickCopyDebugInfoButton (tests/services/errorPopupDetector.test.ts:145:39)
+
+    console.warn
+      [2m[23:07:40][0m [33m[WARN][0m [ErrorPopupDetector] Clipboard reading not available without DOM
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at ErrorPopupDetector.warn [as readClipboard] (src/services/errorPopupDetector.ts:92:16)
+      at Object.readClipboard (tests/services/errorPopupDetector.test.ts:151:39)
+
+PASS tests/services/cdpBridgeManager.test.ts
+PASS tests/ui/modelsUi.test.ts
+PASS tests/services/workspaceService.test.ts
+PASS tests/bot/telegramCommands.test.ts
+  ● Console
+
+    console.log
+      [TelegramCommand:stop] RPC timeout
+
+      at Object.log [as error] (tests/bot/telegramCommands.test.ts:11:33)
+
+    console.log
+      [TelegramCommand:restart] spawn failed
+
+      at Object.log [as error] (tests/bot/telegramCommands.test.ts:11:33)
+
+    console.log
+      [TelegramCommand:project_create] Path traversal detected
+
+      at Object.log [as error] (tests/bot/telegramCommands.test.ts:11:33)
+
+    console.log
+      [TelegramCommand:new] runtime bootstrap failed: Connection timeout
+
+      at Object.log [as error] (tests/bot/telegramCommands.test.ts:11:33)
+
+    console.log
+      [TelegramCommand:new] startNewChat threw: unexpected failure
+
+      at Object.log [as error] (tests/bot/telegramCommands.test.ts:11:33)
+
+PASS tests/platform/telegram/telegramAdapter.test.ts
+  ● Console
+
+    console.info
+      [2m[23:07:40][0m [36m[INFO][0m [TelegramAdapter] Ignoring stale message (chat=1, age=60s before startup)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+(node:37832) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/context/applicationContextBuilder.test.ts (6.639 s)
+(node:9760) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/commands/joinCommandHandler.test.ts (6.644 s)
+PASS tests/bot/workspaceQueue.test.ts
+PASS tests/bot/promptSession.test.ts
+PASS tests/ui/autoAcceptUi.test.ts
+(node:24556) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/events/messageCreateHandler.test.ts (6.73 s)
+  ● Console
+
+    console.info
+      [2m[23:07:40][0m [36m[INFO][0m [Queue:proj-a] Processing immediately (depth: 1, channel: ch-1)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:40][0m [36m[INFO][0m [Queue:proj-a] Prompt completed in 0s (channel: ch-1)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:40][0m [36m[INFO][0m [Queue:proj-a] Processing immediately (depth: 1, channel: ch-1)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:40][0m [36m[INFO][0m [Queue:proj-a] Processing immediately (depth: 1, channel: ch-1)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:40][0m [36m[INFO][0m [Queue:proj-a] Enqueued (depth: 2, channel: ch-2)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Prompt completed in 0s (channel: ch-1)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Task done, 1 remaining
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Prompt completed in 0s (channel: ch-2)
+
+      at Object.info (src/utils/logger.ts:127:25)
+          at async Promise.all (index 1)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Processing immediately (depth: 1, channel: ch-ws-a)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Processing immediately (depth: 1, channel: ch-ws-b)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Prompt completed in 0s (channel: ch-ws-a)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Prompt completed in 0s (channel: ch-ws-b)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Processing immediately (depth: 1, channel: ch-1)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Prompt completed in 0s (channel: ch-1)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Processing immediately (depth: 1, channel: ch-2)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Prompt completed in 0s (channel: ch-2)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Processing immediately (depth: 1, channel: ch-1)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Enqueued (depth: 2, channel: ch-2)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Prompt completed in 0s (channel: ch-1)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Task done, 1 remaining
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Queue:proj-a] Prompt completed in 0s (channel: ch-2)
+
+      at Object.info (src/utils/logger.ts:127:25)
+          at async Promise.all (index 1)
+
+PASS tests/ui/projectListUi.test.ts
+PASS tests/database/workspaceBindingRepository.test.ts
+PASS tests/services/cdpService.modelSelection.test.ts
+  ● Console
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [CdpService] sendToCascade: cascade=cascade-123... model=1154
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [CdpService] sendToCascade: cascade=cascade-456... model=1154
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [CdpService] sendToCascade: cascade=cascade-789... model=MODEL_PLACEHOLDER_M26
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [CdpService] sendToCascade: creating new cascade model=MODEL_PLACEHOLDER_GEMINI_PRO_HIGH
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+PASS tests/services/cdpService.errorHandling.test.ts
+PASS tests/services/cdpService.sessionInfo.test.ts
+PASS tests/services/chatSessionService.test.ts
+  ● Console
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [ChatSessionService] Failed to list sessions: Error: WebSocket disconnected
+          at Object.<anonymous> (C:\Users\Daniel\Projects\ClawGravity\tests\services\chatSessionService.test.ts:218:53)
+          at Promise.finally.completed (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1557:28)
+          at new Promise (<anonymous>)
+          at callAsyncCircusFn (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1497:10)
+          at _callCircusTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1007:40)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at _runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:947:3)
+          at c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:849:7
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:862:11)
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:857:11)
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:857:11)
+          at run (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:761:3)
+          at runAndTransformResultsToJestFormat (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1918:21)
+          at jestAdapter (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\runner.js:101:19)
+          at runTestInternal (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:275:16)
+          at runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:343:7)
+          at Object.worker (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:497:12)
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at ChatSessionService.error [as listAllSessions] (src/services/chatSessionService.ts:68:20)
+      at Object.<anonymous> (tests/services/chatSessionService.test.ts:220:30)
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [ChatSessionService] Failed to get conversation history: Error: connection lost
+          at Object.<anonymous> (C:\Users\Daniel\Projects\ClawGravity\tests\services\chatSessionService.test.ts:304:53)
+          at Promise.finally.completed (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1557:28)
+          at new Promise (<anonymous>)
+          at callAsyncCircusFn (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1497:10)
+          at _callCircusTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1007:40)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at _runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:947:3)
+          at c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:849:7
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:862:11)
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:857:11)
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:857:11)
+          at run (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:761:3)
+          at runAndTransformResultsToJestFormat (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1918:21)
+          at jestAdapter (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\runner.js:101:19)
+          at runTestInternal (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:275:16)
+          at runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:343:7)
+          at Object.worker (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:497:12)
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at ChatSessionService.error [as getConversationHistory] (src/services/chatSessionService.ts:120:20)
+      at Object.<anonymous> (tests/services/chatSessionService.test.ts:306:29)
+
+PASS tests/database/telegramBindingRepository.test.ts
+PASS tests/ui/outputUi.test.ts
+(node:41044) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/context/applicationClawBuilder.test.ts (6.811 s)
+  ● Console
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] agent_send: "__claw__" → "proj-b" (7 chars)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [32m[DONE][0m [ClawInterceptor] Sub-agent "proj-b" completed — summary: 14 chars
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] agent_send: "__claw__" → "proj-b" (7 chars)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [32m[DONE][0m [ClawInterceptor] Sub-agent "proj-b" completed — summary: 11 chars
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+PASS tests/database/userPreferenceRepository.test.ts
+PASS tests/services/notificationSender.test.ts
+(node:34424) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/context/applicationCommandBuilder.test.ts (6.846 s)
+PASS tests/database/scheduleRepository.test.ts
+PASS tests/config.test.ts
+  ● Console
+
+    console.log
+      [dotenv@17.3.1] injecting env (4) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+
+      at _log (node_modules/dotenv/lib/main.js:139:11)
+
+PASS tests/bot/clawWorkspaceSetup.test.ts
+  ● Console
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Claw] Created agent workspace: C:\Users\Daniel\AppData\Local\Temp\claw-workspace-EEpusS\__claw__
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Claw] Created heartbeat checklist: C:\Users\Daniel\AppData\Local\Temp\claw-workspace-EEpusS\__claw__\HEARTBEAT.md
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [Claw] Created memory file: C:\Users\Daniel\AppData\Local\Temp\claw-workspace-EEpusS\__claw__\CLAW.md
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+PASS tests/platform/telegram/wrappers.test.ts
+PASS tests/middleware/sanitize.test.ts
+PASS tests/database/templateRepository.test.ts
+PASS tests/utils/discordButtonUtils.test.ts
+PASS tests/handlers/modeSelectAction.test.ts
+PASS tests/services/clawCommandInterceptor.test.ts
+  ● Console
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] agent_list: 2 agent(s) available
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] agent_send: "__claw__" → "ProjectX" (18 chars)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [32m[DONE][0m [ClawInterceptor] Sub-agent "ProjectX" completed — summary: 29 chars
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] agent_send: "__claw__" → "X" (2 chars)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] agent_read: C:\Users\Daniel\AppData\Local\Temp\claw_test_1774624061278.md (27 chars)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [ClawInterceptor] Found 1 @claw command(s) in AI response
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+PASS tests/database/chatSessionRepository.test.ts
+(node:43032) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/context/applicationDiscordBuilder.test.ts (6.958 s)
+PASS tests/bot/eventRouter.test.ts
+PASS tests/services/channelManager.test.ts
+PASS tests/commands/registerSlashCommands.test.ts
+  ● Console
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m Registered 20 slash commands to guild guild-id.
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m Cleared global slash commands to prevent duplicate command listings.
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m Registered 20 slash commands globally.
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m ❌ Failed to register slash commands: Error: register failed
+          at Object.<anonymous> (C:\Users\Daniel\Projects\ClawGravity\tests\commands\registerSlashCommands.test.ts:137:39)
+          at Promise.finally.completed (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1557:28)
+          at new Promise (<anonymous>)
+          at callAsyncCircusFn (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1497:10)
+          at _callCircusTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1007:40)
+          at processTicksAndRejections (node:internal/process/task_queues:104:5)
+          at _runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:947:3)
+          at c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:849:7
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:862:11)
+          at _runTestsForDescribeBlock (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:857:11)
+          at run (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:761:3)
+          at runAndTransformResultsToJestFormat (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\jestAdapterInit.js:1918:21)
+          at jestAdapter (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-circus\build\runner.js:101:19)
+          at runTestInternal (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:275:16)
+          at runTest (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:343:7)
+          at Object.worker (c:\Users\Daniel\Projects\ClawGravity\node_modules\jest-runner\build\testWorker.js:497:12)
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/commands/registerSlashCommands.ts:307:16)
+      at Object.<anonymous> (tests/commands/registerSlashCommands.test.ts:139:9)
+
+PASS tests/services/antigravityLauncher.test.ts
+PASS tests/utils/sanitize.test.ts
+PASS tests/services/processRestartService.test.ts
+PASS tests/handlers/selectHandler.test.ts
+  ● Console
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [SelectHandler] Action error: Service down
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/handlers/selectHandler.ts:53:24)
+      at Object.<anonymous> (tests/handlers/selectHandler.test.ts:112:9)
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [SelectHandler] Action error: Service down
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/handlers/selectHandler.ts:53:24)
+      at Object.<anonymous> (tests/handlers/selectHandler.test.ts:130:9)
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [SelectHandler] Action error: Bad regex
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/handlers/selectHandler.ts:53:24)
+      at Object.handler (tests/handlers/selectHandler.test.ts:143:15)
+
+PASS tests/utils/pipelineDebugLog.test.ts
+PASS tests/services/updateCheckService.test.ts
+PASS tests/platform/discord/wrappers.test.ts
+PASS tests/handlers/commandHandler.test.ts
+  ● Console
+
+    console.warn
+      [2m[23:07:41][0m [33m[WARN][0m [CommandHandler] Unknown command: nonexistent
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at warn (src/handlers/commandHandler.ts:47:20)
+      at Object.handler (tests/handlers/commandHandler.test.ts:87:15)
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [CommandHandler] Command "mode" error: Permission denied
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/handlers/commandHandler.ts:61:20)
+      at Object.<anonymous> (tests/handlers/commandHandler.test.ts:121:9)
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [CommandHandler] Command "mode" error: Permission denied
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/handlers/commandHandler.ts:61:20)
+      at Object.<anonymous> (tests/handlers/commandHandler.test.ts:145:9)
+
+    console.warn
+      [2m[23:07:41][0m [33m[WARN][0m [CommandHandler] Unknown command: nonexistent
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at warn (src/handlers/commandHandler.ts:47:20)
+      at Object.handler (tests/handlers/commandHandler.test.ts:157:22)
+
+PASS tests/utils/dangerousCommandClassifier.test.ts
+PASS tests/bot/telegramProjectCommand.test.ts
+PASS tests/utils/htmlToDiscordMarkdown.test.ts
+(node:15268) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/context/applicationTelegramBuilder.test.ts (7.069 s)
+  ● Console
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [EventRouter] telegram adapter ready
+
+      at Object.info (src/utils/logger.ts:127:25)
+          at Array.map (<anonymous>)
+
+PASS tests/utils/logBuffer.test.ts
+PASS tests/utils/metadataExtractor.test.ts
+PASS tests/utils/discordFormatter.lean.test.ts
+PASS tests/services/promptDispatcher.test.ts
+PASS tests/services/chatSessionService.grpc.test.ts
+PASS tests/services/scheduleService.test.ts
+PASS tests/platform/telegramDeliveryPipeline.test.ts
+PASS tests/platform/messageDeliveryState.test.ts
+PASS tests/services/modeService.test.ts
+PASS tests/services/modelService.test.ts
+PASS tests/handlers/messageHandler.test.ts
+  ● Console
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [MessageHandler] Failed to send prompt: CDP connection lost
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/handlers/messageHandler.ts:96:20)
+      at Object.<anonymous> (tests/handlers/messageHandler.test.ts:253:9)
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [MessageHandler] Failed to send prompt: CDP connection lost
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/handlers/messageHandler.ts:96:20)
+      at Object.<anonymous> (tests/handlers/messageHandler.test.ts:272:9)
+
+PASS tests/services/trajectoryStepRenderer.test.ts
+PASS tests/handlers/modelButtonAction.test.ts
+PASS tests/utils/streamMessageFormatter.test.ts
+PASS tests/utils/logger.test.ts
+PASS tests/services/grpcCascadeClient.test.ts
+  ● Console
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcCascadeClient] Cascade created: cascade-123
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.warn
+      [2m[23:07:41][0m [33m[WARN][0m [GrpcCascadeClient] Initial send failed for cascade cascade-123: missing model
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at GrpcCascadeClient.warn [as createCascade] (src/services/grpcCascadeClient.ts:197:24)
+      at Object.<anonymous> (tests/services/grpcCascadeClient.test.ts:17:9)
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [GrpcCascadeClient] StartCascade failed: LS StartCascade: 400 - bad request
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at GrpcCascadeClient.error [as createCascade] (src/services/grpcCascadeClient.ts:172:20)
+      at Object.<anonymous> (tests/services/grpcCascadeClient.test.ts:26:9)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcCascadeClient] Cascade created: cascade-123
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+PASS tests/utils/plainTextFormatter.test.ts
+PASS tests/commands/messageParser.test.ts
+PASS tests/commands/slashCommandHandler.test.ts
+PASS tests/services/cdpService.test.ts
+PASS tests/platform/richContentBuilder.test.ts
+PASS tests/services/grpcResponseMonitor.logging.test.ts
+PASS tests/handlers/buttonHandler.test.ts
+  ● Console
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [ButtonHandler] Action error: Database timeout
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/handlers/buttonHandler.ts:69:28)
+      at Object.<anonymous> (tests/handlers/buttonHandler.test.ts:114:9)
+
+    console.error
+      [2m[23:07:41][0m [31m[ERROR][0m [ButtonHandler] Action error: Database timeout
+
+    [0m [90m 139 |[39m             [36mif[39m (shouldLog([32m'error'[39m)) {
+     [90m 140 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.red}[ERROR]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 141 |[39m                 console[33m.[39merror(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 142 |[39m                 [36mconst[39m plain [33m=[39m [32m`[ERROR] ${args.join(' ')}`[39m[33m;[39m
+     [90m 143 |[39m                 logBuffer[33m.[39mappend([32m'error'[39m[33m,[39m plain)[33m;[39m
+     [90m 144 |[39m                 enqueueErrorHook(plain)[33m;[39m[0m
+
+      at Object.error (src/utils/logger.ts:141:25)
+      at error (src/handlers/buttonHandler.ts:69:28)
+      at Object.<anonymous> (tests/handlers/buttonHandler.test.ts:134:9)
+
+PASS tests/middleware/auth.test.ts
+PASS tests/services/autoAcceptService.test.ts
+PASS tests/platform/telegram/htmlToTelegramHtml.test.ts
+PASS tests/utils/pathUtils.test.ts
+PASS tests/handlers/autoAcceptButtonAction.test.ts
+PASS tests/utils/imageHandler.test.ts
+PASS tests/utils/processLogBuffer.test.ts
+PASS tests/handlers/templateButtonAction.test.ts
+PASS tests/services/titleGeneratorService.test.ts
+PASS tests/services/quotaService.test.ts
+PASS tests/utils/discordFormatter.test.ts
+PASS tests/services/defaultModelApplicator.test.ts
+PASS tests/services/processManager.test.ts
+PASS tests/services/progressSender.test.ts
+PASS tests/utils/auth.test.ts
+PASS tests/services/cdpService.security.test.ts
+PASS tests/platform/types.test.ts
+PASS tests/services/grpcResponseMonitor.grpc.test.ts
+  ● Console
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-123... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Thinking
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_RUNNING steps=2 renderSteps=2 anchor=matched latestRole=assistant textLen=0 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=1s runStatus=CASCADE_RUN_STATUS_IDLE steps=2 renderSteps=2 anchor=matched latestRole=assistant textLen=4 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [35m[PHASE][0m [GrpcMonitor] Generating (4 chars)
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Completed response from trajectory (4 chars, stale=false)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [32m[DONE][0m [GrpcMonitor] Complete (4 chars)
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-unif... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Thinking
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_RUNNING steps=3 renderSteps=3 anchor=matched latestRole=assistant textLen=11 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Generating (11 chars)
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-123... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_IDLE steps=2 renderSteps=2 anchor=matched latestRole=assistant textLen=15 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Generating (15 chars)
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Completed response from trajectory (15 chars, stale=false)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [32m[DONE][0m [GrpcMonitor] Complete (15 chars)
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-123... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Thinking
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_RUNNING steps=1 renderSteps=1 anchor=matched latestRole=user textLen=0 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=1s runStatus=CASCADE_RUN_STATUS_IDLE steps=2 renderSteps=2 anchor=matched latestRole=assistant textLen=21 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [35m[PHASE][0m [GrpcMonitor] Generating (21 chars)
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Completed response from trajectory (21 chars, stale=false)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [32m[DONE][0m [GrpcMonitor] Complete (21 chars)
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-top-... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Thinking
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_RUNNING steps=2 renderSteps=2 anchor=matched latestRole=assistant textLen=12 pendingTools=yes
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Generating (12 chars)
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=1s runStatus=CASCADE_RUN_STATUS_IDLE steps=4 renderSteps=4 anchor=matched latestRole=assistant textLen=18 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Completed response from trajectory (18 chars, stale=false)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [32m[DONE][0m [GrpcMonitor] Complete (18 chars)
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-empt... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_IDLE steps=4 renderSteps=2 anchor=matched latestRole=assistant textLen=0 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=1s runStatus=CASCADE_RUN_STATUS_IDLE steps=4 renderSteps=2 anchor=matched latestRole=assistant textLen=12 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [35m[PHASE][0m [GrpcMonitor] Generating (12 chars)
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Completed response from trajectory (12 chars, stale=false)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [32m[DONE][0m [GrpcMonitor] Complete (12 chars)
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-anch... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.warn
+      [2m[23:07:41][0m [33m[WARN][0m [GrpcMonitor] Anchor not matched. Expected: "commit...", steps=2
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at GrpcResponseMonitor.warn [as readTrajectorySnapshot] (src/services/grpcResponseMonitor.ts:422:36)
+      at GrpcResponseMonitor.pollOnce (src/services/grpcResponseMonitor.ts:280:30)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_IDLE steps=2 renderSteps=2 anchor=missing latestRole=none textLen=0 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [35m[PHASE][0m [GrpcMonitor] Thinking
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=1s runStatus=CASCADE_RUN_STATUS_RUNNING steps=3 renderSteps=1 anchor=matched latestRole=user textLen=0 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=1s runStatus=CASCADE_RUN_STATUS_IDLE steps=4 renderSteps=2 anchor=matched latestRole=assistant textLen=12 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [35m[PHASE][0m [GrpcMonitor] Generating (12 chars)
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Completed response from trajectory (12 chars, stale=false)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [32m[DONE][0m [GrpcMonitor] Complete (12 chars)
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-trun... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Thinking
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_RUNNING steps=2 renderSteps=2 anchor=matched latestRole=assistant textLen=15 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Generating (15 chars)
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.warn
+      [2m[23:07:42][0m [33m[WARN][0m [GrpcMonitor] Anchor dropped after prior match; recovering from truncated trajectory tail (steps=2, fallbackIndex=0)
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at GrpcResponseMonitor.warn [as readTrajectorySnapshot] (src/services/grpcResponseMonitor.ts:413:36)
+      at GrpcResponseMonitor.pollOnce (src/services/grpcResponseMonitor.ts:280:30)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=1s runStatus=CASCADE_RUN_STATUS_RUNNING steps=2 renderSteps=2 anchor=recovered latestRole=assistant textLen=46 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=1s runStatus=CASCADE_RUN_STATUS_IDLE steps=2 renderSteps=2 anchor=recovered latestRole=assistant textLen=45 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [36m[INFO][0m [GrpcMonitor] Completed response from trajectory (45 chars, stale=false)
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:42][0m [32m[DONE][0m [GrpcMonitor] Complete (45 chars)
+
+      at Object.info (src/utils/logger.ts:166:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-rend... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Thinking
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_RUNNING steps=4 renderSteps=2 anchor=matched latestRole=assistant textLen=13 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Generating (13 chars)
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Starting polling | cascade=cascade-time... interval=500ms
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.info
+      [2m[23:07:41][0m [35m[PHASE][0m [GrpcMonitor] Thinking
+
+      at Object.info [as phase] (src/utils/logger.ts:158:25)
+
+    console.info
+      [2m[23:07:41][0m [36m[INFO][0m [GrpcMonitor] Snapshot t=0s runStatus=CASCADE_RUN_STATUS_RUNNING steps=1 renderSteps=1 anchor=matched latestRole=user textLen=0 pendingTools=no
+
+      at Object.info (src/utils/logger.ts:127:25)
+
+    console.warn
+      [2m[23:07:43][0m [33m[WARN][0m [GrpcMonitor] Timeout after 2s
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at warn (src/services/grpcResponseMonitor.ts:211:24)
+      at callTimer (node_modules/@sinonjs/fake-timers/src/fake-timers-src.js:806:24)
+      at doTickInner (node_modules/@sinonjs/fake-timers/src/fake-timers-src.js:1413:29)
+      at Immediate.nextPromiseTick [as _onImmediate] (node_modules/@sinonjs/fake-timers/src/fake-timers-src.js:1474:25)
+
+    console.warn
+      [2m[23:07:43][0m [33m[WARN][0m [GrpcMonitor] Timeout (0 chars captured)
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at GrpcResponseMonitor.warn [as setPhase] (src/services/grpcResponseMonitor.ts:749:40)
+      at setPhase (src/services/grpcResponseMonitor.ts:212:22)
+      at callTimer (node_modules/@sinonjs/fake-timers/src/fake-timers-src.js:806:24)
+      at doTickInner (node_modules/@sinonjs/fake-timers/src/fake-timers-src.js:1413:29)
+      at Immediate.nextPromiseTick [as _onImmediate] (node_modules/@sinonjs/fake-timers/src/fake-timers-src.js:1474:25)
+
+PASS tests/services/userMessageDetector.test.ts
+PASS tests/ui/sessionPickerUi.test.ts
+PASS tests/services/cdpService.callWithRetry.test.ts
+PASS tests/bot/telegramMessageHandler.test.ts
+(node:38768) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/handlers/planningButtonAction.test.ts (7.65 s)
+  ● Console
+
+    console.warn
+      [2m[23:07:41][0m [33m[WARN][0m [PlanningAction] No detector for project=nonexistent
+
+    [0m [90m 132 |[39m             [36mif[39m (shouldLog([32m'warn'[39m)) {
+     [90m 133 |[39m                 [36mconst[39m formatted [33m=[39m [32m`${getTimestamp()} ${COLORS.yellow}[WARN]${COLORS.reset}`[39m[33m;[39m
+    [31m[1m>[22m[39m[90m 134 |[39m                 console[33m.[39mwarn(formatted[33m,[39m [33m...[39margs)[33m;[39m
+     [90m     |[39m                         [31m[1m^[22m[39m
+     [90m 135 |[39m                 logBuffer[33m.[39mappend([32m'warn'[39m[33m,[39m [32m`[WARN] ${args.join(' ')}`[39m)[33m;[39m
+     [90m 136 |[39m             }
+     [90m 137 |[39m         }[33m,[39m[0m
+
+      at Object.warn (src/utils/logger.ts:134:25)
+      at warn (src/handlers/buttonActionUtils.ts:72:16)
+      at Object.execute (src/handlers/buttonActionUtils.ts:159:30)
+      at Object.<anonymous> (tests/handlers/planningButtonAction.test.ts:252:13)
+
+(node:16908) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/bot/scheduleJobRunner.test.ts (7.826 s)
+  ● Console
+
+    console.info
+      final response
+
+      at Object.info [as onComplete] (src/bot/scheduleJobRunner.ts:139:33)
+
+(node:38108) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS tests/services/cdpService.workspace.test.ts (12.275 s)
+A worker process has failed to exit gracefully and has been force exited. This is likely caused by tests leaking due to improper teardown. Try running with --detectOpenHandles to find leaks. Active timers can also cause this, ensure that .unref() was called on them.
+
+Summary of all failing tests
+FAIL tests/bot/telegramStartup.test.ts
+  ● telegramStartup › runTelegramStartupTasks › resumes passive monitoring when a cascade is still running
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: "1001", "cascade-abc"
+
+    Number of calls: 0
+
+    [0m [90m 173 |[39m
+     [90m 174 |[39m             [90m// The cascade ID should be persisted for the chat[39m
+    [31m[1m>[22m[39m[90m 175 |[39m             expect(sessionStateStore[33m.[39msetCurrentCascadeId)[33m.[39mtoHaveBeenCalledWith(
+     [90m     |[39m                                                           [31m[1m^[22m[39m
+     [90m 176 |[39m                 [32m'1001'[39m[33m,[39m
+     [90m 177 |[39m                 [32m'cascade-abc'[39m[33m,[39m
+     [90m 178 |[39m             )[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/bot/telegramStartup.test.ts:175:59)
+
+FAIL tests/handlers/errorPopupButtonAction.test.ts
+  ● createErrorPopupButtonAction › match › matches error_popup_dismiss_action customId
+
+    expect(received).toEqual(expected) // deep equality
+
+    Expected: {"action": "dismiss", "channelId": "ch-1", "projectName": "proj"}
+    Received: null
+
+    [0m [90m 74 |[39m             [36mconst[39m action [33m=[39m createErrorPopupButtonAction({ bridge })[33m;[39m
+     [90m 75 |[39m             [36mconst[39m result [33m=[39m action[33m.[39mmatch([32m'error_popup_dismiss_action:proj:ch-1'[39m)[33m;[39m
+    [31m[1m>[22m[39m[90m 76 |[39m             expect(result)[33m.[39mtoEqual({
+     [90m    |[39m                            [31m[1m^[22m[39m
+     [90m 77 |[39m                 action[33m:[39m [32m'dismiss'[39m[33m,[39m
+     [90m 78 |[39m                 projectName[33m:[39m [32m'proj'[39m[33m,[39m
+     [90m 79 |[39m                 channelId[33m:[39m [32m'ch-1'[39m[33m,[39m[0m
+
+      at Object.toEqual (tests/handlers/errorPopupButtonAction.test.ts:76:28)
+
+  ● createErrorPopupButtonAction › match › matches error_popup_copy_debug_action customId
+
+    expect(received).toEqual(expected) // deep equality
+
+    Expected: {"action": "copy_debug", "channelId": "", "projectName": "proj"}
+    Received: null
+
+    [0m [90m 85 |[39m             [36mconst[39m action [33m=[39m createErrorPopupButtonAction({ bridge })[33m;[39m
+     [90m 86 |[39m             [36mconst[39m result [33m=[39m action[33m.[39mmatch([32m'error_popup_copy_debug_action:proj'[39m)[33m;[39m
+    [31m[1m>[22m[39m[90m 87 |[39m             expect(result)[33m.[39mtoEqual({
+     [90m    |[39m                            [31m[1m^[22m[39m
+     [90m 88 |[39m                 action[33m:[39m [32m'copy_debug'[39m[33m,[39m
+     [90m 89 |[39m                 projectName[33m:[39m [32m'proj'[39m[33m,[39m
+     [90m 90 |[39m                 channelId[33m:[39m [32m''[39m[33m,[39m[0m
+
+      at Object.toEqual (tests/handlers/errorPopupButtonAction.test.ts:87:28)
+
+  ● createErrorPopupButtonAction › match › matches error_popup_retry_action customId
+
+    expect(received).toEqual(expected) // deep equality
+
+    Expected: {"action": "retry", "channelId": "ch-2", "projectName": "proj"}
+    Received: null
+
+    [0m [90m  96 |[39m             [36mconst[39m action [33m=[39m createErrorPopupButtonAction({ bridge })[33m;[39m
+     [90m  97 |[39m             [36mconst[39m result [33m=[39m action[33m.[39mmatch([32m'error_popup_retry_action:proj:ch-2'[39m)[33m;[39m
+    [31m[1m>[22m[39m[90m  98 |[39m             expect(result)[33m.[39mtoEqual({
+     [90m     |[39m                            [31m[1m^[22m[39m
+     [90m  99 |[39m                 action[33m:[39m [32m'retry'[39m[33m,[39m
+     [90m 100 |[39m                 projectName[33m:[39m [32m'proj'[39m[33m,[39m
+     [90m 101 |[39m                 channelId[33m:[39m [32m'ch-2'[39m[33m,[39m[0m
+
+      at Object.toEqual (tests/handlers/errorPopupButtonAction.test.ts:98:28)
+
+  ● createErrorPopupButtonAction › execute - dismiss › clicks dismiss button and updates message
+
+    expect(jest.fn()).toHaveBeenCalled()
+
+    Expected number of calls: >= 1
+    Received number of calls:    0
+
+    [0m [90m 126 |[39m             })[33m;[39m
+     [90m 127 |[39m
+    [31m[1m>[22m[39m[90m 128 |[39m             expect(mockDetector[33m.[39mclickDismissButton)[33m.[39mtoHaveBeenCalled()[33m;[39m
+     [90m     |[39m                                                     [31m[1m^[22m[39m
+     [90m 129 |[39m             expect(interaction[33m.[39mupdate)[33m.[39mtoHaveBeenCalledWith({
+     [90m 130 |[39m                 text[33m:[39m [32m'��️ Dismissed'[39m[33m,[39m
+     [90m 131 |[39m                 components[33m:[39m [][33m,[39m[0m
+
+      at Object.toHaveBeenCalled (tests/handlers/errorPopupButtonAction.test.ts:128:53)
+
+  ● createErrorPopupButtonAction › execute - dismiss › replies with error when dismiss button not found
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"text": "Dismiss button not found."}
+
+    Number of calls: 0
+
+    [0m [90m 147 |[39m             })[33m;[39m
+     [90m 148 |[39m
+    [31m[1m>[22m[39m[90m 149 |[39m             expect(interaction[33m.[39mreply)[33m.[39mtoHaveBeenCalledWith({
+     [90m     |[39m                                       [31m[1m^[22m[39m
+     [90m 150 |[39m                 text[33m:[39m [32m'Dismiss button not found.'[39m[33m,[39m
+     [90m 151 |[39m             })[33m;[39m
+     [90m 152 |[39m         })[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/handlers/errorPopupButtonAction.test.ts:149:39)
+
+  ● createErrorPopupButtonAction › execute - copy_debug › clicks copy debug button, reads clipboard, and sends followUp
+
+    expect(jest.fn()).toHaveBeenCalled()
+
+    Expected number of calls: >= 1
+    Received number of calls:    0
+
+    [0m [90m 172 |[39m
+     [90m 173 |[39m             expect(interaction[33m.[39mdeferUpdate)[33m.[39mtoHaveBeenCalled()[33m;[39m
+    [31m[1m>[22m[39m[90m 174 |[39m             expect(mockDetector[33m.[39mclickCopyDebugInfoButton)[33m.[39mtoHaveBeenCalled()[33m;[39m
+     [90m     |[39m                                                           [31m[1m^[22m[39m
+     [90m 175 |[39m             expect(interaction[33m.[39mupdate)[33m.[39mtoHaveBeenCalledWith({
+     [90m 176 |[39m                 text[33m:[39m [32m'�� Debug info copied'[39m[33m,[39m
+     [90m 177 |[39m                 components[33m:[39m [][33m,[39m[0m
+
+      at Object.toHaveBeenCalled (tests/handlers/errorPopupButtonAction.test.ts:174:59)
+
+  ● createErrorPopupButtonAction › execute - copy_debug › truncates debug content over 4096 chars
+
+    TypeError: Cannot read properties of undefined (reading '0')
+
+    [0m [90m 200 |[39m             })[33m;[39m
+     [90m 201 |[39m
+    [31m[1m>[22m[39m[90m 202 |[39m             [36mconst[39m followUpCall [33m=[39m (interaction[33m.[39mfollowUp [36mas[39m jest[33m.[39m[33mMock[39m)[33m.[39mmock[33m.[39mcalls[[35m0[39m][[35m0[39m][33m;[39m
+     [90m     |[39m                                                                                   [31m[1m^[22m[39m
+     [90m 203 |[39m             expect(followUpCall[33m.[39mtext[33m.[39mlength)[33m.[39mtoBeLessThanOrEqual([35m4096[39m)[33m;[39m
+     [90m 204 |[39m             expect(followUpCall[33m.[39mtext)[33m.[39mtoContain([32m'(truncated)'[39m)[33m;[39m
+     [90m 205 |[39m         })[33m;[39m[0m
+
+      at Object.<anonymous> (tests/handlers/errorPopupButtonAction.test.ts:202:83)
+
+  ● createErrorPopupButtonAction › execute - copy_debug › replies with error when copy button not found
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"text": "Copy debug info button not found."}
+
+    Number of calls: 0
+
+    [0m [90m 221 |[39m             })[33m;[39m
+     [90m 222 |[39m
+    [31m[1m>[22m[39m[90m 223 |[39m             expect(interaction[33m.[39mreply)[33m.[39mtoHaveBeenCalledWith({
+     [90m     |[39m                                       [31m[1m^[22m[39m
+     [90m 224 |[39m                 text[33m:[39m [32m'Copy debug info button not found.'[39m[33m,[39m
+     [90m 225 |[39m             })[33m;[39m
+     [90m 226 |[39m         })[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/handlers/errorPopupButtonAction.test.ts:223:39)
+
+  ● createErrorPopupButtonAction › execute - copy_debug › sends fallback message when clipboard is empty
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"text": "Could not read debug info from clipboard."}
+
+    Number of calls: 0
+
+    [0m [90m 243 |[39m             })[33m;[39m
+     [90m 244 |[39m
+    [31m[1m>[22m[39m[90m 245 |[39m             expect(interaction[33m.[39mfollowUp)[33m.[39mtoHaveBeenCalledWith({
+     [90m     |[39m                                          [31m[1m^[22m[39m
+     [90m 246 |[39m                 text[33m:[39m [32m'Could not read debug info from clipboard.'[39m[33m,[39m
+     [90m 247 |[39m             })[33m;[39m
+     [90m 248 |[39m         })[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/handlers/errorPopupButtonAction.test.ts:245:42)
+
+  ● createErrorPopupButtonAction › execute - retry › clicks retry button and updates message
+
+    expect(jest.fn()).toHaveBeenCalled()
+
+    Expected number of calls: >= 1
+    Received number of calls:    0
+
+    [0m [90m 264 |[39m             })[33m;[39m
+     [90m 265 |[39m
+    [31m[1m>[22m[39m[90m 266 |[39m             expect(mockDetector[33m.[39mclickRetryButton)[33m.[39mtoHaveBeenCalled()[33m;[39m
+     [90m     |[39m                                                   [31m[1m^[22m[39m
+     [90m 267 |[39m             expect(interaction[33m.[39mupdate)[33m.[39mtoHaveBeenCalledWith({
+     [90m 268 |[39m                 text[33m:[39m [32m'�� Retry initiated'[39m[33m,[39m
+     [90m 269 |[39m                 components[33m:[39m [][33m,[39m[0m
+
+      at Object.toHaveBeenCalled (tests/handlers/errorPopupButtonAction.test.ts:266:51)
+
+  ● createErrorPopupButtonAction › execute - retry › replies with error when retry button not found
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"text": "Retry button not found."}
+
+    Number of calls: 0
+
+    [0m [90m 285 |[39m             })[33m;[39m
+     [90m 286 |[39m
+    [31m[1m>[22m[39m[90m 287 |[39m             expect(interaction[33m.[39mreply)[33m.[39mtoHaveBeenCalledWith({
+     [90m     |[39m                                       [31m[1m^[22m[39m
+     [90m 288 |[39m                 text[33m:[39m [32m'Retry button not found.'[39m[33m,[39m
+     [90m 289 |[39m             })[33m;[39m
+     [90m 290 |[39m         })[33m;[39m[0m
+
+      at Object.toHaveBeenCalledWith (tests/handlers/errorPopupButtonAction.test.ts:287:39)
+
+
+Test Suites: 2 failed, 122 passed, 124 total
+Tests:       12 failed, 1489 passed, 1501 total
+Snapshots:   0 total
+Time:        14.004 s
+Ran all test suites.

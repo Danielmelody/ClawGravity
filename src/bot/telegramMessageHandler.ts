@@ -53,7 +53,7 @@ import { renderStepsToTelegramHtml, markdownToTelegramHtml } from '../services/t
 import type { StepRenderOptions } from '../services/trajectoryStepRenderer';
 import { escapeHtml } from '../platform/telegram/trajectoryRenderer';
 
-const TELEGRAM_STREAM_RENDER_COALESCE_MS = 8;
+const TELEGRAM_STREAM_RENDER_COALESCE_MS = 2000;
 
 /**
  * Per-chat active mirror tracking.
@@ -375,8 +375,10 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             }
             activeSessions.delete(activeMonitorKey);
         }
-
-        const mirror = await createTelegramMirrorSession(channel, 'Generating...', mirrorRenderOpts);
+        const mirror = await createTelegramMirrorSession(channel, {
+            initialPlaceholderText: 'Generating...',
+            renderOptions: mirrorRenderOpts,
+        });
 
         const TIMEOUT_MS = 600_000;
 
@@ -925,11 +927,18 @@ interface TelegramMirrorSession {
     dispose(): void;
 }
 
+interface TelegramMirrorSessionOptions {
+    initialPlaceholderText?: string;
+    renderOptions?: StepRenderOptions;
+    disableStreaming?: boolean;
+}
+
 async function createTelegramMirrorSession(
     channel: PlatformChannel,
-    initialPlaceholderText?: string,
-    renderOptions?: StepRenderOptions,
+    options: TelegramMirrorSessionOptions = {},
 ): Promise<TelegramMirrorSession> {
+    const { initialPlaceholderText, renderOptions, disableStreaming = false } = options;
+
     let messages: PlatformSentMessage[] = [];
     const renderer = createCoalescedStatusRenderer(
         channel,
@@ -985,7 +994,7 @@ async function createTelegramMirrorSession(
         dispatch(action: DeliveryAction): void {
             state = deliveryReducer(state, action);
             // Push streaming update (skip for COMPLETE — delivery pipeline handles that)
-            if (action.type !== 'COMPLETE') {
+            if (action.type !== 'COMPLETE' && !disableStreaming) {
                 const isFirstVisible = state.text.clock <= 1 && state.html.clock <= 1;
                 const renderedText = renderCurrent();
                 if (renderedText) {
@@ -1412,7 +1421,7 @@ async function startPassiveResponseMonitor(
     }
 
     const startTime = Date.now();
-    const mirror = await createTelegramMirrorSession(channel);
+    const mirror = await createTelegramMirrorSession(channel, { disableStreaming: true });
 
     const initialMonitoringTarget = await runtime.getMonitoringTarget(info.cascadeId || null);
     let monitor: GrpcResponseMonitor | null = null;

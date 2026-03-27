@@ -36,7 +36,15 @@ export interface TrajectoryStreamRouterOptions {
 }
 
 /** Connection-ignorable error messages (transient network issues). */
-const TRANSIENT_ERRORS = ['WebSocket is not connected', 'Not connected', 'ECONNREFUSED'];
+const TRANSIENT_ERRORS = [
+    'WebSocket is not connected',
+    'Not connected',
+    'ECONNREFUSED',
+    'Failed to fetch',
+    'fetch failed',
+    'Timeout calling CDP method',
+    'WebSocket disconnected',
+];
 
 function isTransientError(err: unknown): boolean {
     const msg = err instanceof Error ? err.message : String(err);

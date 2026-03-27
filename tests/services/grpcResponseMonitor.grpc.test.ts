@@ -379,6 +379,143 @@ describe('GrpcResponseMonitor polling', () => {
         await monitor.stop();
     });
 
+    it('continues step and text updates after the anchor disappears from a truncated trajectory', async () => {
+        const client = new FakeGrpcClient();
+        const onProgress = jest.fn();
+        const onStepsUpdate = jest.fn();
+        const onComplete = jest.fn();
+
+        client.rawRPC
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                    steps: [
+                        { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: { response: 'Preparing patch' },
+                        },
+                    ],
+                },
+            })
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                    steps: [
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: { response: 'Preparing patch' },
+                        },
+                        {
+                            type: 'CORTEX_STEP_TYPE_RESPONSE',
+                            assistantResponse: { text: 'Applying fix after truncation' },
+                        },
+                    ],
+                },
+            })
+            .mockResolvedValueOnce({
+                trajectory: {
+                    cascadeRunStatus: 'CASCADE_RUN_STATUS_IDLE',
+                    steps: [
+                        {
+                            type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                            plannerResponse: { response: 'Preparing patch' },
+                        },
+                        {
+                            type: 'CORTEX_STEP_TYPE_RESPONSE',
+                            assistantResponse: { text: 'Final reply after truncation' },
+                        },
+                    ],
+                },
+            });
+
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-truncated-tail',
+            expectedUserMessage: 'commit',
+            onProgress,
+            onStepsUpdate,
+            onComplete,
+        });
+
+        await monitor.start();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(onProgress).toHaveBeenCalledWith('Preparing patch');
+        expect(onStepsUpdate).toHaveBeenNthCalledWith(1, {
+            steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                {
+                    type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                    plannerResponse: { response: 'Preparing patch' },
+                },
+            ],
+            runStatus: 'CASCADE_RUN_STATUS_RUNNING',
+        });
+
+        await jest.advanceTimersByTimeAsync(500);
+
+        expect(onProgress).toHaveBeenLastCalledWith('Preparing patch\n\nApplying fix after truncation');
+        expect(onStepsUpdate).toHaveBeenNthCalledWith(2, {
+            steps: [
+                {
+                    type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                    plannerResponse: { response: 'Preparing patch' },
+                },
+                {
+                    type: 'CORTEX_STEP_TYPE_RESPONSE',
+                    assistantResponse: { text: 'Applying fix after truncation' },
+                },
+            ],
+            runStatus: 'CASCADE_RUN_STATUS_RUNNING',
+        });
+
+        await jest.advanceTimersByTimeAsync(500);
+
+        expect(onComplete).toHaveBeenCalledWith('Preparing patch\n\nFinal reply after truncation');
+
+        await monitor.stop();
+    });
+
+    it('emits sliced render steps instead of the full historical trajectory', async () => {
+        const client = new FakeGrpcClient();
+        const onStepsUpdate = jest.fn();
+
+        client.rawRPC.mockResolvedValue({
+            trajectory: {
+                cascadeRunStatus: 'CASCADE_RUN_STATUS_RUNNING',
+                steps: [
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'older prompt' } },
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Older reply' } },
+                    { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                    { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Current reply' } },
+                ],
+            },
+        });
+
+        const monitor = new GrpcResponseMonitor({
+            grpcClient: client as any,
+            cascadeId: 'cascade-render-slice',
+            expectedUserMessage: 'commit',
+            onStepsUpdate,
+        });
+
+        await monitor.start();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(onStepsUpdate).toHaveBeenCalledWith({
+            steps: [
+                { type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { userResponse: 'commit' } },
+                { type: 'CORTEX_STEP_TYPE_RESPONSE', assistantResponse: { text: 'Current reply' } },
+            ],
+            runStatus: 'CASCADE_RUN_STATUS_RUNNING',
+        });
+
+        await monitor.stop();
+    });
+
     it('emits onTimeout if maxDurationMs is reached', async () => {
         const client = new FakeGrpcClient();
         client.rawRPC.mockResolvedValue({

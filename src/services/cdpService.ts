@@ -643,7 +643,45 @@ export class CdpService extends EventEmitter {
         await this.ensureModelConfigs();
         if (this.cachedModelConfigs.length === 0) await this.getUiModels();
         const found = this.findModelConfigByLabel(modelName);
-        if (found) { this.cachedModelLabel = found.label; return { ok: true, model: found.label }; }
+        if (found) {
+            this.cachedModelLabel = found.label;
+            
+            // Modify Antigravity's internal model state representation in the UI
+            // to trigger a visual update without requiring a manual dropdown click
+            const targetLabel = found.label;
+            const script = `(() => {
+                const kw = ['Claude', 'Gemini', 'GPT', 'Opus', 'Sonnet', 'Flash', 'Pro', 'Thinking'];
+                const target = ${JSON.stringify(targetLabel)};
+                for (const btn of document.querySelectorAll('div[role="button"]')) {
+                    const t = btn.textContent?.trim();
+                    if (t && t.length <= 60 && kw.some(k => t.includes(k))) {
+                        // Find the specific text node to preserve the surrounding icons (e.g. SVG)
+                        const walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT, null, false);
+                        let node;
+                        let updated = false;
+                        while ((node = walker.nextNode())) {
+                            if (node.nodeValue && kw.some(k => node.nodeValue.includes(k))) {
+                                node.nodeValue = target;
+                                updated = true;
+                            }
+                        }
+                        if (!updated && btn.textContent !== target) {
+                            btn.textContent = target; // fallback
+                        }
+                        return true;
+                    }
+                }
+                return false;
+            })()`;
+
+            for (const ctx of this.contexts) {
+                try {
+                    await this.call('Runtime.evaluate', { expression: script, returnByValue: true, awaitPromise: true, contextId: ctx.id });
+                } catch { /* next context */ }
+            }
+
+            return { ok: true, model: found.label };
+        }
         return { ok: false, error: `Model "${modelName}" not found. Available: ${this.cachedModelConfigs.map(c => c.label).join(', ')}` };
     }
 
