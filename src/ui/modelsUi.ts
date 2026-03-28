@@ -154,7 +154,7 @@ export function buildModelsPayload(
         }],
     });
 
-    return { components: rows };
+    return { text: '🤖 **Select an AI Model**\n\nThe ✓ indicates your current active model. The ⭐ indicates your default startup model.\n', components: rows };
 }
 
 /**
