@@ -1,5 +1,6 @@
 jest.mock('../../src/services/cdpBridgeManager', () => ({
     ensureWorkspaceRuntime: jest.fn(),
+    registerApprovalWorkspaceChannel: jest.fn(),
 }));
 
 jest.mock('../../src/services/grpcCascadeClient', () => ({

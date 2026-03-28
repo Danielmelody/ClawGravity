@@ -52,6 +52,7 @@ function makeBridge(overrides: Partial<CdpBridge> = {}): CdpBridge {
             getErrorPopupDetector: jest.fn(),
             getApprovalDetector: jest.fn(),
             getPlanningDetector: jest.fn(),
+            getRuntime: jest.fn(),
         } as any,
         quota: {} as any,
         autoAccept: {} as any,
@@ -69,36 +70,14 @@ function makeBridge(overrides: Partial<CdpBridge> = {}): CdpBridge {
 
 describe('createErrorPopupButtonAction', () => {
     describe('match', () => {
-        it('matches error_popup_dismiss_action customId', () => {
+        it('matches error_popup_continue_action customId', () => {
             const bridge = makeBridge();
             const action = createErrorPopupButtonAction({ bridge });
-            const result = action.match('error_popup_dismiss_action:proj:ch-1');
+            const result = action.match('error_popup_continue_action:proj:ch-1');
             expect(result).toEqual({
-                action: 'dismiss',
+                action: 'continue',
                 projectName: 'proj',
                 channelId: 'ch-1',
-            });
-        });
-
-        it('matches error_popup_copy_debug_action customId', () => {
-            const bridge = makeBridge();
-            const action = createErrorPopupButtonAction({ bridge });
-            const result = action.match('error_popup_copy_debug_action:proj');
-            expect(result).toEqual({
-                action: 'copy_debug',
-                projectName: 'proj',
-                channelId: '',
-            });
-        });
-
-        it('matches error_popup_retry_action customId', () => {
-            const bridge = makeBridge();
-            const action = createErrorPopupButtonAction({ bridge });
-            const result = action.match('error_popup_retry_action:proj:ch-2');
-            expect(result).toEqual({
-                action: 'retry',
-                projectName: 'proj',
-                channelId: 'ch-2',
             });
         });
 
@@ -110,182 +89,90 @@ describe('createErrorPopupButtonAction', () => {
         });
     });
 
-    describe('execute - dismiss', () => {
-        it('clicks dismiss button and updates message', async () => {
-            const mockDetector = { clickDismissButton: jest.fn().mockResolvedValue(true) };
+    describe('execute - continue', () => {
+        it('clicks continue and updates message', async () => {
+            const mockRuntime = { sendPrompt: jest.fn().mockResolvedValue({ ok: true }) };
+            const mockDetector = { };
             const bridge = makeBridge();
             (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
+            (bridge.pool.getRuntime as jest.Mock).mockReturnValue(mockRuntime);
 
             const action = createErrorPopupButtonAction({ bridge });
-            const interaction = makeInteraction();
+            const interaction = makeInteraction({ customId: 'error_popup_continue_action:proj' });
 
             await action.execute(interaction, {
-                action: 'dismiss',
-                projectName: 'proj',
-                channelId: '',
-            });
-
-            expect(mockDetector.clickDismissButton).toHaveBeenCalled();
-            expect(interaction.update).toHaveBeenCalledWith({
-                text: '🗑️ Dismissed',
-                components: [],
-            });
-        });
-
-        it('replies with error when dismiss button not found', async () => {
-            const mockDetector = { clickDismissButton: jest.fn().mockResolvedValue(false) };
-            const bridge = makeBridge();
-            (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
-
-            const action = createErrorPopupButtonAction({ bridge });
-            const interaction = makeInteraction();
-
-            await action.execute(interaction, {
-                action: 'dismiss',
-                projectName: 'proj',
-                channelId: '',
-            });
-
-            expect(interaction.reply).toHaveBeenCalledWith({
-                text: 'Dismiss button not found.',
-            });
-        });
-    });
-
-    describe('execute - copy_debug', () => {
-        it('clicks copy debug button, reads clipboard, and sends followUp', async () => {
-            const mockDetector = {
-                clickCopyDebugInfoButton: jest.fn().mockResolvedValue(true),
-                readClipboard: jest.fn().mockResolvedValue('Error stack trace here'),
-            };
-            const bridge = makeBridge();
-            (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
-
-            const action = createErrorPopupButtonAction({ bridge });
-            const interaction = makeInteraction();
-
-            await action.execute(interaction, {
-                action: 'copy_debug',
+                action: 'continue',
                 projectName: 'proj',
                 channelId: '',
             });
 
             expect(interaction.deferUpdate).toHaveBeenCalled();
-            expect(mockDetector.clickCopyDebugInfoButton).toHaveBeenCalled();
+            expect(mockRuntime.sendPrompt).toHaveBeenCalledWith({ text: 'continue' });
             expect(interaction.update).toHaveBeenCalledWith({
-                text: '📋 Debug info copied',
+                text: '▶️ Continuing...',
                 components: [],
             });
-            expect(interaction.followUp).toHaveBeenCalledWith({
-                text: 'Error stack trace here',
-            });
         });
 
-        it('truncates debug content over 4096 chars', async () => {
-            const longContent = 'y'.repeat(5000);
-            const mockDetector = {
-                clickCopyDebugInfoButton: jest.fn().mockResolvedValue(true),
-                readClipboard: jest.fn().mockResolvedValue(longContent),
-            };
+        it('replies with error if workspace not found', async () => {
+            const mockDetector = { };
             const bridge = makeBridge();
             (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
+            (bridge.pool.getRuntime as jest.Mock).mockReturnValue(undefined);
 
             const action = createErrorPopupButtonAction({ bridge });
-            const interaction = makeInteraction();
+            const interaction = makeInteraction({ customId: 'error_popup_continue_action:proj' });
 
             await action.execute(interaction, {
-                action: 'copy_debug',
-                projectName: 'proj',
-                channelId: '',
-            });
-
-            const followUpCall = (interaction.followUp as jest.Mock).mock.calls[0][0];
-            expect(followUpCall.text.length).toBeLessThanOrEqual(4096);
-            expect(followUpCall.text).toContain('(truncated)');
-        });
-
-        it('replies with error when copy button not found', async () => {
-            const mockDetector = {
-                clickCopyDebugInfoButton: jest.fn().mockResolvedValue(false),
-            };
-            const bridge = makeBridge();
-            (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
-
-            const action = createErrorPopupButtonAction({ bridge });
-            const interaction = makeInteraction();
-
-            await action.execute(interaction, {
-                action: 'copy_debug',
+                action: 'continue',
                 projectName: 'proj',
                 channelId: '',
             });
 
             expect(interaction.reply).toHaveBeenCalledWith({
-                text: 'Copy debug info button not found.',
+                text: 'Workspace not connected.',
             });
         });
 
-        it('sends fallback message when clipboard is empty', async () => {
-            const mockDetector = {
-                clickCopyDebugInfoButton: jest.fn().mockResolvedValue(true),
-                readClipboard: jest.fn().mockResolvedValue(null),
-            };
+        it('replies with error if prompt fails', async () => {
+            const mockRuntime = { sendPrompt: jest.fn().mockResolvedValue({ ok: false, error: 'some error' }) };
+            const mockDetector = { };
             const bridge = makeBridge();
             (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
+            (bridge.pool.getRuntime as jest.Mock).mockReturnValue(mockRuntime);
 
             const action = createErrorPopupButtonAction({ bridge });
-            const interaction = makeInteraction();
+            const interaction = makeInteraction({ customId: 'error_popup_continue_action:proj' });
 
             await action.execute(interaction, {
-                action: 'copy_debug',
-                projectName: 'proj',
-                channelId: '',
-            });
-
-            expect(interaction.followUp).toHaveBeenCalledWith({
-                text: 'Could not read debug info from clipboard.',
-            });
-        });
-    });
-
-    describe('execute - retry', () => {
-        it('clicks retry button and updates message', async () => {
-            const mockDetector = { clickRetryButton: jest.fn().mockResolvedValue(true) };
-            const bridge = makeBridge();
-            (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
-
-            const action = createErrorPopupButtonAction({ bridge });
-            const interaction = makeInteraction();
-
-            await action.execute(interaction, {
-                action: 'retry',
-                projectName: 'proj',
-                channelId: '',
-            });
-
-            expect(mockDetector.clickRetryButton).toHaveBeenCalled();
-            expect(interaction.update).toHaveBeenCalledWith({
-                text: '🔄 Retry initiated',
-                components: [],
-            });
-        });
-
-        it('replies with error when retry button not found', async () => {
-            const mockDetector = { clickRetryButton: jest.fn().mockResolvedValue(false) };
-            const bridge = makeBridge();
-            (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
-
-            const action = createErrorPopupButtonAction({ bridge });
-            const interaction = makeInteraction();
-
-            await action.execute(interaction, {
-                action: 'retry',
+                action: 'continue',
                 projectName: 'proj',
                 channelId: '',
             });
 
             expect(interaction.reply).toHaveBeenCalledWith({
-                text: 'Retry button not found.',
+                text: 'Failed to continue: some error',
+            });
+        });
+        
+        it('handles exceptions during prompt gracefully', async () => {
+            const mockRuntime = { sendPrompt: jest.fn().mockRejectedValue(new Error('crash')) };
+            const mockDetector = { };
+            const bridge = makeBridge();
+            (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
+            (bridge.pool.getRuntime as jest.Mock).mockReturnValue(mockRuntime);
+
+            const action = createErrorPopupButtonAction({ bridge });
+            const interaction = makeInteraction({ customId: 'error_popup_continue_action:proj' });
+
+            await action.execute(interaction, {
+                action: 'continue',
+                projectName: 'proj',
+                channelId: '',
+            });
+
+            expect(interaction.reply).toHaveBeenCalledWith({
+                text: 'Continue failed.',
             });
         });
     });
@@ -299,7 +186,7 @@ describe('createErrorPopupButtonAction', () => {
             const interaction = makeInteraction();
 
             await action.execute(interaction, {
-                action: 'dismiss',
+                action: 'continue',
                 projectName: 'nonexistent',
                 channelId: '',
             });
@@ -317,7 +204,7 @@ describe('createErrorPopupButtonAction', () => {
             });
 
             await action.execute(interaction, {
-                action: 'dismiss',
+                action: 'continue',
                 projectName: 'proj',
                 channelId: 'ch-1',
             });
@@ -328,15 +215,17 @@ describe('createErrorPopupButtonAction', () => {
         });
 
         it('falls back to lastActiveWorkspace when projectName is empty', async () => {
-            const mockDetector = { clickRetryButton: jest.fn().mockResolvedValue(true) };
+            const mockDetector = { };
+            const mockRuntime = { sendPrompt: jest.fn().mockResolvedValue({ ok: true }) };
             const bridge = makeBridge({ lastActiveWorkspace: 'fallbackWs' });
             (bridge.pool.getErrorPopupDetector as jest.Mock).mockReturnValue(mockDetector);
+            (bridge.pool.getRuntime as jest.Mock).mockReturnValue(mockRuntime);
 
             const action = createErrorPopupButtonAction({ bridge });
-            const interaction = makeInteraction();
+            const interaction = makeInteraction({ customId: 'error_popup_continue_action:fallbackWs' });
 
             await action.execute(interaction, {
-                action: 'retry',
+                action: 'continue',
                 projectName: '',
                 channelId: '',
             });
