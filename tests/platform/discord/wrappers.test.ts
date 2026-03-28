@@ -383,6 +383,83 @@ describe('wrapDiscordChannel', () => {
         expect(result.id).toBe('sent-42');
         expect(result.platform).toBe('discord');
     });
+
+    // -----------------------------------------------------------------------
+    // createThread (Discord Threads)
+    // -----------------------------------------------------------------------
+
+    describe('createThread()', () => {
+        it('returns null when channel has no threads property', async () => {
+            const channel = { id: 'ch-1', name: 'general', send: jest.fn() };
+            const wrapped = wrapDiscordChannel(channel as any);
+
+            const thread = await wrapped.createThread!('Task Log');
+            expect(thread).toBeNull();
+        });
+
+        it('returns null when threads.create is not a function', async () => {
+            const channel = {
+                id: 'ch-1',
+                name: 'general',
+                send: jest.fn(),
+                threads: {},  // no create method
+            };
+            const wrapped = wrapDiscordChannel(channel as any);
+
+            const thread = await wrapped.createThread!('Task Log');
+            expect(thread).toBeNull();
+        });
+
+        it('creates a thread and returns a wrapped PlatformChannel', async () => {
+            const threadChannel = {
+                id: 'thread-99',
+                name: 'Session #42',
+                send: jest.fn().mockResolvedValue(createMockMessage({ id: 'thread-msg-1' })),
+            };
+            const channel = {
+                id: 'ch-1',
+                name: 'general',
+                send: jest.fn(),
+                threads: {
+                    create: jest.fn().mockResolvedValue(threadChannel),
+                },
+            };
+            const wrapped = wrapDiscordChannel(channel as any);
+
+            const thread = await wrapped.createThread!('Session #42');
+
+            expect(thread).not.toBeNull();
+            expect(thread!.id).toBe('thread-99');
+            expect(thread!.platform).toBe('discord');
+            expect(channel.threads.create).toHaveBeenCalledWith({ name: 'Session #42' });
+        });
+
+        it('thread channel send() delegates to the thread send method', async () => {
+            const threadChannel = {
+                id: 'thread-55',
+                name: 'Log Thread',
+                send: jest.fn().mockResolvedValue(createMockMessage({ id: 'sent-in-thread' })),
+            };
+            const channel = {
+                id: 'ch-1',
+                name: 'general',
+                send: jest.fn(),
+                threads: {
+                    create: jest.fn().mockResolvedValue(threadChannel),
+                },
+            };
+            const wrapped = wrapDiscordChannel(channel as any);
+            const thread = await wrapped.createThread!('Log Thread');
+
+            const sent = await thread!.send({ text: 'Thread message' });
+
+            expect(threadChannel.send).toHaveBeenCalledTimes(1);
+            const callArg = threadChannel.send.mock.calls[0][0];
+            expect(callArg.content).toBe('Thread message');
+            expect(sent.id).toBe('sent-in-thread');
+            expect(sent.platform).toBe('discord');
+        });
+    });
 });
 
 // ---------------------------------------------------------------------------

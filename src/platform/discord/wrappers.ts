@@ -260,7 +260,16 @@ export function wrapDiscordSentMessage(msg: Message): PlatformSentMessage {
 }
 
 /** Wrap a discord.js TextChannel (or any channel with send()) as a PlatformChannel. */
-export function wrapDiscordChannel(channel: TextChannel | { id: string; name?: string; send: (...args: unknown[]) => unknown }): PlatformChannel {
+type DiscordWrappableChannel = {
+    id: string;
+    name?: string;
+    send: (...args: unknown[]) => unknown;
+    threads?: {
+        create?: (options: { name: string }) => Promise<unknown>;
+    };
+};
+
+export function wrapDiscordChannel(channel: TextChannel | DiscordWrappableChannel): PlatformChannel {
     return {
         id: channel.id,
         platform: 'discord',
@@ -268,6 +277,14 @@ export function wrapDiscordChannel(channel: TextChannel | { id: string; name?: s
         async send(payload: MessagePayload): Promise<PlatformSentMessage> {
             const sent = await channel.send(toDiscordPayload(payload));
             return wrapDiscordSentMessage(sent as Message);
+        },
+        async createThread(title: string): Promise<PlatformChannel | null> {
+            if (typeof channel.threads?.create !== 'function') {
+                return null;
+            }
+
+            const thread = await channel.threads.create({ name: title });
+            return wrapDiscordChannel(thread as DiscordWrappableChannel);
         },
     };
 }

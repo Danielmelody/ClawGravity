@@ -37,6 +37,7 @@ export interface TelegramBotLike {
         editMessageText(chatId: number | string, messageId: number, text: string, options?: Record<string, unknown>): Promise<unknown>;
         deleteMessage(chatId: number | string, messageId: number): Promise<unknown>;
         getChat(chatId: number | string): Promise<unknown>;
+        createForumTopic?(chatId: number | string, name: string): Promise<unknown>;
         answerCallbackQuery(callbackQueryId: string, options?: Record<string, unknown>): Promise<unknown>;
         setMessageReaction?(chatId: number | string, messageId: number, reaction: readonly unknown[], options?: Record<string, unknown>): Promise<unknown>;
         setMyCommands?(commands: readonly { command: string; description: string }[]): Promise<unknown>;
@@ -398,6 +399,7 @@ async function trySendFileFromPayload(
     payload: MessagePayload,
     extraOptions: Record<string, unknown> | undefined,
     toInputFile: TelegramBotLike['toInputFile'] | undefined,
+    threadId?: number,
 ): Promise<PlatformSentMessage | null> {
     if (!payload.files || payload.files.length === 0) return null;
 
@@ -406,8 +408,11 @@ async function trySendFileFromPayload(
         ? toTelegramPayload({ text: payload.text, richContent: payload.richContent })
         : null;
     const caption = opts?.text;
+    const sendOptions = threadId !== undefined
+        ? { ...extraOptions, message_thread_id: threadId }
+        : extraOptions;
 
-    const sent = await trySendFile(api, chatId, file, caption, extraOptions, toInputFile);
+    const sent = await trySendFile(api, chatId, file, caption, sendOptions, toInputFile);
     if (sent) {
         return wrapTelegramSentMessage(sent, api, chatId);
     }
@@ -432,6 +437,47 @@ export function wrapTelegramChannel(
             if (fileSent) return fileSent;
 
             return sendWithHtmlFallback(api, chatId, payload);
+        },
+        async createThread(title: string): Promise<PlatformChannel | null> {
+            if (typeof api.createForumTopic !== 'function') {
+                return null;
+            }
+
+            try {
+                const result = await api.createForumTopic(chatId, title) as {
+                    message_thread_id?: unknown;
+                } | null;
+                const threadId = typeof result?.message_thread_id === 'number'
+                    ? result.message_thread_id
+                    : null;
+
+                if (threadId === null) {
+                    return null;
+                }
+
+                return {
+                    id: `${chatIdStr}:${threadId}`,
+                    platform: 'telegram',
+                    name: title,
+                    async send(payload: MessagePayload): Promise<PlatformSentMessage> {
+                        const fileSent = await trySendFileFromPayload(
+                            api,
+                            chatId,
+                            payload,
+                            undefined,
+                            toInputFile,
+                            threadId,
+                        );
+                        if (fileSent) return fileSent;
+
+                        return sendWithHtmlFallback(api, chatId, payload, {
+                            message_thread_id: threadId,
+                        });
+                    },
+                };
+            } catch {
+                return null;
+            }
         },
     };
 }

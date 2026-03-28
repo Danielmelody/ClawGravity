@@ -55,6 +55,8 @@ export interface PlatformChannel {
     readonly name?: string;
     /** Send a message to this channel. */
     send(payload: MessagePayload): Promise<PlatformSentMessage>;
+    /** Create a thread/topic under this channel when supported. */
+    createThread?(title: string): Promise<PlatformChannel | null>;
 }
 
 export interface PlatformAttachment {

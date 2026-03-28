@@ -343,6 +343,110 @@ describe('wrapTelegramChannel', () => {
         expect(sent.platform).toBe('telegram');
         expect(sent.channelId).toBe('456');
     });
+
+    // -----------------------------------------------------------------------
+    // createThread (Telegram Forum Topics)
+    // -----------------------------------------------------------------------
+
+    describe('createThread()', () => {
+        it('returns null when api.createForumTopic is not available', async () => {
+            const api = createMockApi();
+            // createForumTopic is not set on our default mock
+            const channel = wrapTelegramChannel(api, 123);
+
+            const thread = await channel.createThread!('Test Topic');
+            expect(thread).toBeNull();
+        });
+
+        it('creates a forum topic and returns a thread channel with composite id', async () => {
+            const api = createMockApi();
+            (api as any).createForumTopic = jest.fn().mockResolvedValue({
+                message_thread_id: 42,
+            });
+            const channel = wrapTelegramChannel(api, 123);
+
+            const thread = await channel.createThread!('Session #1');
+
+            expect(thread).not.toBeNull();
+            expect(thread!.id).toBe('123:42');
+            expect(thread!.platform).toBe('telegram');
+            expect(thread!.name).toBe('Session #1');
+            expect((api as any).createForumTopic).toHaveBeenCalledWith(123, 'Session #1');
+        });
+
+        it('thread channel send() injects message_thread_id into sendMessage options', async () => {
+            const api = createMockApi();
+            (api as any).createForumTopic = jest.fn().mockResolvedValue({
+                message_thread_id: 77,
+            });
+            const channel = wrapTelegramChannel(api, 456);
+            const thread = await channel.createThread!('Log Topic');
+
+            await thread!.send({ text: 'Step 1 completed' });
+
+            expect(api.sendMessage).toHaveBeenCalledWith(
+                456,
+                'Step 1 completed',
+                expect.objectContaining({
+                    parse_mode: 'HTML',
+                    message_thread_id: 77,
+                }),
+            );
+        });
+
+        it('returns null when createForumTopic rejects (e.g., not a supergroup)', async () => {
+            const api = createMockApi();
+            (api as any).createForumTopic = jest.fn().mockRejectedValue(
+                new Error('Bad Request: not enough rights to manage topics'),
+            );
+            const channel = wrapTelegramChannel(api, 123);
+
+            const thread = await channel.createThread!('Failing Topic');
+            expect(thread).toBeNull();
+        });
+
+        it('returns null when createForumTopic returns non-numeric thread id', async () => {
+            const api = createMockApi();
+            (api as any).createForumTopic = jest.fn().mockResolvedValue({
+                message_thread_id: 'not-a-number',
+            });
+            const channel = wrapTelegramChannel(api, 123);
+
+            const thread = await channel.createThread!('Bad ID Topic');
+            expect(thread).toBeNull();
+        });
+
+        it('returns null when createForumTopic returns null result', async () => {
+            const api = createMockApi();
+            (api as any).createForumTopic = jest.fn().mockResolvedValue(null);
+            const channel = wrapTelegramChannel(api, 123);
+
+            const thread = await channel.createThread!('Null Result');
+            expect(thread).toBeNull();
+        });
+
+        it('thread channel send() with file attachment injects message_thread_id', async () => {
+            const api = createMockApi();
+            (api as any).createForumTopic = jest.fn().mockResolvedValue({
+                message_thread_id: 99,
+            });
+            (api as any).sendPhoto = jest.fn().mockResolvedValue({ message_id: 500 });
+            const channel = wrapTelegramChannel(api, 789);
+            const thread = await channel.createThread!('Screenshot Topic');
+
+            const sent = await thread!.send({
+                text: 'Screenshot attached',
+                files: [{ name: 'shot.png', data: Buffer.from('fake'), contentType: 'image/png' }],
+            });
+
+            expect((api as any).sendPhoto).toHaveBeenCalledWith(
+                789,
+                Buffer.from('fake'),
+                expect.objectContaining({ message_thread_id: 99 }),
+            );
+            expect(sent.id).toBe('500');
+        });
+    });
 });
 
 // ---------------------------------------------------------------------------
