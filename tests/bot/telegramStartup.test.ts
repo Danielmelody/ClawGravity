@@ -99,6 +99,8 @@ describe('telegramStartup', () => {
                 sessionStateStore: {
                     setCurrentCascadeId: jest.fn(),
                     getCurrentCascadeId: jest.fn().mockReturnValue(null),
+                    setChannelRouting: jest.fn(),
+                    getThreadChannel: jest.fn().mockReturnValue(null),
                 } as any,
                 activeMonitors: new Map(),
                 bridge: {
@@ -146,6 +148,8 @@ describe('telegramStartup', () => {
             const sessionStateStore = {
                 setCurrentCascadeId: jest.fn(),
                 getCurrentCascadeId: jest.fn().mockReturnValue(null),
+                setChannelRouting: jest.fn(),
+                getThreadChannel: jest.fn().mockReturnValue(null),
             };
 
             await runTelegramStartupTasks({
@@ -187,7 +191,12 @@ describe('telegramStartup', () => {
                         toInputFile: jest.fn(),
                     } as any,
                     telegramBindingRepo: { findAll: () => [] } as any,
-                    sessionStateStore: { setCurrentCascadeId: jest.fn() } as any,
+                    sessionStateStore: {
+                        setCurrentCascadeId: jest.fn(),
+                        getCurrentCascadeId: jest.fn().mockReturnValue(null),
+                        setChannelRouting: jest.fn(),
+                        getThreadChannel: jest.fn().mockReturnValue(null),
+                    } as any,
                     activeMonitors: new Map(),
                     bridge: {
                         pool: { getActiveWorkspaceNames: () => [] },

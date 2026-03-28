@@ -1,4 +1,4 @@
-import type { PlatformMessage, PlatformSelectInteraction, SelectMenuDef } from '../platform/types';
+import type { PlatformChannel, PlatformMessage, PlatformSelectInteraction, SelectMenuDef } from '../platform/types';
 import type { TelegramBindingRepository } from '../database/telegramBindingRepository';
 import type { TelegramRecentMessageRepository } from '../database/telegramRecentMessageRepository';
 import type { WorkspaceService } from '../services/workspaceService';
@@ -17,12 +17,18 @@ import { formatRelativeTime } from '../utils/relativeTime';
 export const TG_JOIN_SELECT_ID = 'tg_join_select';
 const MAX_TELEGRAM_HISTORY_CHARS = 3800;
 
+export interface TelegramSessionChannelRouting {
+    readonly parentChannel: PlatformChannel;
+    readonly threadChannel: PlatformChannel | null;
+}
+
 export class TelegramSessionStateStore {
     constructor(private readonly recentMessageRepo?: TelegramRecentMessageRepository) { }
 
     private readonly selectedSessionByChat = new Map<string, { title: string, id: string }>();
     private readonly recentMessagesByChat = new Map<string, string[]>();
     private readonly inspectByChat = new Map<string, boolean>();
+    private readonly channelRoutingByChat = new Map<string, TelegramSessionChannelRouting>();
 
     setSelectedSession(chatId: string, sessionTitle: string, cascadeId: string = ''): void {
         this.selectedSessionByChat.set(chatId, { title: sessionTitle, id: cascadeId });
@@ -49,6 +55,7 @@ export class TelegramSessionStateStore {
     clearSelectedSession(chatId: string): void {
         this.selectedSessionByChat.delete(chatId);
         this.inspectByChat.delete(chatId);
+        this.channelRoutingByChat.delete(chatId);
     }
 
     setInspect(chatId: string, enabled: boolean): void {
@@ -80,6 +87,26 @@ export class TelegramSessionStateStore {
 
         const list = this.recentMessagesByChat.get(chatId) ?? [];
         return list.slice(-limit);
+    }
+
+    setChannelRouting(
+        chatId: string,
+        parentChannel: PlatformChannel,
+        threadChannel: PlatformChannel | null = null,
+    ): void {
+        this.channelRoutingByChat.set(chatId, { parentChannel, threadChannel });
+    }
+
+    getChannelRouting(chatId: string): TelegramSessionChannelRouting | null {
+        return this.channelRoutingByChat.get(chatId) ?? null;
+    }
+
+    getParentChannel(chatId: string): PlatformChannel | null {
+        return this.channelRoutingByChat.get(chatId)?.parentChannel ?? null;
+    }
+
+    getThreadChannel(chatId: string): PlatformChannel | null {
+        return this.channelRoutingByChat.get(chatId)?.threadChannel ?? null;
     }
 }
 

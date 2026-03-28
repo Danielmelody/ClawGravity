@@ -470,6 +470,7 @@ describe('createTelegramMessageHandler', () => {
 
         await handlePassiveUserMessage(
             channel as any,
+            channel as any,
             runtime as any,
             { text: 'UI typed here', cascadeId: 'cascade-a' },
             undefined,
@@ -511,6 +512,7 @@ describe('createTelegramMessageHandler', () => {
 
         await handlePassiveUserMessage(
             channel as any,
+            channel as any,
             runtime as any,
             { text: 'Repeated from PC', cascadeId: 'cascade-a' },
             undefined,
@@ -521,6 +523,7 @@ describe('createTelegramMessageHandler', () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
 
         await handlePassiveUserMessage(
+            channel as any,
             channel as any,
             runtime as any,
             { text: 'Repeated from PC', cascadeId: 'cascade-a' },
@@ -564,6 +567,7 @@ describe('createTelegramMessageHandler', () => {
 
         await handlePassiveUserMessage(
             channel as any,
+            channel as any,
             runtime as any,
             { text: 'Mirror this', cascadeId: 'cascade-a' },
             undefined,
@@ -599,7 +603,6 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             isActive: jest.fn().mockReturnValue(true),
-            isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 // HTML-only delivery: must provide rendered HTML before completion
                 if (opts.onStepsUpdate) {
@@ -634,7 +637,6 @@ describe('createTelegramMessageHandler', () => {
     it('falls back to sending a new final message when the status edit fails', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
-            isActive: jest.fn().mockReturnValue(true),
             isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
@@ -676,7 +678,6 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             isActive: jest.fn().mockReturnValue(true),
-            isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onComplete) await opts.onComplete('');
             }),
@@ -708,7 +709,6 @@ describe('createTelegramMessageHandler', () => {
 
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
-            isActive: jest.fn().mockReturnValue(true),
             isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
@@ -889,7 +889,6 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             isActive: jest.fn().mockReturnValue(true),
-            isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
                     opts.onStepsUpdate({
@@ -925,7 +924,6 @@ describe('createTelegramMessageHandler', () => {
             (_v, index) => `Step ${index + 1} - reviewing a very long Antigravity timeline row`,
         ).join('<br>')}</blockquote>`;
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
-            isActive: jest.fn().mockReturnValue(true),
             isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
@@ -978,7 +976,6 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             isActive: jest.fn().mockReturnValue(true),
-            isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
                     opts.onStepsUpdate({
@@ -1010,7 +1007,6 @@ describe('createTelegramMessageHandler', () => {
     it('passes through later rendered steps to Telegram without surfacing generating noise', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
-            isActive: jest.fn().mockReturnValue(true),
             isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
@@ -1048,7 +1044,6 @@ describe('createTelegramMessageHandler', () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             isActive: jest.fn().mockReturnValue(true),
-            isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
                     opts.onStepsUpdate({
@@ -1079,7 +1074,6 @@ describe('createTelegramMessageHandler', () => {
     it('opens a new streaming status card when the existing Telegram card hits the length limit', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
-            isActive: jest.fn().mockReturnValue(true),
             isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
@@ -1120,7 +1114,6 @@ describe('createTelegramMessageHandler', () => {
         const repeatedText = 'Let me first run ESLint to see all the warnings.';
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             isActive: jest.fn().mockReturnValue(true),
-            isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
                     opts.onStepsUpdate({
@@ -1158,7 +1151,6 @@ describe('createTelegramMessageHandler', () => {
         const thinkingText = '我已经定位了最可能的根因。让我先看一下 cdpBridgeManager.ts，然后直接修复：';
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             isActive: jest.fn().mockReturnValue(true),
-            isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onPhaseChange) {
                     opts.onPhaseChange('thinking', thinkingText);
@@ -1189,7 +1181,6 @@ describe('createTelegramMessageHandler', () => {
         const endMarker = 'END-MARKER';
         const longPreview = `${startMarker}\n${'P'.repeat(5000)}\n${endMarker}`;
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
-            isActive: jest.fn().mockReturnValue(true),
             isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
@@ -1238,7 +1229,6 @@ describe('createTelegramMessageHandler', () => {
         const longPreview = `${prefixMarker}\n${'A'.repeat(3000)}\n${tailMarker}`;
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
             isActive: jest.fn().mockReturnValue(true),
-            isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
                     opts.onStepsUpdate({
@@ -1278,7 +1268,6 @@ describe('createTelegramMessageHandler', () => {
         jest.useFakeTimers();
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
-            isActive: jest.fn().mockReturnValue(true),
             isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 if (opts.onStepsUpdate) {
@@ -1329,7 +1318,6 @@ describe('createTelegramMessageHandler', () => {
     it('delivers final text content to Telegram on completion', async () => {
         const { GrpcResponseMonitor } = jest.requireMock('../../src/services/grpcResponseMonitor');
         GrpcResponseMonitor.mockImplementationOnce((opts: any) => ({
-            isActive: jest.fn().mockReturnValue(true),
             isActive: jest.fn().mockReturnValue(true),
                     start: jest.fn().mockImplementation(async () => {
                 // HTML-only delivery: provide rendered HTML before completion

@@ -1,6 +1,7 @@
 import { TelegramBindingRepository } from '../database/telegramBindingRepository';
 import { ChatSessionService } from '../services/chatSessionService';
 import { wrapTelegramChannel, type TelegramBotLike } from '../platform/telegram/wrappers';
+import type { PlatformChannel } from '../platform/types';
 import type { ClawCommandInterceptor } from '../services/clawCommandInterceptor';
 import {
     CdpBridge,
@@ -12,6 +13,7 @@ import { GrpcResponseMonitor } from '../services/grpcResponseMonitor';
 import { ModeService } from '../services/modeService';
 import { ModelService } from '../services/modelService';
 import { buildStartupStatusSnapshot } from '../services/startupStatus';
+import type { UserMessageInfo } from '../services/userMessageDetector';
 import type { WorkspaceRuntime } from '../services/workspaceRuntime';
 import { WorkspaceService } from '../services/workspaceService';
 import { logger } from '../utils/logger';
@@ -229,13 +231,25 @@ async function startTelegramEagerMirroring({
                 binding.chatId,
                 telegramBot.toInputFile,
             );
+            sessionStateStore.setChannelRouting(
+                binding.chatId,
+                channel,
+                sessionStateStore.getThreadChannel(binding.chatId),
+            );
             let runtime: WorkspaceRuntime | null = null;
             const prepared = await ensureWorkspaceRuntime(bridge, workspacePath, {
                 userMessageSinkKey: `telegram:${binding.chatId}`,
-                onUserMessage: (info) => {
+                onUserMessage: async (info) => {
                     if (!runtime) return;
+                    const trajectoryChannel = await resolveTrajectoryChannelForSession(
+                        sessionStateStore,
+                        binding.chatId,
+                        channel,
+                        info,
+                    );
                     handlePassiveUserMessage(
                         channel,
+                        trajectoryChannel,
                         runtime,
                         info,
                         activeMonitors,
@@ -307,4 +321,66 @@ export async function runTelegramStartupTasks(
 ): Promise<void> {
     await sendTelegramStartupMessage(deps);
     await startTelegramEagerMirroring(deps);
+}
+
+function formatSessionTimestamp(date: Date): string {
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return [
+        date.getFullYear(),
+        pad(date.getMonth() + 1),
+        pad(date.getDate()),
+    ].join('-') + ` ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function buildSessionTitle(messageText: string, now = new Date()): string {
+    const normalized = messageText.replace(/\s+/g, ' ').trim();
+    if (!normalized) {
+        return `Session ${formatSessionTimestamp(now)}`;
+    }
+
+    if (normalized.length <= 60) {
+        return normalized;
+    }
+
+    return `${normalized.slice(0, 57).trimEnd()}...`;
+}
+
+async function resolveTrajectoryChannelForSession(
+    sessionStateStore: TelegramSessionStateStore,
+    chatId: string,
+    parentChannel: PlatformChannel,
+    info: UserMessageInfo,
+): Promise<PlatformChannel> {
+    const existingRouting = sessionStateStore.getChannelRouting(chatId);
+    const existingThread = existingRouting?.threadChannel ?? null;
+    const currentCascadeId = sessionStateStore.getCurrentCascadeId(chatId);
+
+    if (!info.cascadeId || (currentCascadeId && currentCascadeId === info.cascadeId)) {
+        sessionStateStore.setChannelRouting(chatId, parentChannel, existingThread);
+        return existingThread ?? parentChannel;
+    }
+
+    sessionStateStore.setCurrentCascadeId(chatId, info.cascadeId);
+
+    const sessionTitle = buildSessionTitle(info.text);
+    const threadChannel = typeof parentChannel.createThread === 'function'
+        ? await parentChannel.createThread(sessionTitle).catch((error: unknown) => {
+            logger.debug(
+                `[TelegramPassive] createThread failed for chat ${chatId}: ` +
+                `${(error as Error)?.message || error}`,
+            );
+            return null;
+        })
+        : null;
+
+    sessionStateStore.setChannelRouting(chatId, parentChannel, threadChannel);
+
+    if (threadChannel) {
+        logger.info(
+            `[TelegramPassive] Routed chat ${chatId} cascade ${info.cascadeId.slice(0, 12)}... ` +
+            `into thread ${threadChannel.id}`,
+        );
+    }
+
+    return threadChannel ?? parentChannel;
 }

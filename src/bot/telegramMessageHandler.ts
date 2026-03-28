@@ -227,8 +227,10 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 userMessageSinkKey: `telegram:${chatId}`,
                 onUserMessage: (info: UserMessageInfo) => {
                     if (!preparedRuntime || !preparedProjectName) return;
+                    const trajectoryChannel = deps.sessionStateStore?.getThreadChannel(chatId) ?? message.channel;
                     handlePassiveUserMessage(
                         message.channel,
+                        trajectoryChannel,
                         preparedRuntime,
                         info,
                         deps.activeMonitors,
@@ -1295,39 +1297,42 @@ function registerActivePromptForDedup(
  * backend response monitor to relay the AI response.
  */
 export async function handlePassiveUserMessage(
-    channel: PlatformChannel,
+    parentChannel: PlatformChannel,
+    trajectoryChannel: PlatformChannel,
     runtime: WorkspaceRuntime,
     info: UserMessageInfo,
     activeMonitors?: Map<string, GrpcResponseMonitor>,
     clawInterceptor?: ClawCommandInterceptor,
     sessionStateStore?: TelegramSessionStateStore,
 ): Promise<void> {
+    const chatId = parentChannel.id;
+
     if (sessionStateStore && info.cascadeId) {
-        const expectedCascadeId = sessionStateStore.getCurrentCascadeId(channel.id)
+        const expectedCascadeId = sessionStateStore.getCurrentCascadeId(chatId)
             || await runtime.getActiveCascadeId().catch(() => null);
         if (expectedCascadeId && info.cascadeId !== expectedCascadeId) {
             // The user switched sessions in the PC UI — update our tracked cascade ID
             // so streaming output from the new session is forwarded to Telegram.
             logger.info(
-                `[TelegramPassive] PC-side session switch detected for chat ${channel.id}: ` +
+                `[TelegramPassive] PC-side session switch detected for chat ${chatId}: ` +
                 `old=${expectedCascadeId.slice(0, 12)}..., new=${info.cascadeId.slice(0, 12)}... — updating tracked session`,
             );
-            sessionStateStore.setCurrentCascadeId(channel.id, info.cascadeId);
+            sessionStateStore.setCurrentCascadeId(chatId, info.cascadeId);
         }
     }
 
     const projectName = runtime.getProjectName();
-    if (shouldSkipDuplicatePassiveUserEvent(channel.id, projectName, info)) {
+    if (shouldSkipDuplicatePassiveUserEvent(chatId, projectName, info)) {
         logger.debug(
             `[TelegramPassive] Skipping duplicate mirrored user message for ${projectName} ` +
-            `(chat=${channel.id}, cascade=${info.cascadeId || 'unknown'})`,
+            `(chat=${chatId}, cascade=${info.cascadeId || 'unknown'})`,
         );
         return;
     }
 
     // Forward the user message
     const preview = info.text.length > 200 ? info.text.slice(0, 200) + '…' : info.text;
-    await channel.send({ text: `🖥️ ${preview}` }).catch(logger.error);
+    await trajectoryChannel.send({ text: `🖥️ ${preview}` }).catch(logger.error);
 
     // Ensure the stream router is polling the cascade where the PC user typed.
     // Without this, approval/run-command detectors won't see trajectory data
@@ -1340,11 +1345,12 @@ export async function handlePassiveUserMessage(
     }
 
     // Use composite key (projectName:channelId) to prevent crosstalk
-    const passiveMonitorKey = `${projectName}:${channel.id}`;
+    const passiveMonitorKey = `${projectName}:${chatId}`;
 
     // Start passive backend response monitor to capture the AI response
     startPassiveResponseMonitor(
-        channel,
+        parentChannel,
+        trajectoryChannel,
         runtime,
         passiveMonitorKey,
         info,
@@ -1387,9 +1393,10 @@ export async function startMonitorForActiveSession(
 
     // Use composite key (projectName:channelId) to prevent crosstalk
     const passiveMonitorKey = `${projectName}:${channel.id}`;
+    const trajectoryChannel = sessionStateStore?.getThreadChannel(channel.id) ?? channel;
 
     startPassiveResponseMonitor(
-        channel, runtime, passiveMonitorKey,
+        channel, trajectoryChannel, runtime, passiveMonitorKey,
         syntheticInfo, activeMonitors, clawInterceptor, sessionStateStore,
     );
 }
@@ -1400,7 +1407,8 @@ export async function startMonitorForActiveSession(
  * workspace, it is stopped and replaced.
  */
 async function startPassiveResponseMonitor(
-    channel: PlatformChannel,
+    parentChannel: PlatformChannel,
+    trajectoryChannel: PlatformChannel,
     runtime: WorkspaceRuntime,
     monitorKey: string,
     info: UserMessageInfo,
@@ -1408,9 +1416,11 @@ async function startPassiveResponseMonitor(
     clawInterceptor?: ClawCommandInterceptor,
     sessionStateStore?: TelegramSessionStateStore,
 ): Promise<void> {
+    const chatId = parentChannel.id;
+
     const isCurrentChatSession = (): boolean => {
         if (!sessionStateStore || !info.cascadeId) return true;
-        const currentCascadeId = sessionStateStore.getCurrentCascadeId(channel.id);
+        const currentCascadeId = sessionStateStore.getCurrentCascadeId(chatId);
         return !!currentCascadeId && currentCascadeId === info.cascadeId;
     };
 
@@ -1421,7 +1431,7 @@ async function startPassiveResponseMonitor(
     }
 
     const startTime = Date.now();
-    const mirror = await createTelegramMirrorSession(channel, { disableStreaming: true });
+    const mirror = await createTelegramMirrorSession(trajectoryChannel, { disableStreaming: true });
 
     const initialMonitoringTarget = await runtime.getMonitoringTarget(info.cascadeId || null);
     let monitor: GrpcResponseMonitor | null = null;
@@ -1430,7 +1440,7 @@ async function startPassiveResponseMonitor(
     const monitorConfig = buildMonitorCallbacks({
         pipeline: passivePipeline,
         mirror,
-        channel,
+        channel: trajectoryChannel,
         getPhase: () => monitor?.getPhase?.() || 'timeout',
         renderOnlyOnComplete: true,
         resolveFinalText: (finalText: string) => {
@@ -1448,9 +1458,9 @@ async function startPassiveResponseMonitor(
         afterComplete: async (_finalText: string, deliveredText: string | null, _steps: TrajectoryStep[]) => {
             // Detect inspect-complete sentinel in passive path: LLM confirmed no issues → auto-disable.
             if (deliveredText?.includes(INSPECT_DONE_SENTINEL) && isCurrentChatSession()) {
-                sessionStateStore?.setInspect(channel.id, false);
-                await channel.send({ text: '🔍 Inspect 分析完成，未发现问题，已自动关闭 Inspect 模式。' }).catch(logger.error);
-                logger.info(`[TelegramPassive:inspect] Inspect cycle complete, auto-disabled (chat=${channel.id})`);
+                sessionStateStore?.setInspect(chatId, false);
+                await parentChannel.send({ text: '🔍 Inspect 分析完成，未发现问题，已自动关闭 Inspect 模式。' }).catch(logger.error);
+                logger.info(`[TelegramPassive:inspect] Inspect cycle complete, auto-disabled (chat=${chatId})`);
             }
 
             if (!clawInterceptor || !deliveredText || !deliveredText.trim() || !isCurrentChatSession()) {
@@ -1458,7 +1468,7 @@ async function startPassiveResponseMonitor(
             }
 
             await executeClawChain({
-                channel,
+                channel: trajectoryChannel,
                 runtime,
                 clawInterceptor,
                 initialText: deliveredText,
@@ -1478,12 +1488,12 @@ async function startPassiveResponseMonitor(
             }
 
             if (phase === 'quotaReached') {
-                await channel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(() => { });
+                await parentChannel.send({ text: '⚠️ Model quota reached. Please try again later or switch models with /model.' }).catch(() => { });
             } else if (phase === 'error') {
-                await channel.send({ text: '❌ An error occurred while generating the response.' }).catch(() => { });
+                await parentChannel.send({ text: '❌ An error occurred while generating the response.' }).catch(() => { });
             } else {
                 const elapsedSeconds = Math.round((Date.now() - startTime) / 1000);
-                await channel.send({ text: `⏱️ Response timed out after ${elapsedSeconds}s.` }).catch(() => { });
+                await parentChannel.send({ text: `⏱️ Response timed out after ${elapsedSeconds}s.` }).catch(() => { });
             }
         },
         cleanup: cleanupPassiveState,
