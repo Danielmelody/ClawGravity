@@ -129,7 +129,7 @@ export class ChatSessionService {
         try {
             const client = await cdpService.getLSClient();
             if (!client) return { ok: false, error: 'LS client unavailable' };
-            const newId = await client.createCascade();
+            const newId = await client.createCascade(undefined, undefined, cdpService.getCurrentWorkspacePath() || undefined);
             if (!newId) return { ok: false, error: 'Failed to create cascade via LS API' };
             cdpService.rememberCreatedCascade(newId);
             try {

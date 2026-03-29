@@ -50,7 +50,7 @@ import { APP_VERSION } from '../utils/version';
 // Known commands (used by both parser and /help output)
 // ---------------------------------------------------------------------------
 
-const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'session', 'history', 'inspect', 'schedule', 'schedule_add', 'schedule_remove'] as const;
+const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'session', 'history', 'inspect', 'schedule', 'schedule_add', 'schedule_remove', 'bind'] as const;
 type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
@@ -139,6 +139,9 @@ export async function handleTelegramCommand(
             case 'help':
                 await handleHelp(message);
                 break;
+            case 'bind':
+                await handleBind(deps, message);
+                break;
             case 'status':
                 await handleStatus(deps, message);
                 break;
@@ -179,7 +182,7 @@ export async function handleTelegramCommand(
                 await handleLogs(message, parsed.args);
                 break;
             case 'new':
-                await handleNew(deps, message);
+                await handleNew(deps, message, parsed.args);
                 break;
             case 'clear':
                 await handleClear(deps, message);
@@ -410,6 +413,45 @@ async function handleRestart(deps: TelegramCommandDeps, message: PlatformMessage
 
 async function handlePing(message: PlatformMessage): Promise<void> {
     await message.reply({ text: 'Pong!' }).catch(logger.error);
+}
+
+async function handleBind(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
+    const fullChannelIdStr = message.channel.id;
+    const [chatId, threadId] = String(fullChannelIdStr).split(':');
+
+    if (!threadId) {
+        await message.reply({ 
+            text: '❌ 此命令需在特定的 Topic (话题) 内部使用。' 
+        }).catch(logger.error);
+        return;
+    }
+
+    const cdp = getCurrentCdp(deps.bridge);
+    if (!cdp) {
+        await message.reply({ text: '⚠️ 没有检测到活跃的工作区连接。' }).catch(logger.error);
+        return;
+    }
+
+    try {
+        const grpcClient = await cdp.getGrpcClient();
+        const cascadeId = grpcClient ? await cdp.getActiveCascadeId() : null;
+        if (!cascadeId) {
+            await message.reply({ 
+                text: '⚠️ 当前没有在后台运行或活跃的 Session。如果你想开启新任务，请直接在此输入 /new。' 
+            }).catch(logger.error);
+            return;
+        }
+
+        deps.sessionStateStore?.setChannelRouting(chatId, message.channel, message.channel, cascadeId);
+        
+        await message.reply({ 
+            text: '✅ 绑定成功！旧的活跃 Session 运行日志及回复后续都将重定向输出至本话题中。' 
+        }).catch(logger.error);
+        logger.info(`[TelegramCommand:bind] Migrated active session (cascade=${cascadeId.slice(0, 8)}) to thread ${threadId}`);
+    } catch (err: unknown) {
+        logger.error('[TelegramCommand:bind] Failed:', err);
+        await message.reply({ text: '❌ 绑定话题失败。' }).catch(logger.error);
+    }
 }
 
 async function handleMode(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
@@ -702,7 +744,7 @@ async function resetChatSession(
     deps: TelegramCommandDeps,
     resolved: { runtime: unknown; projectName: string; chatSessionService: NonNullable<typeof deps.chatSessionService> },
     chatId: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; cascadeId: string | null } | { ok: false; error: string }> {
     const runtime = resolved.runtime as Record<string, unknown>;
     const result = await (runtime.startNewChat as (service: unknown) => Promise<{ ok: boolean; error?: string }>)(resolved.chatSessionService);
     if (!result.ok) return { ok: false, error: result.error || 'unknown error' };
@@ -715,7 +757,7 @@ async function resetChatSession(
     if (newCascadeId) {
         deps.sessionStateStore?.setCurrentCascadeId(chatId, newCascadeId);
     }
-    return { ok: true };
+    return { ok: true, cascadeId: newCascadeId };
 }
 
 /**
@@ -738,16 +780,38 @@ async function buildStatusFooter(
     return `<i>${escapeHtml(mode)} | ${escapeHtml(currentModel)}</i>`;
 }
 
-async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
+async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage, args?: string): Promise<void> {
     const resolved = await resolveWithSessionService(deps, message, 'new');
     if (!resolved) return;
-    const chatId = message.channel.id;
+    const fullChannelIdStr = message.channel.id;
+    const [chatId] = fullChannelIdStr.split(':'); // base chatId used for mapping
 
     try {
         const result = await resetChatSession(deps, resolved, chatId);
         if (result.ok) {
             const footer = await buildStatusFooter(deps.modeService, deps.bridge, deps.modelService);
-            await message.reply({
+            
+            // Auto-create a Forum Topic for this new session
+            let targetChannel = message.channel;
+            if (result.cascadeId && typeof message.channel.createThread === 'function') {
+                const sessionDate = new Date();
+                const sessionTitle = args?.trim() || `Session ${sessionDate.getMonth() + 1}/${sessionDate.getDate()} ${sessionDate.getHours()}:${String(sessionDate.getMinutes()).padStart(2, '0')}`;
+                
+                const threadChannel = await message.channel.createThread(sessionTitle).catch((error: unknown) => {
+                    logger.debug(
+                        `[TelegramCommand:new] Failed to create Topic for new session (chat=${chatId}):`,
+                        error instanceof Error ? error.message : String(error),
+                    );
+                    return null;
+                });
+
+                if (threadChannel) {
+                    deps.sessionStateStore?.setChannelRouting(chatId, message.channel, threadChannel, result.cascadeId);
+                    targetChannel = threadChannel;
+                }
+            }
+
+            await targetChannel.send({
                 text: `New chat session started.\n\n${footer}`
             }).catch(logger.error);
         } else {

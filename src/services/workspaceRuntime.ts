@@ -160,7 +160,7 @@ export class WorkspaceRuntime {
             const grpcClient = await cdp.getGrpcClient();
             if (grpcClient?.createCascade) {
                 try {
-                    const cascadeId = await grpcClient.createCascade();
+                    const cascadeId = await grpcClient.createCascade(undefined, undefined, cdp.getCurrentWorkspacePath() || undefined);
                     if (!cascadeId) return { ok: false, error: 'Failed to create cascade via gRPC' };
                     cdp.rememberCreatedCascade(cascadeId);
                     this.rememberActiveCascade(cascadeId);

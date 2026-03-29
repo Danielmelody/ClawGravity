@@ -13,6 +13,7 @@ describe('ChatSessionService gRPC session management', () => {
                 focusCascade: jest.fn().mockResolvedValue(undefined),
             }),
             rememberCreatedCascade: jest.fn(),
+            getCurrentWorkspacePath: jest.fn().mockReturnValue('/home/test/workspace'),
         } as any;
 
         await expect(service.startNewChat(mockCdp)).resolves.toEqual({ ok: true });

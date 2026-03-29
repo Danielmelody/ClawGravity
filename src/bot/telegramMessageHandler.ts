@@ -124,7 +124,9 @@ export interface TelegramMessageHandlerDeps {
 export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
     return async (message: PlatformMessage): Promise<void> => {
         const handlerEntryTime = Date.now();
-        const chatId = message.channel.id;
+        const fullChannelIdStr = message.channel.id;
+        const [baseChatId] = fullChannelIdStr.split(':');
+        const chatId = baseChatId;
         const hasImageAttachments = message.attachments.length > 0
             && message.attachments.some((att) => (att.contentType || '').startsWith('image/'));
         const promptText = message.content.trim();
@@ -227,7 +229,13 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
                 userMessageSinkKey: `telegram:${chatId}`,
                 onUserMessage: (info: UserMessageInfo) => {
                     if (!preparedRuntime || !preparedProjectName) return;
-                    const trajectoryChannel = deps.sessionStateStore?.getThreadChannel(chatId) ?? message.channel;
+                    
+                    // Auto-bind: Wherever the user speaks, the session's logs will follow
+                    if (info.cascadeId && deps.sessionStateStore) {
+                        deps.sessionStateStore.setChannelRouting(chatId, message.channel, message.channel, info.cascadeId);
+                    }
+
+                    const trajectoryChannel = message.channel;
                     handlePassiveUserMessage(
                         message.channel,
                         trajectoryChannel,
@@ -257,8 +265,14 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
         deps.bridge.lastActiveChannel = message.channel;
         registerApprovalWorkspaceChannel(deps.bridge, projectName, message.channel);
 
+        const mappedCascadeId = deps.sessionStateStore?.getCascadeIdByThreadId(fullChannelIdStr);
         const selectedSession = deps.sessionStateStore?.getSelectedSession(chatId);
-        const currentCascadeId = deps.sessionStateStore?.getCurrentCascadeId(chatId) || selectedSession?.id || undefined;
+        const currentCascadeId = mappedCascadeId || deps.sessionStateStore?.getCurrentCascadeId(chatId) || selectedSession?.id || undefined;
+        
+        if (mappedCascadeId) {
+            deps.sessionStateStore?.setCurrentCascadeId(chatId, mappedCascadeId);
+        }
+
         if (currentCascadeId) {
             await runtime.setActiveCascade(currentCascadeId);
         }
@@ -382,7 +396,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
             renderOptions: mirrorRenderOpts,
         });
 
-        const TIMEOUT_MS = 600_000;
+        const TIMEOUT_MS = 3600_000; // 1 hour
 
         let monitor: GrpcResponseMonitor | null = null;
         let safetyTimer: NodeJS.Timeout | null = null;
@@ -711,7 +725,7 @@ async function executeClawChain(opts: ClawChainOptions): Promise<void> {
         const followUpMonitor = new GrpcResponseMonitor({
             grpcClient: followUpTarget.grpcClient,
             cascadeId: followUpTarget.cascadeId,
-            maxDurationMs: 300_000,
+            maxDurationMs: 3600_000, // 1 hour
             expectedUserMessage: feedback,
             onComplete: (text: string) => deferred.resolve(text?.trim() || ''),
             onTimeout: (lastText: string) => {
@@ -1305,7 +1319,8 @@ export async function handlePassiveUserMessage(
     clawInterceptor?: ClawCommandInterceptor,
     sessionStateStore?: TelegramSessionStateStore,
 ): Promise<void> {
-    const chatId = parentChannel.id;
+    const fullChannelIdStr = parentChannel.id;
+    const [chatId] = fullChannelIdStr.split(':');
 
     if (sessionStateStore && info.cascadeId) {
         const expectedCascadeId = sessionStateStore.getCurrentCascadeId(chatId)
@@ -1391,9 +1406,10 @@ export async function startMonitorForActiveSession(
         streamRouter.connectToCascade(cascadeId);
     }
 
-    // Use composite key (projectName:channelId) to prevent crosstalk
-    const passiveMonitorKey = `${projectName}:${channel.id}`;
-    const trajectoryChannel = sessionStateStore?.getThreadChannel(channel.id) ?? channel;
+    // Use composite key (projectName:channelId) to prevent crosstalk (use parent chat id)
+    const [chatId] = String(channel.id).split(':');
+    const passiveMonitorKey = `${projectName}:${chatId}`;
+    const trajectoryChannel = sessionStateStore?.getThreadChannel(chatId, cascadeId) ?? channel;
 
     startPassiveResponseMonitor(
         channel, trajectoryChannel, runtime, passiveMonitorKey,
@@ -1416,7 +1432,7 @@ async function startPassiveResponseMonitor(
     clawInterceptor?: ClawCommandInterceptor,
     sessionStateStore?: TelegramSessionStateStore,
 ): Promise<void> {
-    const chatId = parentChannel.id;
+    const [chatId] = String(parentChannel.id).split(':');
 
     const isCurrentChatSession = (): boolean => {
         if (!sessionStateStore || !info.cascadeId) return true;
@@ -1507,7 +1523,7 @@ async function startPassiveResponseMonitor(
     monitor = new GrpcResponseMonitor({
         grpcClient: initialMonitoringTarget.grpcClient,
         cascadeId: initialMonitoringTarget.cascadeId,
-        maxDurationMs: 600_000,
+        maxDurationMs: 3600_000, // 1 hour
         expectedUserMessage: info.text,
         ...monitorConfig
     });

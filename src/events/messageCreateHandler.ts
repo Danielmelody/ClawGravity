@@ -283,14 +283,14 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                             }
 
                             // Wait for full response cycle (onComplete/onTimeout) before releasing the queue.
-                            // Safety timeout (360s) prevents permanent queue deadlock if onFullCompletion
+                            // Safety timeout (3600s) prevents permanent queue deadlock if onFullCompletion
                             // is never called due to a bug.
-                            const QUEUE_SAFETY_TIMEOUT_MS = 360_000;
+                            const QUEUE_SAFETY_TIMEOUT_MS = 3600_000;
                             const promptStartTime = Date.now();
                             await new Promise<void>((resolve) => {
                                 const safetyTimer = setTimeout(() => {
                                     logger.warn(
-                                        `[Queue:${projectName}] Safety timeout — releasing queue after 360s ` +
+                                        `[Queue:${projectName}] Safety timeout — releasing queue after 3600s ` +
                                         `(channel: ${message.channelId})`,
                                     );
                                     resolve();

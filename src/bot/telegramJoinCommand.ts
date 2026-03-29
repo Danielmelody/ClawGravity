@@ -1,5 +1,6 @@
 import type { PlatformChannel, PlatformMessage, PlatformSelectInteraction, SelectMenuDef } from '../platform/types';
 import type { TelegramBindingRepository } from '../database/telegramBindingRepository';
+import type { TelegramSessionRoutingRepository } from '../database/telegramSessionRoutingRepository';
 import type { TelegramRecentMessageRepository } from '../database/telegramRecentMessageRepository';
 import type { WorkspaceService } from '../services/workspaceService';
 import type { ChatSessionService, ConversationHistoryEntry } from '../services/chatSessionService';
@@ -23,12 +24,34 @@ export interface TelegramSessionChannelRouting {
 }
 
 export class TelegramSessionStateStore {
-    constructor(private readonly recentMessageRepo?: TelegramRecentMessageRepository) { }
+    constructor(
+        private readonly recentMessageRepo?: TelegramRecentMessageRepository,
+        private readonly routingRepo?: TelegramSessionRoutingRepository
+    ) { 
+        if (routingRepo) {
+            for (const r of routingRepo.getAllRoutings()) {
+                // Prepopulate on boot
+                // We recreate minimalist dummy objects that act as channels, 
+                // because all the bot needs is the string IDs for `parentChannel.id` and `threadChannel.id`
+                const parentChannel = { id: r.chatId } as PlatformChannel;
+                const threadChannel = r.threadId ? { id: r.threadId } as PlatformChannel : null;
+                this.channelRoutingByChatAndCascade.set(`${r.chatId}:${r.cascadeId}`, { parentChannel, threadChannel });
+                if (r.threadId) {
+                    this.cascadeByThreadId.set(r.threadId, r.cascadeId);
+                }
+            }
+        }
+    }
 
     private readonly selectedSessionByChat = new Map<string, { title: string, id: string }>();
     private readonly recentMessagesByChat = new Map<string, string[]>();
     private readonly inspectByChat = new Map<string, boolean>();
-    private readonly channelRoutingByChat = new Map<string, TelegramSessionChannelRouting>();
+    private readonly channelRoutingByChatAndCascade = new Map<string, TelegramSessionChannelRouting>();
+    private readonly cascadeByThreadId = new Map<string, string>();
+
+    private getRoutingKey(chatId: string, cascadeId: string | null | undefined): string {
+        return `${chatId}:${cascadeId || 'default'}`;
+    }
 
     setSelectedSession(chatId: string, sessionTitle: string, cascadeId: string = ''): void {
         this.selectedSessionByChat.set(chatId, { title: sessionTitle, id: cascadeId });
@@ -55,7 +78,11 @@ export class TelegramSessionStateStore {
     clearSelectedSession(chatId: string): void {
         this.selectedSessionByChat.delete(chatId);
         this.inspectByChat.delete(chatId);
-        this.channelRoutingByChat.delete(chatId);
+        this.channelRoutingByChatAndCascade.delete(this.getRoutingKey(chatId, 'default'));
+        const currentId = this.getCurrentCascadeId(chatId);
+        if (currentId) {
+            this.channelRoutingByChatAndCascade.delete(this.getRoutingKey(chatId, currentId));
+        }
     }
 
     setInspect(chatId: string, enabled: boolean): void {
@@ -93,20 +120,35 @@ export class TelegramSessionStateStore {
         chatId: string,
         parentChannel: PlatformChannel,
         threadChannel: PlatformChannel | null = null,
+        cascadeId: string | null = null
     ): void {
-        this.channelRoutingByChat.set(chatId, { parentChannel, threadChannel });
+        const cid = cascadeId ?? this.getCurrentCascadeId(chatId);
+        const key = this.getRoutingKey(chatId, cid);
+        this.channelRoutingByChatAndCascade.set(key, { parentChannel, threadChannel });
+        if (threadChannel?.id && cid) {
+            this.cascadeByThreadId.set(threadChannel.id, cid);
+        }
+        if (cid && this.routingRepo) {
+            this.routingRepo.putRouting(chatId, cid, threadChannel?.id || null);
+        }
     }
 
-    getChannelRouting(chatId: string): TelegramSessionChannelRouting | null {
-        return this.channelRoutingByChat.get(chatId) ?? null;
+    getCascadeIdByThreadId(threadChannelId: string): string | null {
+        return this.cascadeByThreadId.get(threadChannelId) ?? null;
     }
 
-    getParentChannel(chatId: string): PlatformChannel | null {
-        return this.channelRoutingByChat.get(chatId)?.parentChannel ?? null;
+    getChannelRouting(chatId: string, cascadeId: string | null = null): TelegramSessionChannelRouting | null {
+        const cid = cascadeId ?? this.getCurrentCascadeId(chatId);
+        const key = this.getRoutingKey(chatId, cid);
+        return this.channelRoutingByChatAndCascade.get(key) ?? null;
     }
 
-    getThreadChannel(chatId: string): PlatformChannel | null {
-        return this.channelRoutingByChat.get(chatId)?.threadChannel ?? null;
+    getParentChannel(chatId: string, cascadeId: string | null = null): PlatformChannel | null {
+        return this.getChannelRouting(chatId, cascadeId)?.parentChannel ?? null;
+    }
+
+    getThreadChannel(chatId: string, cascadeId: string | null = null): PlatformChannel | null {
+        return this.getChannelRouting(chatId, cascadeId)?.threadChannel ?? null;
     }
 }
 
@@ -252,6 +294,19 @@ export async function handleTelegramJoinSelect(
 
     if (cascadeId) {
         await runtime.setActiveCascade(cascadeId);
+        
+        // Auto-create and bind a Forum Topic if it lacks one
+        const existingThread = deps.sessionStateStore.getThreadChannel(chatId, cascadeId);
+        if (!existingThread && typeof interaction.channel.createThread === 'function') {
+            const threadChannel = await interaction.channel.createThread(`Session: ${resolvedTitle}`).catch((error: unknown) => {
+                logger.debug(`[TelegramJoin] Failed to auto-create topic for switched session: ${error instanceof Error ? error.message : String(error)}`);
+                return null;
+            });
+            if (threadChannel) {
+                deps.sessionStateStore.setChannelRouting(chatId, interaction.channel, threadChannel, cascadeId);
+                logger.info(`[TelegramJoin] Auto-bound session ${cascadeId.slice(0, 8)} to new topic`);
+            }
+        }
     }
 
     // Check if the switched-to cascade is still actively streaming.

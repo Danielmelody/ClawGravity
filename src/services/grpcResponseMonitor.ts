@@ -29,7 +29,7 @@ export interface GrpcResponseMonitorOptions {
     grpcClient: GrpcCascadeClient;
     /** The cascade ID to monitor */
     cascadeId: string;
-    /** Max monitoring duration in ms (default: 300000 = 5 min) */
+    /** Max monitoring duration in ms (default: 3600000 = 1 hour) */
     maxDurationMs?: number;
     /** Optional user message text used to anchor polling fallback to the current turn. */
     expectedUserMessage?: string;
@@ -182,7 +182,7 @@ export class GrpcResponseMonitor {
     constructor(options: GrpcResponseMonitorOptions) {
         this.client = options.grpcClient;
         this.cascadeId = options.cascadeId;
-        this.maxDurationMs = options.maxDurationMs ?? 300_000;
+        this.maxDurationMs = options.maxDurationMs ?? 3600_000;
         this.expectedUserMessage = normalizeComparableText(options.expectedUserMessage);
 
         this.onProgress = options.onProgress;

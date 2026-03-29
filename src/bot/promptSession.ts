@@ -263,7 +263,7 @@ export class PromptSession {
             this.monitor = new GrpcResponseMonitor({
                 grpcClient,
                 cascadeId,
-                maxDurationMs: 300_000,
+                maxDurationMs: 3600_000,
                 expectedUserMessage: this.deps.prompt,
                 onPhaseChange: () => {
                     // Phase transitions are handled by monitor internally

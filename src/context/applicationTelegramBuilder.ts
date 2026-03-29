@@ -1,6 +1,7 @@
 import { Effect } from 'effect';
 
 import { TelegramBindingRepository } from '../database/telegramBindingRepository';
+import { TelegramSessionRoutingRepository } from '../database/telegramSessionRoutingRepository';
 import { TelegramRecentMessageRepository } from '../database/telegramRecentMessageRepository';
 import type { ScheduleRecord } from '../database/scheduleRepository';
 import { createApprovalButtonAction } from '../handlers/approvalButtonAction';
@@ -66,6 +67,8 @@ export interface BuildTelegramRuntimeOptions {
 
 export interface TelegramRuntimeArtifacts {
     readonly telegramBindingRepo: TelegramBindingRepository;
+    readonly telegramSessionRoutingRepo: TelegramSessionRoutingRepository;
+    readonly telegramRecentMessageRepo: TelegramRecentMessageRepository;
     readonly sessionStateStore: TelegramSessionStateStore;
     readonly activeMonitors: Map<string, GrpcResponseMonitor>;
     readonly notify: (text: string) => Promise<void>;
@@ -82,9 +85,10 @@ export async function buildTelegramRuntimeArtifacts(
             const ctx = yield* ApplicationContextTag;
 
             const telegramBindingRepo = new TelegramBindingRepository(ctx.db);
+            const telegramSessionRoutingRepo = new TelegramSessionRoutingRepository(ctx.db);
             const telegramRecentMessageRepo = new TelegramRecentMessageRepository(ctx.db);
             const telegramAdapter = new TelegramAdapter(options.telegramBot, options.botUserId);
-            const sessionStateStore = new TelegramSessionStateStore(telegramRecentMessageRepo);
+            const sessionStateStore = new TelegramSessionStateStore(telegramRecentMessageRepo, telegramSessionRoutingRepo);
             const messageTracker = new TelegramMessageTracker();
             const activeMonitors = new Map<string, GrpcResponseMonitor>();
 
@@ -210,6 +214,8 @@ export async function buildTelegramRuntimeArtifacts(
 
             return {
                 telegramBindingRepo,
+                telegramSessionRoutingRepo,
+                telegramRecentMessageRepo,
                 sessionStateStore,
                 activeMonitors,
                 notify,

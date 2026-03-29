@@ -149,7 +149,7 @@ export class GrpcCascadeClient extends EventEmitter {
      * @param model Optional model identifier
      * @returns cascadeId or null
      */
-    async createCascade(text?: string, model?: ModelId): Promise<string | null> {
+    async createCascade(text?: string, model?: ModelId, workspacePath?: string): Promise<string | null> {
         this.lastOperationError = null;
 
         const plannerConfig: Record<string, unknown> = {
@@ -159,10 +159,22 @@ export class GrpcCascadeClient extends EventEmitter {
             plannerConfig.planModel = model;
         }
 
-        const startPayload: Record<string, unknown> = { source: 0 };
-        if (model != null) {
-            startPayload.cascadeConfig = { plannerConfig };
+        const cascadeConfig: Record<string, unknown> = { plannerConfig };
+        
+        if (workspacePath) {
+            // e.g. "C:\Users\Daniel\Projects\foo" -> "file:///c%3A/Users/Daniel/Projects/foo"
+            // Replicate vscode.Uri.file() behavior: lowercase drive letter, URL-encoded colon, forward slashes.
+            let encodedPath = workspacePath.replace(/\\/g, '/');
+            encodedPath = encodedPath.replace(/^([a-zA-Z]):/, (match, root) => `${root.toLowerCase()}%3A`);
+            cascadeConfig.workspaces = [{
+                workspaceFolderAbsoluteUri: `file:///${encodedPath}`
+            }];
         }
+
+        const startPayload: Record<string, unknown> = { 
+            source: 0,
+            cascadeConfig 
+        };
 
         let startResp: unknown;
         try {

@@ -222,6 +222,7 @@ export class CdpService extends EventEmitter {
     }
 
     getCurrentWorkspaceName(): string | null { return this.currentWorkspaceName; }
+    getCurrentWorkspacePath(): string | null { return this.currentWorkspacePath; }
 
     async discoverAndConnectForWorkspace(workspacePath: string): Promise<boolean> {
         const projectName = extractProjectNameFromPath(workspacePath);
@@ -819,13 +820,21 @@ export class CdpService extends EventEmitter {
 
     public isCascadeInWorkspace(summary: Record<string, unknown>): boolean {
         if (!this.currentWorkspacePath) return true;
-        if (!summary?.workspaces || !Array.isArray(summary.workspaces)) return false;
+        
+        // If a session has no workspaces (orphaned/unbound), allow it to be visible 
+        // in all workspaces so the user doesn't lose access to it in the GUI/Telegram.
+        if (!summary?.workspaces || !Array.isArray(summary.workspaces) || summary.workspaces.length === 0) {
+            return true;
+        }
+
         const target = this.currentWorkspacePath.replace(/\\/g, '/').toLowerCase().replace(/\/$/, '');
         for (const ws of summary.workspaces) {
             if (!ws.workspaceFolderAbsoluteUri) continue;
             let p = ws.workspaceFolderAbsoluteUri.replace(/^file:\/\//i, '');
+            // Decode the URI component BEFORE checking for the Windows drive letter prefix (e.g. c%3A becomes c:)
+            p = decodeURIComponent(p);
             if (p.match(/^\/[a-zA-Z]:/)) p = p.substring(1);
-            const local = decodeURIComponent(p).replace(/\\/g, '/').toLowerCase().replace(/\/$/, '');
+            const local = p.replace(/\\/g, '/').toLowerCase().replace(/\/$/, '');
             if (local === target) return true;
         }
         return false;

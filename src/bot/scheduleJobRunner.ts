@@ -40,7 +40,7 @@ async function isAntigravityBusy(cdp: CdpService): Promise<boolean> {
     }
 }
 
-async function waitForIdle(cdp: CdpService, maxWaitMs = 300_000): Promise<boolean> {
+async function waitForIdle(cdp: CdpService, maxWaitMs = 3600_000): Promise<boolean> {
     const checkIntervalMs = 10_000;
     const maxChecks = Math.ceil(maxWaitMs / checkIntervalMs);
 
@@ -81,9 +81,9 @@ export function createScheduleJobCallback(
             if (busy) {
                 logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Claw workspace is busy - waiting for previous task...`);
 
-                const becameIdle = await waitForIdle(cdp, 300_000);
+                const becameIdle = await waitForIdle(cdp, 3600_000);
                 if (!becameIdle) {
-                    logger.error(`[ScheduleJob] Schedule #${schedule.id}: Still busy after 5min - SKIPPING`);
+                    logger.error(`[ScheduleJob] Schedule #${schedule.id}: Still busy after 60min - SKIPPING`);
                     return;
                 }
 
@@ -141,7 +141,7 @@ export function createScheduleJobCallback(
             const monitor = new GrpcResponseMonitor({
                 grpcClient: monitoringTarget.grpcClient,
                 cascadeId: monitoringTarget.cascadeId,
-                maxDurationMs: 300_000,
+                maxDurationMs: 3600_000,
                 onComplete: async (finalText: string | undefined) => {
                     let outputText = finalText?.trim() || '';
                     if (outputText.length === 0) {
@@ -208,7 +208,7 @@ export function createScheduleJobCallback(
                             const followUp = new GrpcResponseMonitor({
                                 grpcClient: followUpTarget.grpcClient,
                                 cascadeId: followUpTarget.cascadeId,
-                                maxDurationMs: 300_000,
+                                maxDurationMs: 3600_000,
                                 onComplete: async (text: string | undefined) => resolve(text?.trim() || ''),
                                 onTimeout: async () => {
                                     logger.warn(

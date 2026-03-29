@@ -426,17 +426,26 @@ export function wrapTelegramChannel(
     toInputFile?: TelegramBotLike['toInputFile'],
 ): PlatformChannel {
     const chatIdStr = String(chatId);
+    let baseChatId: string | number = chatId;
+    let explicitThreadId: number | undefined;
+
+    if (chatIdStr.includes(':')) {
+        const parts = chatIdStr.split(':');
+        baseChatId = parts[0];
+        explicitThreadId = Number(parts[1]);
+    }
 
     return {
         id: chatIdStr,
         platform: 'telegram',
         name: undefined,
         async send(payload: MessagePayload): Promise<PlatformSentMessage> {
+            const sendOptions = explicitThreadId !== undefined ? { message_thread_id: explicitThreadId } : undefined;
             // Handle file attachments (e.g., screenshots)
-            const fileSent = await trySendFileFromPayload(api, chatId, payload, undefined, toInputFile);
+            const fileSent = await trySendFileFromPayload(api, baseChatId, payload, sendOptions, toInputFile, explicitThreadId);
             if (fileSent) return fileSent;
 
-            return sendWithHtmlFallback(api, chatId, payload);
+            return sendWithHtmlFallback(api, baseChatId, payload, sendOptions);
         },
         async createThread(title: string): Promise<PlatformChannel | null> {
             if (typeof api.createForumTopic !== 'function') {
@@ -444,7 +453,7 @@ export function wrapTelegramChannel(
             }
 
             try {
-                const result = await api.createForumTopic(chatId, title) as {
+                const result = await api.createForumTopic(baseChatId, title) as {
                     message_thread_id?: unknown;
                 } | null;
                 const threadId = typeof result?.message_thread_id === 'number'
@@ -456,7 +465,7 @@ export function wrapTelegramChannel(
                 }
 
                 return {
-                    id: `${chatIdStr}:${threadId}`,
+                    id: `${baseChatId}:${threadId}`,
                     platform: 'telegram',
                     name: title,
                     async send(payload: MessagePayload): Promise<PlatformSentMessage> {
@@ -545,7 +554,9 @@ export function wrapTelegramMessage(
             isBot: false,
         };
 
-    const channel = wrapTelegramChannel(api, msg.chat.id, toInputFile);
+    const threadId = (msg as any).message_thread_id;
+    const channelId = threadId ? `${msg.chat.id}:${threadId}` : String(msg.chat.id);
+    const channel = wrapTelegramChannel(api, channelId, toInputFile);
 
     // Photo messages: use caption as content, build attachments from photo array.
     // Document messages: fall back to document attachment if no photo and doc is an image.

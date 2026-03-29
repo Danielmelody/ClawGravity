@@ -73,7 +73,7 @@ function createMockMessage(content = '') {
         platform: 'telegram' as const,
         content,
         author: { id: 'user-1', platform: 'telegram' as const, username: 'test', isBot: false },
-        channel: { id: 'chat-123', platform: 'telegram' as const, send: jest.fn() },
+        channel: { id: 'chat-123', platform: 'telegram' as const, send: jest.fn().mockResolvedValue({}) },
         attachments: [],
         createdAt: new Date(),
         react: jest.fn().mockResolvedValue(undefined),
@@ -1147,8 +1147,8 @@ describe('handleTelegramCommand — /new', () => {
         expect(activeMonitor.stop).toHaveBeenCalledTimes(1);
         expect(passiveMonitor.stop).toHaveBeenCalledTimes(1);
         expect(activeMonitors.size).toBe(0);
-        expect(message.reply).toHaveBeenCalledTimes(1);
-        const text = message.reply.mock.calls[0][0].text;
+        expect(message.channel.send).toHaveBeenCalledTimes(1);
+        const text = (message.channel as any).send.mock.calls[0][0].text;
         expect(text).toContain('New chat session started');
     });
 

@@ -72,7 +72,7 @@ export class AgentRouter {
         this.chatSessionService = options.chatSessionService;
         this.workspaceService = options.workspaceService;
         this.extractionMode = options.extractionMode ?? 'structured';
-        this.responseTimeoutMs = options.responseTimeoutMs ?? 300_000;
+        this.responseTimeoutMs = options.responseTimeoutMs ?? 3600_000;
 
         this.responseDir = options.responseDir
             ?? path.join(options.workspaceService.getBaseDir(), 'agent_responses');

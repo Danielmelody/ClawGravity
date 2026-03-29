@@ -473,7 +473,7 @@ export class JoinCommandHandler {
         const monitor = new GrpcResponseMonitor({
             grpcClient,
             cascadeId,
-            maxDurationMs: 300000,
+            maxDurationMs: 3600000,
             expectedUserMessage: promptText,
             onComplete: (finalText: string) => {
                 this.activeResponseMonitors.delete(projectName);

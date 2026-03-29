@@ -351,30 +351,28 @@ async function resolveTrajectoryChannelForSession(
     parentChannel: PlatformChannel,
     info: UserMessageInfo,
 ): Promise<PlatformChannel> {
-    const existingRouting = sessionStateStore.getChannelRouting(chatId);
-    const existingThread = existingRouting?.threadChannel ?? null;
-    const currentCascadeId = sessionStateStore.getCurrentCascadeId(chatId);
-
-    if (!info.cascadeId || (currentCascadeId && currentCascadeId === info.cascadeId)) {
-        sessionStateStore.setChannelRouting(chatId, parentChannel, existingThread);
-        return existingThread ?? parentChannel;
+    const existingRouting = sessionStateStore.getChannelRouting(chatId, info.cascadeId);
+    if (existingRouting?.threadChannel) {
+        return existingRouting.threadChannel;
     }
 
-    sessionStateStore.setCurrentCascadeId(chatId, info.cascadeId);
+    if (!info.cascadeId) {
+        return parentChannel;
+    }
 
     const sessionTitle = buildSessionTitle(info.text);
     const threadChannel = typeof parentChannel.createThread === 'function'
         ? await parentChannel.createThread(sessionTitle).catch((error: unknown) => {
             logger.debug(
-                `[TelegramPassive] createThread failed for chat ${chatId}: ` +
-                `${(error as Error)?.message || error}`,
+                `[TelegramPassive:Startup] Failed to create Topic for new session (chat=${chatId}):`,
+                error instanceof Error ? error.message : String(error),
             );
             return null;
         })
         : null;
 
-    sessionStateStore.setChannelRouting(chatId, parentChannel, threadChannel);
-
+    sessionStateStore.setChannelRouting(chatId, parentChannel, threadChannel, info.cascadeId);
+    
     if (threadChannel) {
         logger.info(
             `[TelegramPassive] Routed chat ${chatId} cascade ${info.cascadeId.slice(0, 12)}... ` +

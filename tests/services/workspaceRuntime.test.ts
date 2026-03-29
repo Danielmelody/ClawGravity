@@ -230,6 +230,7 @@ describe('WorkspaceRuntime', () => {
             disconnect: jest.fn().mockResolvedValue(undefined),
             getGrpcClient: jest.fn().mockResolvedValue(mockGrpcClient),
             rememberCreatedCascade: jest.fn(),
+            getCurrentWorkspacePath: jest.fn().mockReturnValue('/path/to/ProjectA'),
         };
         (CdpService as jest.MockedClass<typeof CdpService>).mockImplementation(() => mockCdp as any);
 
