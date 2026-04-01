@@ -103,6 +103,11 @@ describe('registerSlashCommands', () => {
         expect(names).toContain('output');
     });
 
+    it('does not include the clear command in registration targets', () => {
+        const names = slashCommands.map((cmd) => cmd.toJSON().name);
+        expect(names).not.toContain('clear');
+    });
+
     beforeEach(() => {
         jest.clearAllMocks();
     });

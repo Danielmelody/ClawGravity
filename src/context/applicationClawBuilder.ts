@@ -44,7 +44,6 @@ export async function buildClawRuntimeArtifacts(
 
             const agentRouter = new AgentRouterImpl({
                 pool: ctx.bridge.pool,
-                chatSessionService: ctx.chatSessionService,
                 workspaceService: ctx.workspaceService,
                 extractionMode: options.extractionMode,
             });

@@ -117,11 +117,6 @@ const newCommand = new SlashCommandBuilder()
     .setName('new')
     .setDescription(t('Start a new chat session in the current project'));
 
-/** /clear command definition */
-const clearCommand = new SlashCommandBuilder()
-    .setName('clear')
-    .setDescription(t('Clear current conversation history and start fresh'));
-
 /** /chat command definition (merged status + list) */
 const chatCommand = new SlashCommandBuilder()
     .setName('chat')
@@ -252,7 +247,6 @@ export const slashCommands = [
     autoAcceptCommand,
     projectCommand,
     newCommand,
-    clearCommand,
     chatCommand,
     cleanupCommand,
     sessionCommand,

@@ -15,7 +15,6 @@
  *   /template   — List and execute prompt templates
  *   /logs       — Show recent log entries
  *   /new        — Start a new chat session
- *   /clear      — Clear current conversation history
  */
 
 import fs from 'fs';
@@ -50,7 +49,7 @@ import { APP_VERSION } from '../utils/version';
 // Known commands (used by both parser and /help output)
 // ---------------------------------------------------------------------------
 
-const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'clear', 'session', 'history', 'inspect', 'schedule', 'schedule_add', 'schedule_remove', 'bind'] as const;
+const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'session', 'history', 'inspect', 'schedule', 'schedule_add', 'schedule_remove', 'bind'] as const;
 type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
@@ -132,7 +131,7 @@ export async function handleTelegramCommand(
     logger.info(`[TelegramCommand] /${parsed.command}${argsDisplay} (chat=${message.channel.id})`);
 
     try {
-        switch (parsed.command as KnownCommand) {
+        switch (parsed.command) {
             case 'start':
                 await handleStart(message);
                 break;
@@ -183,9 +182,6 @@ export async function handleTelegramCommand(
                 break;
             case 'new':
                 await handleNew(deps, message, parsed.args);
-                break;
-            case 'clear':
-                await handleClear(deps, message);
                 break;
             case 'session':
             case 'history':
@@ -250,7 +246,6 @@ async function handleHelp(message: PlatformMessage): Promise<void> {
         '/template_delete — Delete a prompt template',
         '/project_create — Create a new workspace',
         '/new — Start a new chat session',
-        '/clear — Clear conversation history',
         '/session — Switch to an existing session',
         '/history — Browse chat history (alias for /session)',
         '/inspect — Toggle inspect mode (analyze TG ↔ Antigravity diffs)',
@@ -693,24 +688,6 @@ async function resolveWorkspaceRuntime(
     }
 }
 
-/**
- * Convenience helper: verify chatSessionService exists and resolve the workspace runtime.
- * Returns null (after sending error reply) if either check fails.
- */
-async function resolveWithSessionService(
-    deps: TelegramCommandDeps,
-    message: PlatformMessage,
-    logTag: string,
-): Promise<{ runtime: unknown; binding: unknown; projectName: string; chatSessionService: NonNullable<typeof deps.chatSessionService> } | null> {
-    if (!deps.chatSessionService) {
-        await message.reply({ text: 'Chat session service not available.' }).catch(logger.error);
-        return null;
-    }
-    const resolved = await resolveWorkspaceRuntime(deps, message, logTag);
-    if (!resolved) return null;
-    return { ...resolved, chatSessionService: deps.chatSessionService };
-}
-
 async function stopProjectMonitors(
     activeMonitors: TelegramCommandDeps['activeMonitors'],
     projectName: string,
@@ -737,27 +714,29 @@ async function stopProjectMonitors(
 }
 
 /**
- * Shared helper: start a new backend chat session, stop monitors, and reset
- * session state. Returns `{ ok: true }` or `{ ok: false, error }`.
+ * Shared helper: stop monitors and clear the locally selected cascade so the
+ * next real user message creates a fresh backend session that is visible in
+ * Antigravity History.
  */
 async function resetChatSession(
     deps: TelegramCommandDeps,
-    resolved: { runtime: unknown; projectName: string; chatSessionService: NonNullable<typeof deps.chatSessionService> },
+    resolved: { runtime: unknown; projectName: string },
     chatId: string,
 ): Promise<{ ok: true; cascadeId: string | null } | { ok: false; error: string }> {
-    const runtime = resolved.runtime as Record<string, unknown>;
-    const result = await (runtime.startNewChat as (service: unknown) => Promise<{ ok: boolean; error?: string }>)(resolved.chatSessionService);
-    if (!result.ok) return { ok: false, error: result.error || 'unknown error' };
-
+    const runtime = resolved.runtime as {
+        clearActiveCascade?: () => Promise<void>;
+        setActiveCascade?: (cascadeId: string | null) => Promise<void>;
+    };
     await stopProjectMonitors(deps.activeMonitors, resolved.projectName, chatId);
     deps.sessionStateStore?.clearSelectedSession(chatId);
-    const newCascadeId = typeof runtime.getActiveCascadeId === 'function'
-        ? await (runtime.getActiveCascadeId as () => Promise<string | null>)().catch(() => null)
-        : null;
-    if (newCascadeId) {
-        deps.sessionStateStore?.setCurrentCascadeId(chatId, newCascadeId);
+
+    if (typeof runtime.clearActiveCascade === 'function') {
+        await runtime.clearActiveCascade();
+    } else if (typeof runtime.setActiveCascade === 'function') {
+        await runtime.setActiveCascade(null);
     }
-    return { ok: true, cascadeId: newCascadeId };
+
+    return { ok: true, cascadeId: null };
 }
 
 /**
@@ -781,7 +760,7 @@ async function buildStatusFooter(
 }
 
 async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage, args?: string): Promise<void> {
-    const resolved = await resolveWithSessionService(deps, message, 'new');
+    const resolved = await resolveWorkspaceRuntime(deps, message, 'new');
     if (!resolved) return;
     const fullChannelIdStr = message.channel.id;
     const [chatId] = fullChannelIdStr.split(':'); // base chatId used for mapping
@@ -793,7 +772,7 @@ async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage, ar
             
             // Auto-create a Forum Topic for this new session
             let targetChannel = message.channel;
-            if (result.cascadeId && typeof message.channel.createThread === 'function') {
+            if (typeof message.channel.createThread === 'function') {
                 const sessionDate = new Date();
                 const sessionTitle = args?.trim() || `Session ${sessionDate.getMonth() + 1}/${sessionDate.getDate()} ${sessionDate.getHours()}:${String(sessionDate.getMinutes()).padStart(2, '0')}`;
                 
@@ -806,57 +785,25 @@ async function handleNew(deps: TelegramCommandDeps, message: PlatformMessage, ar
                 });
 
                 if (threadChannel) {
-                    deps.sessionStateStore?.setChannelRouting(chatId, message.channel, threadChannel, result.cascadeId);
+                    if (result.cascadeId) {
+                        deps.sessionStateStore?.setChannelRouting(chatId, message.channel, threadChannel, result.cascadeId);
+                    }
                     targetChannel = threadChannel;
                 }
             }
 
             await targetChannel.send({
-                text: `New chat session started.\n\n${footer}`
+                text: `New chat session prepared. Send the first message to create a fresh session in History.\n\n${footer}`
             }).catch(logger.error);
         } else {
-            logger.warn('[TelegramCommand:new] startNewChat failed:', result.error);
+            logger.warn('[TelegramCommand:new] Failed to prepare fresh session:', result.error);
             await message.reply({
-                text: `Failed to start new chat: ${escapeHtml(result.error)}`,
+                text: `Failed to prepare new chat: ${escapeHtml(result.error)}`,
             }).catch(logger.error);
         }
     } catch (err: unknown) {
-        logger.error('[TelegramCommand:new] startNewChat threw:', err instanceof Error ? err.message : String(err));
-        await message.reply({ text: 'Failed to start new chat.' }).catch(logger.error);
-    }
-}
-
-async function handleClear(deps: TelegramCommandDeps, message: PlatformMessage): Promise<void> {
-    const resolved = await resolveWithSessionService(deps, message, 'clear');
-    if (!resolved) return;
-    const chatId = message.channel.id;
-
-    try {
-        const result = await resetChatSession(deps, resolved, chatId);
-        if (result.ok) {
-            // Delete tracked bot messages from the Telegram chat (visual clear)
-            if (deps.messageTracker && deps.botApi) {
-                const userMsgId = Number(message.id);
-                await deps.messageTracker.clearChat(
-                    chatId,
-                    deps.botApi,
-                    isNaN(userMsgId) ? undefined : userMsgId,
-                );
-            }
-
-            const footer = await buildStatusFooter(deps.modeService, deps.bridge, deps.modelService);
-            await message.channel.send({
-                text: `\u{1F5D1}\uFE0F Conversation history cleared. Starting fresh.\n\n${footer}`
-            }).catch(logger.error);
-        } else {
-            logger.warn('[TelegramCommand:clear] startNewChat failed:', result.error);
-            await message.reply({
-                text: `Failed to clear history: ${escapeHtml(result.error)}`,
-            }).catch(logger.error);
-        }
-    } catch (err: unknown) {
-        logger.error('[TelegramCommand:clear] startNewChat threw:', err instanceof Error ? err.message : String(err));
-        await message.reply({ text: 'Failed to clear conversation history.' }).catch(logger.error);
+        logger.error('[TelegramCommand:new] resetChatSession threw:', err instanceof Error ? err.message : String(err));
+        await message.reply({ text: 'Failed to prepare new chat.' }).catch(logger.error);
     }
 }
 

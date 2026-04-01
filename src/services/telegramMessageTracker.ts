@@ -1,8 +1,8 @@
 /**
  * Tracks Telegram message IDs sent by the bot, per chat.
  *
- * Used by `/clear` to bulk-delete bot-sent messages from the chat,
- * giving a visual "clear history" experience on the Telegram client side.
+ * Can be used to bulk-delete tracked bot messages from a chat when the caller
+ * wants to clean up previous bot output.
  *
  * The tracker keeps a bounded list of message IDs per chat (default 500).
  * Only messages sent after the tracker was initialized are tracked.
@@ -47,7 +47,7 @@ export class TelegramMessageTracker {
      * a reliable bulk delete for bots). Errors per message are
      * silently swallowed (e.g. message already deleted, too old, etc.).
      *
-     * Also deletes the user's command message (the /clear message itself)
+     * Also deletes the trigger message itself
      * if its ID is provided.
      *
      * @returns The number of messages successfully deleted.
@@ -59,7 +59,7 @@ export class TelegramMessageTracker {
     ): Promise<number> {
         const messageIds = this.drain(chatId);
 
-        // Also include the /clear command message itself
+        // Also include the trigger message itself.
         if (clearCommandMessageId) {
             messageIds.push(clearCommandMessageId);
         }

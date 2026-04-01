@@ -60,7 +60,6 @@ export function createScheduleJobCallback(
 ): (schedule: ScheduleRecord) => Promise<void> {
     const {
         bridge,
-        chatSessionService,
         clawWorkspacePath,
         getTelegramNotify,
         getClawInterceptor,
@@ -93,13 +92,8 @@ export function createScheduleJobCallback(
 
             bridge.lastActiveWorkspace = projectName;
 
-            const newChatResult = await prepared.runtime.startNewChat(chatSessionService);
-            if (newChatResult.ok) {
-                logger.debug(`[ScheduleJob] Schedule #${schedule.id}: New session opened`);
-                await delay(1500);
-            } else {
-                logger.warn(`[ScheduleJob] Schedule #${schedule.id}: Could not open new session: ${newChatResult.error}`);
-            }
+            await prepared.runtime.clearActiveCascade();
+            logger.debug(`[ScheduleJob] Schedule #${schedule.id}: Prepared fresh session state`);
 
             const d = new Date();
             const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;

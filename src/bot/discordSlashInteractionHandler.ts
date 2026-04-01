@@ -79,7 +79,6 @@ export async function handleDiscordSlashInteraction(
                 {
                     name: '💬 Chat', value: [
                         '`/new` — Start a new chat session',
-                        '`/clear` — Clear conversation history',
                         '`/chat` — Show current session info + list',
                     ].join('\n')
                 },
@@ -339,11 +338,6 @@ export async function handleDiscordSlashInteraction(
 
         case 'new': {
             await chatHandler.handleNew(interaction);
-            break;
-        }
-
-        case 'clear': {
-            await chatHandler.handleClear(interaction);
             break;
         }
 

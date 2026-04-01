@@ -35,7 +35,7 @@ function createMockRuntime(overrides: Record<string, any> = {}) {
         },
         projectName: '__claw__',
         runtime: {
-            startNewChat: jest.fn().mockResolvedValue({ ok: true }),
+            clearActiveCascade: jest.fn().mockResolvedValue(undefined),
             sendPrompt: jest.fn().mockResolvedValue({ ok: true, cascadeId: 'cascade-1' }),
             getMonitoringTarget: jest.fn().mockResolvedValue(null),
             ...overrides,
@@ -117,12 +117,12 @@ describe('scheduleJobRunner', () => {
         ).resolves.toBeUndefined();
     });
 
-    it('opens a new chat session before sending the schedule prompt', async () => {
-        const startNewChat = jest.fn().mockResolvedValue({ ok: true });
+    it('clears the cached active cascade before sending the schedule prompt', async () => {
+        const clearActiveCascade = jest.fn().mockResolvedValue(undefined);
         const sendPrompt = jest.fn().mockResolvedValue({ ok: true, cascadeId: 'cascade-4' });
 
         (ensureWorkspaceRuntime as jest.Mock).mockResolvedValue(
-            createMockRuntime({ startNewChat, sendPrompt }),
+            createMockRuntime({ clearActiveCascade, sendPrompt }),
         );
 
         const scheduleJobCallback = createScheduleJobCallback({
@@ -135,8 +135,7 @@ describe('scheduleJobRunner', () => {
 
         await scheduleJobCallback({ id: 4, prompt: 'scheduled task' } as any);
 
-        // Both should be called — a new chat is created, then the prompt is sent
-        expect(startNewChat).toHaveBeenCalled();
+        expect(clearActiveCascade).toHaveBeenCalled();
         expect(sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('scheduled task') }));
     });
 });

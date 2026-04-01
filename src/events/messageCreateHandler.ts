@@ -148,7 +148,7 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                 return;
             }
 
-            const slashOnlyCommands = ['help', 'stop', 'model', 'mode', 'project', 'chat', 'new', 'clear', 'cleanup', 'session', 'mirror', 'output'];
+            const slashOnlyCommands = ['help', 'stop', 'model', 'mode', 'project', 'chat', 'new', 'cleanup', 'session', 'mirror', 'output'];
             if (slashOnlyCommands.includes(parsed.commandName)) {
                 await message.reply({
                     content: `💡 Please use \`/${parsed.commandName}\` as a slash command.\nType \`/${parsed.commandName}\` in the Discord input field to see suggestions.`,
@@ -257,14 +257,10 @@ export function createMessageCreateHandler(deps: MessageCreateHandlerDeps) {
                                 }
                             } else if (session && !session.isRenamed) {
                                 try {
-                                    const chatResult = await runtime.startNewChat(deps.chatSessionService);
-                                    if (!chatResult.ok) {
-                                        logger.warn('[MessageCreate] Failed to start new chat in Antigravity:', chatResult.error);
-                                        (message.channel as { send: (content: string) => Promise<unknown> }).send(`⚠️ Could not open a new chat in Antigravity. Sending to existing chat.`).catch(() => { });
-                                    }
+                                    await runtime.clearActiveCascade();
                                 } catch (err) {
-                                    logger.error('[MessageCreate] startNewChat error:', err);
-                                    (message.channel as { send: (content: string) => Promise<unknown> }).send(`⚠️ Could not open a new chat in Antigravity. Sending to existing chat.`).catch(() => { });
+                                    logger.error('[MessageCreate] clearActiveCascade error:', err);
+                                    (message.channel as { send: (content: string) => Promise<unknown> }).send(`⚠️ Could not prepare a fresh Antigravity chat. Sending to existing chat.`).catch(() => { });
                                 }
                             }
 

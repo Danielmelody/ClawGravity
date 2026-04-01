@@ -21,11 +21,7 @@ function buildDeps(overrides: Record<string, any> = {}) {
                 ? chatSessionService.activateSessionByTitle(cdp, title)
                 : { ok: true }
         )),
-        startNewChat: jest.fn().mockImplementation(async (chatSessionService: any) => (
-            chatSessionService.startNewChat
-                ? chatSessionService.startNewChat(cdp)
-                : { ok: true }
-        )),
+        clearActiveCascade: jest.fn().mockResolvedValue(undefined),
     };
     return {
         config: { allowedUserIds: ['u1'] },
@@ -101,7 +97,6 @@ describe('messageCreateHandler', () => {
             sendPromptToAntigravity,
             registerApprovalSessionChannel,
             chatSessionRepo: { findByChannelId },
-            chatSessionService: { startNewChat: jest.fn().mockResolvedValue({ ok: true }) },
         }));
 
         await handler(buildMessage());

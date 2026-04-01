@@ -16,7 +16,6 @@ import { WorkspaceService } from '../services/workspaceService';
  *
  * Commands:
  *   - /new: Create a new session channel under the category + start a new chat in Antigravity
- *   - /clear: Clear current conversation history by starting a new backend session (no new channel)
  *   - /chat: Display current session info + list all sessions in the same project (unified)
  */
 export class ChatCommandHandler {
@@ -140,66 +139,6 @@ export class ChatCommandHandler {
             .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
-    }
-
-    /**
-     * /clear -- Clear current conversation history by starting a new backend session.
-     * Unlike /new, this does NOT create a new Discord channel — the user stays in the same channel.
-     */
-    async handleClear(interaction: ChatInputCommandInteraction): Promise<void> {
-        // Resolve workspace from current channel
-        const workspaceName = this.resolveWorkspaceName(interaction.channelId);
-
-        if (!workspaceName) {
-            await interaction.editReply({
-                content: t('⚠️ No project bound to this channel. Use `/project` first.'),
-            });
-            return;
-        }
-
-        const workspacePath = this.workspaceService.getWorkspacePath(workspaceName);
-
-        let runtime;
-        if (this.pool) {
-            try {
-                runtime = this.pool.getOrCreateRuntime(workspacePath);
-            } catch (e: unknown) {
-                await interaction.editReply({
-                    content: t(`⚠️ Failed to connect: ${(e as Error).message}`),
-                });
-                return;
-            }
-        }
-
-        if (!runtime) {
-            await interaction.editReply({
-                content: t('⚠️ CDP pool is not initialized or cannot connect to workspace.'),
-            });
-            return;
-        }
-
-        try {
-            const result = await runtime.startNewChat(this.chatSessionService);
-            if (result.ok) {
-                const embed = new EmbedBuilder()
-                    .setTitle(t('🗑️ History Cleared'))
-                    .setDescription(t('Conversation history has been cleared. Starting fresh.'))
-                    .setColor(0xE67E22)
-                    .addFields(
-                        { name: t('Project'), value: workspacePath, inline: true },
-                    )
-                    .setTimestamp();
-                await interaction.editReply({ embeds: [embed] });
-            } else {
-                await interaction.editReply({
-                    content: t(`⚠️ Failed to clear history: ${result.error || 'unknown error'}`),
-                });
-            }
-        } catch (e: unknown) {
-            await interaction.editReply({
-                content: t(`⚠️ Failed to clear history: ${(e as Error).message}`),
-            });
-        }
     }
 
     /**

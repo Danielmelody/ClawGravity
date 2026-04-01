@@ -18,7 +18,6 @@ describe('ChatCommandHandler', () => {
     let mockWorkspaceService: jest.Mocked<WorkspaceService>;
     let mockRuntime: {
         ready: jest.Mock;
-        startNewChat: jest.Mock;
     };
 
     beforeEach(() => {
@@ -38,7 +37,6 @@ describe('ChatCommandHandler', () => {
 
         mockRuntime = {
             ready: jest.fn().mockResolvedValue(undefined),
-            startNewChat: jest.fn(),
         };
         mockPool.getOrCreateRuntime.mockReturnValue(mockRuntime as any);
 
@@ -263,28 +261,4 @@ describe('ChatCommandHandler', () => {
         });
     });
 
-    describe('handleClear()', () => {
-        it('starts a fresh backend session through the runtime', async () => {
-            chatSessionRepo.create({
-                channelId: 'ch-1', categoryId: 'cat-1', workspacePath: 'proj',
-                sessionNumber: 1, guildId: 'guild-1',
-            });
-            mockRuntime.startNewChat.mockResolvedValue({ ok: true });
-
-            const interaction = {
-                channelId: 'ch-1',
-                editReply: jest.fn().mockResolvedValue(undefined),
-            };
-
-            await handler.handleClear(interaction as any);
-
-            expect(mockPool.getOrCreateRuntime).toHaveBeenCalledWith('/tmp/workspaces/proj');
-            expect(mockRuntime.startNewChat).toHaveBeenCalledWith(mockService);
-            expect(interaction.editReply).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    embeds: expect.any(Array),
-                }),
-            );
-        });
-    });
 });

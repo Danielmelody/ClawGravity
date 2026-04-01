@@ -3,7 +3,6 @@ import * as path from 'path';
 import { logger } from '../utils/logger';
 import type { ExtractionMode } from '../utils/config';
 import { CdpConnectionPool } from './cdpConnectionPool';
-import { ChatSessionService } from './chatSessionService';
 import { GrpcResponseMonitor } from './grpcResponseMonitor';
 import { WorkspaceRuntime } from './workspaceRuntime';
 import { WorkspaceService } from './workspaceService';
@@ -54,7 +53,6 @@ const SUMMARY_MARKER = '## Summary';
  */
 export class AgentRouter {
     private readonly pool: CdpConnectionPool;
-    private readonly chatSessionService: ChatSessionService;
     private readonly workspaceService: WorkspaceService;
     private readonly extractionMode: ExtractionMode;
     private readonly responseDir: string;
@@ -62,14 +60,12 @@ export class AgentRouter {
 
     constructor(options: {
         pool: CdpConnectionPool;
-        chatSessionService: ChatSessionService;
         workspaceService: WorkspaceService;
         extractionMode?: ExtractionMode;
         responseTimeoutMs?: number;
         responseDir?: string;
     }) {
         this.pool = options.pool;
-        this.chatSessionService = options.chatSessionService;
         this.workspaceService = options.workspaceService;
         this.extractionMode = options.extractionMode ?? 'structured';
         this.responseTimeoutMs = options.responseTimeoutMs ?? 3600_000;
@@ -135,19 +131,10 @@ export class AgentRouter {
             };
         }
 
-        // 3. Isolate: open a new chat session
-        try {
-            const newChat = await runtime.startNewChat(this.chatSessionService);
-            if (newChat.ok) {
-                logger.debug(`[AgentRouter] New session opened on "${targetAgent}"`);
-                await new Promise(r => setTimeout(r, 1500));
-            } else {
-                logger.warn(`[AgentRouter] Could not open new session on "${targetAgent}": ${newChat.error}`);
-            }
-        } catch (err: unknown) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            logger.warn(`[AgentRouter] New session failed on "${targetAgent}": ${errMsg}`);
-        }
+        // 3. Isolate: clear any cached active cascade so the delegated prompt
+        // itself creates the fresh session that shows up in History.
+        await runtime.clearActiveCascade();
+        logger.debug(`[AgentRouter] Fresh session state prepared on "${targetAgent}"`);
 
         // 4. Build task prompt (instructs sub-agent to end with ## Summary)
         const prompt = this.buildTaskPrompt(parentAgent, taskDescription);

@@ -1,6 +1,5 @@
 import { AgentRouter } from '../../src/services/agentRouter';
 import { CdpConnectionPool } from '../../src/services/cdpConnectionPool';
-import { ChatSessionService } from '../../src/services/chatSessionService';
 import { WorkspaceService } from '../../src/services/workspaceService';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -19,13 +18,11 @@ jest.mock('../../src/services/grpcResponseMonitor', () => ({
 describe('AgentRouter (Sub-Agent Pattern)', () => {
     let router: AgentRouter;
     let mockPool: jest.Mocked<CdpConnectionPool>;
-    let mockChatSession: jest.Mocked<ChatSessionService>;
     let mockWorkspace: jest.Mocked<WorkspaceService>;
     let tmpResponseDir: string;
 
     beforeEach(() => {
         mockPool = new CdpConnectionPool() as jest.Mocked<CdpConnectionPool>;
-        mockChatSession = new ChatSessionService() as jest.Mocked<ChatSessionService>;
         mockWorkspace = new WorkspaceService('/base') as jest.Mocked<WorkspaceService>;
 
         tmpResponseDir = path.join(os.tmpdir(), `claw_agent_test_${Date.now()}`);
@@ -33,7 +30,6 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
 
         router = new AgentRouter({
             pool: mockPool,
-            chatSessionService: mockChatSession,
             workspaceService: mockWorkspace,
             extractionMode: 'structured',
             responseDir: tmpResponseDir,
@@ -158,7 +154,7 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
 
             const mockRuntime = {
                 ready: jest.fn().mockResolvedValue(undefined),
-                startNewChat: jest.fn().mockResolvedValue({ ok: true }),
+                clearActiveCascade: jest.fn().mockResolvedValue(undefined),
                 sendPrompt: jest.fn().mockResolvedValue({ ok: true, cascadeId: 'cascade-123' }),
                 getMonitoringTarget: jest.fn().mockResolvedValue({
                     grpcClient: {},
@@ -185,7 +181,7 @@ describe('AgentRouter (Sub-Agent Pattern)', () => {
             });
 
             expect(result.ok).toBe(true);
-            expect(mockRuntime.startNewChat).toHaveBeenCalledWith(mockChatSession);
+            expect(mockRuntime.clearActiveCascade).toHaveBeenCalled();
             expect(mockRuntime.sendPrompt).toHaveBeenCalledWith(expect.objectContaining({
                 text: expect.stringContaining('Fix bugs in api.ts'),
             }));

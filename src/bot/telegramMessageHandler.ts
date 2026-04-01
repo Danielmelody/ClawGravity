@@ -113,7 +113,7 @@ export interface TelegramMessageHandlerDeps {
     readonly scheduleJobCallback?: (schedule: ScheduleRecord) => void;
     /** Interceptor that scans AI responses for @claw commands */
     readonly clawInterceptor?: ClawCommandInterceptor;
-    /** Message tracker for /clear to delete bot messages from chat. */
+    /** Message tracker for optional Telegram-side message cleanup. */
     readonly messageTracker?: TelegramMessageTracker;
 }
 
@@ -205,7 +205,7 @@ export function createTelegramMessageHandler(deps: TelegramMessageHandlerDeps) {
         // Acknowledge receipt
         await message.react('\u{1F440}').catch(() => { });
 
-        // Track all bot-sent message IDs so /clear can delete them
+        // Track bot-sent message IDs so they can be cleaned up later if needed.
         const tracker = deps.messageTracker;
         const trackedChannel = tracker
             ? wrapChannelWithTracking(message.channel, tracker)
@@ -1546,7 +1546,7 @@ async function startPassiveResponseMonitor(
 /**
  * Wrap a PlatformChannel so that every message sent through it is
  * automatically recorded in the TelegramMessageTracker.
- * This enables /clear to delete all bot-sent messages from the chat.
+ * This enables later cleanup of bot-sent messages from the chat.
  */
 function wrapChannelWithTracking(
     channel: PlatformChannel,

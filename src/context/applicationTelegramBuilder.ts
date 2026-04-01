@@ -44,7 +44,6 @@ const TELEGRAM_COMMANDS = [
     { command: 'template_delete', description: 'Delete a prompt template' },
     { command: 'project_create', description: 'Create a new workspace' },
     { command: 'new', description: 'Start a new chat session' },
-    { command: 'clear', description: 'Clear conversation history' },
     { command: 'session', description: 'Switch to an existing session' },
     { command: 'inspect', description: 'Toggle per-session inspect mode for auto-analysis' },
     { command: 'schedule', description: 'List scheduled tasks' },
