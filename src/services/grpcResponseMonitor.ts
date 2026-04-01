@@ -607,8 +607,8 @@ export class GrpcResponseMonitor {
 
         // Explicit DONE/IDLE status + no pending tool calls → complete even if text is empty.
         // The AI may have finished with only tool calls (edits, commands) and no prose.
-        const isPrematureIdle = snapshot.runStatus === 'CASCADE_RUN_STATUS_IDLE' && latestTextIsEmpty && !snapshot.latestAssistantHasToolCalls;
-    const isExplicitlyDone = snapshot.hasExplicitRunStatus && snapshot.runStatus !== 'CASCADE_RUN_STATUS_RUNNING' && !isPrematureIdle;
+        
+    const isExplicitlyDone = snapshot.hasExplicitRunStatus && snapshot.runStatus !== 'CASCADE_RUN_STATUS_RUNNING';
 
         // Don't complete if latest step has tool calls (model is mid-turn, waiting for tool results)
         if (snapshot.latestAssistantHasToolCalls) {
