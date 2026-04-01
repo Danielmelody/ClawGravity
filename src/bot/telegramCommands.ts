@@ -50,7 +50,6 @@ import { APP_VERSION } from '../utils/version';
 // ---------------------------------------------------------------------------
 
 const KNOWN_COMMANDS = ['start', 'help', 'status', 'stop', 'restart', 'ping', 'mode', 'model', 'screenshot', 'autoaccept', 'template', 'template_add', 'template_delete', 'project_create', 'logs', 'new', 'session', 'history', 'inspect', 'schedule', 'schedule_add', 'schedule_remove', 'bind'] as const;
-type KnownCommand = typeof KNOWN_COMMANDS[number];
 
 // ---------------------------------------------------------------------------
 // Parser

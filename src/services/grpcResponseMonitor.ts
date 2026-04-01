@@ -79,6 +79,7 @@ interface TrajectoryRecoverySnapshot {
     /** True if the latest assistant step contains PENDING tool calls (no result yet — model is mid-turn) */
     latestAssistantHasToolCalls: boolean;
     latestAssistantSignature: string | null;
+    latestError: string | null;
 }
 
 function normalizeComparableText(text: string | null | undefined): string {
@@ -166,6 +167,8 @@ export class GrpcResponseMonitor {
     private lastSuccessfulPollMs = 0;
     private anchorEverMatched = false;
     private anchorLossLogged = false;
+    private lastSeenBlocks: string[] = [];
+    private emittedTextPrefix = '';
 
     // Stale trajectory heuristic: detect when RUNNING but nothing is changing
     private lastTrajectoryFingerprint: string | null = null;
@@ -383,8 +386,10 @@ export class GrpcResponseMonitor {
             const hasExplicitRunStatus = typeof runStatus === 'string' && runStatus.length > 0;
             let latestRole: 'user' | 'assistant' | null = null;
             let latestResponseText: string | null = null;
+            let currentAssistantBlocks: string[] = [];
             let latestAssistantHasToolCalls = false;
             let latestAssistantSignature: string | null = null;
+            let latestError: string | null = null;
             let anchorRecovered = false;
             let matchedAnchorDirectly = false;
 
@@ -436,6 +441,7 @@ export class GrpcResponseMonitor {
                             latestResponseText: null,
                             latestAssistantHasToolCalls: false,
                             latestAssistantSignature: null,
+                            latestError: null,
                         };
                     }
                 }
@@ -460,6 +466,19 @@ export class GrpcResponseMonitor {
                     latestAssistantHasToolCalls = false;
                     latestAssistantSignature = null;
                     continue;
+                }
+                
+                const curErrorField = stepRecord?.error || (stepRecord?.plannerResponse as Record<string, unknown> | undefined)?.error || (stepRecord?.response as Record<string, unknown> | undefined)?.error;
+                if (curErrorField) {
+                    const errorMessage = typeof curErrorField === 'string'
+                        ? curErrorField
+                        : (curErrorField as { message?: string })?.message || JSON.stringify(curErrorField);
+                    latestError = String(errorMessage);
+                } else {
+                    const stepStatus = String(stepRecord?.status || stepRecord?.cascadeRunStatus || '');
+                    if (stepStatus.toLowerCase().includes('error') && !latestError) {
+                        latestError = `Step status: ${stepStatus}`;
+                    }
                 }
 
                 const plannerResponse = stepRecord?.plannerResponse as Record<string, unknown> | undefined;
@@ -546,6 +565,7 @@ export class GrpcResponseMonitor {
                 latestResponseText,
                 latestAssistantHasToolCalls,
                 latestAssistantSignature,
+                latestError,
             };
         } catch (err: unknown) {
             logger.debug(`[GrpcMonitor] Trajectory recovery failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -605,83 +625,103 @@ export class GrpcResponseMonitor {
 
         const latestTextIsEmpty = latestText !== null && latestText.trim().length === 0;
 
-        // Explicit DONE/IDLE status + no pending tool calls → complete even if text is empty.
-        // The AI may have finished with only tool calls (edits, commands) and no prose.
-        
-    const isExplicitlyDone = snapshot.hasExplicitRunStatus && snapshot.runStatus !== 'CASCADE_RUN_STATUS_RUNNING';
+        const hasTerminalError = snapshot.latestError !== null || snapshot.runStatus === 'CASCADE_RUN_STATUS_ERROR';
+        const isRunActive = !snapshot.hasExplicitRunStatus || snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING';
 
-        // Don't complete if latest step has tool calls AND run is still active.
-        // If the run has an explicit terminal status (IDLE/DONE), tool calls are already
-        // resolved server-side — allow completion even with tool-call-only assistant turns.
-        if (snapshot.latestAssistantHasToolCalls && !isExplicitlyDone) {
+        // 1. Terminal Error always completes immediately
+        if (hasTerminalError) {
+            this.lastResponseText = latestText ?? this.lastResponseText ?? '';
+            this.hasSeenActivity = true;
+            logger.info(`[GrpcMonitor] Completed response due to terminal error`);
+            this.finishSuccessfully(snapshot.runStatus, snapshot.latestError);
+            return true;
+        }
+
+        // 2. We require a meaningful assistant payload to consider anything "complete"
+        // This protects against premature server IDLE states on anchor gaps or empty placeholders.
+        const hasMeaningfulPayload = snapshot.latestRole === 'assistant' && (!latestTextIsEmpty || snapshot.latestAssistantHasToolCalls);
+
+        if (!hasMeaningfulPayload) {
             this.pendingTerminalAssistantSignature = null;
             this.lastTrajectoryFingerprint = null;
             this.trajectoryStaleStart = null;
             return false;
         }
 
-        // Stale trajectory heuristic: if RUNNING but trajectory unchanged for 30s
-        // with no pending tool calls, treat as done. This handles the case where
-        // the AI finishes with a tool call (e.g. notify_user) but runStatus
-        // never transitions to DONE.
+        // 3. Prevent completion and heuristic staleness if the model is busy executing tools
+        if (isRunActive && snapshot.latestAssistantHasToolCalls) {
+            this.pendingTerminalAssistantSignature = null;
+            this.lastTrajectoryFingerprint = null;
+            this.trajectoryStaleStart = null;
+            return false;
+        }
+
+        // 4. Stale trajectory heuristic
         let staleCompleted = false;
-        if (snapshot.runStatus === 'CASCADE_RUN_STATUS_RUNNING') {
-            if (!isExplicitlyDone && snapshot.latestRole === 'assistant') {
-                const fingerprint = `${snapshot.latestAssistantSignature}|${snapshot.steps?.length ?? 0}`;
-                if (fingerprint !== this.lastTrajectoryFingerprint) {
-                    this.lastTrajectoryFingerprint = fingerprint;
-                    this.trajectoryStaleStart = Date.now();
-                    return false;
-                } else if (this.trajectoryStaleStart) {
-                    const staleDuration = Date.now() - this.trajectoryStaleStart;
-                    if (staleDuration >= GrpcResponseMonitor.STALE_COMPLETION_MS) {
-                        logger.info(
-                            `[GrpcMonitor] Stale trajectory heuristic: RUNNING but unchanged for ${Math.round(staleDuration / 1000)}s — completing`,
-                        );
-                        staleCompleted = true;
-                        // Fall through — bypass downstream guards
-                    } else {
-                        return false;
-                    }
+        if (isRunActive) {
+            const fingerprint = `${snapshot.latestAssistantSignature}|${snapshot.steps?.length ?? 0}`;
+            if (fingerprint !== this.lastTrajectoryFingerprint) {
+                this.lastTrajectoryFingerprint = fingerprint;
+                this.trajectoryStaleStart = Date.now();
+                return false;
+            } else if (this.trajectoryStaleStart) {
+                const staleDuration = Date.now() - this.trajectoryStaleStart;
+                if (staleDuration >= GrpcResponseMonitor.STALE_COMPLETION_MS) {
+                    logger.info(`[GrpcMonitor] Stale trajectory heuristic: RUNNING but unchanged for ${Math.round(staleDuration / 1000)}s — completing`);
+                    staleCompleted = true;
                 } else {
-                    this.trajectoryStaleStart = Date.now();
                     return false;
                 }
             } else {
-                this.pendingTerminalAssistantSignature = null;
+                this.trajectoryStaleStart = Date.now();
                 return false;
             }
+        } else {
+            this.lastTrajectoryFingerprint = null;
+            this.trajectoryStaleStart = null;
         }
 
-        // When we have no explicit "done" status and no stale-heuristic completion,
-        // require assistant role + non-empty text
-        if (!isExplicitlyDone && !staleCompleted) {
-            if (snapshot.latestRole !== 'assistant' || latestTextIsEmpty) {
-                this.pendingTerminalAssistantSignature = null;
-                return false;
-            }
-        }
-
-        if (!snapshot.hasExplicitRunStatus && !staleCompleted) {
-            if (!snapshot.latestAssistantSignature) return false;
-            if (this.pendingTerminalAssistantSignature !== snapshot.latestAssistantSignature) {
+        // 5. Determine if we have reached a completion state
+        let isDone = false;
+        if (!isRunActive) {
+            // Server explicitly signals IDLE/DONE and we have a meaningful payload
+            isDone = true;
+        } else if (staleCompleted) {
+            // Heuristic timeout via fingerprint staleness
+            isDone = true;
+        } else if (!snapshot.hasExplicitRunStatus) {
+            // Legacy signature completion for backends missing run status
+            if (snapshot.latestAssistantSignature && this.pendingTerminalAssistantSignature === snapshot.latestAssistantSignature) {
+                isDone = true;
+            } else {
                 this.pendingTerminalAssistantSignature = snapshot.latestAssistantSignature;
-                return false;
             }
         } else {
             this.pendingTerminalAssistantSignature = null;
         }
 
+        if (!isDone) {
+            return false;
+        }
+
         this.lastResponseText = latestText ?? this.lastResponseText ?? '';
         this.hasSeenActivity = true;
         logger.info(`[GrpcMonitor] Completed response from trajectory (${this.lastResponseText.length} chars, stale=${staleCompleted})`);
-        this.finishSuccessfully(snapshot.runStatus);
+        this.finishSuccessfully(snapshot.runStatus, snapshot.latestError);
         return true;
     }
 
-    private async finishSuccessfully(_runStatus: string | null = null): Promise<void> {
+    private async finishSuccessfully(_runStatus: string | null = null, explicitError: string | null = null): Promise<void> {
         if (this.currentPhase === 'complete' || this.currentPhase === 'error') return; // guard against double-fire
         const text = this.lastResponseText ?? '';
+
+        if (explicitError) {
+            logger.warn(`[GrpcMonitor] Response finished with explicit error: "${explicitError.slice(0, 150)}"`);
+            this.setPhase('error', explicitError);
+            this.stop().catch(() => { });
+            this.onTimeout?.(explicitError);
+            return;
+        }
 
         // Detect backend error responses (short messages with known error patterns).
         // These should be surfaced as errors, not delivered as normal AI responses.

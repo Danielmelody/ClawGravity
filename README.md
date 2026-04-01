@@ -195,6 +195,8 @@ npm run start
 
 From source, `npm run start` now launches the bot in the background and returns immediately.
 Logs are written to `logs/claw-gravity.log`.
+Use `npm run status` to inspect the background process state.
+Use `npm run stop` to stop the background process.
 If you want the old foreground behavior in the current terminal, use:
 
 ```bash

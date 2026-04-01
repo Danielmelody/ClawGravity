@@ -24,6 +24,8 @@
     "test:watch": "jest --watch",
     "build": "tsc",
     "start": "node scripts/start-background.cjs",
+    "status": "node scripts/status-background.cjs",
+    "stop": "node scripts/stop-background.cjs",
     "start:foreground": "npm run check && npm run build && node dist/bin/cli.js",
     "start:built": "node dist/bin/cli.js",
     "dev": "ts-node-dev --respawn src/bin/cli.ts",

@@ -113,6 +113,7 @@ export interface TelegramMessageLike {
     message_id: number;
     from?: TelegramFrom;
     chat: { id: number; title?: string; type: string };
+    message_thread_id?: number;
     text?: string;
     /** Photo messages store user text in caption, not text. */
     caption?: string;
@@ -554,7 +555,7 @@ export function wrapTelegramMessage(
             isBot: false,
         };
 
-    const threadId = (msg as any).message_thread_id;
+    const threadId = msg.message_thread_id;
     const channelId = threadId ? `${msg.chat.id}:${threadId}` : String(msg.chat.id);
     const channel = wrapTelegramChannel(api, channelId, toInputFile);
 

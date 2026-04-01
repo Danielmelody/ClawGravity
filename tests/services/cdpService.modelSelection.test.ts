@@ -135,7 +135,7 @@ describe('CdpService model selection', () => {
             cascadeId: 'cascade-gemini',
         });
 
-        expect(mockClient.createCascade).toHaveBeenCalledWith('hello gemini', 'MODEL_PLACEHOLDER_GEMINI_PRO_HIGH');
+        expect(mockClient.createCascade).toHaveBeenCalledWith('hello gemini', 'MODEL_PLACEHOLDER_GEMINI_PRO_HIGH', undefined);
         expect(service.getSelectedModelId()).toBe('MODEL_PLACEHOLDER_GEMINI_PRO_HIGH');
     });
 });

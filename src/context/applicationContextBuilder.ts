@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
 import { Context, Effect, Layer } from 'effect';
 
 import type { PromptDispatcherDeps } from '../services/promptDispatcher';
@@ -19,6 +21,7 @@ import { ScheduleRepository } from '../database/scheduleRepository';
 import { UserPreferenceRepository } from '../database/userPreferenceRepository';
 
 import type { AppConfig } from '../utils/config';
+import { ConfigLoader } from '../utils/configLoader';
 import {
     ApplicationContext,
     ApplicationContextTag,
@@ -61,10 +64,15 @@ function makeApplicationLayer(
             Effect.gen(function* () {
                 const config = yield* AppConfigTag;
                 const sendPromptImpl = yield* SendPromptImplTag;
+                const dbPath = process.env.NODE_ENV === 'test'
+                    ? ':memory:'
+                    : ConfigLoader.getDefaultDbPath();
 
-                const db = new Database(
-                    process.env.NODE_ENV === 'test' ? ':memory:' : 'antigravity.db',
-                );
+                if (dbPath !== ':memory:') {
+                    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+                }
+
+                const db = new Database(dbPath);
                 const modeService = new ModeService();
                 const userPrefRepo = new UserPreferenceRepository(db);
                 const modelService = new ModelService();

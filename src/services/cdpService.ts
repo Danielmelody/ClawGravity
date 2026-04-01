@@ -444,10 +444,11 @@ export class CdpService extends EventEmitter {
         }
 
         // Create new cascade
-        logger.info(`[CdpService] sendToCascade: creating new cascade model=${modelId || 'default'}`);
+        logger.info(`[CdpService] sendToCascade: creating new cascade model=${modelId || 'default'} workspace=${this.currentWorkspacePath || 'none'}`);
+        const wsPath = this.currentWorkspacePath || undefined;
         const newId = mediaArg
-            ? await client.createCascade(undefined, modelId || undefined)
-            : await client.createCascade(text, modelId || undefined);
+            ? await client.createCascade(undefined, modelId || undefined, wsPath)
+            : await client.createCascade(text, modelId || undefined, wsPath);
 
         if (newId) {
             this.rememberCreatedCascade(newId);
