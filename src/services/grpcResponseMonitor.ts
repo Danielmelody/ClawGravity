@@ -610,8 +610,10 @@ export class GrpcResponseMonitor {
         
     const isExplicitlyDone = snapshot.hasExplicitRunStatus && snapshot.runStatus !== 'CASCADE_RUN_STATUS_RUNNING';
 
-        // Don't complete if latest step has tool calls (model is mid-turn, waiting for tool results)
-        if (snapshot.latestAssistantHasToolCalls) {
+        // Don't complete if latest step has tool calls AND run is still active.
+        // If the run has an explicit terminal status (IDLE/DONE), tool calls are already
+        // resolved server-side — allow completion even with tool-call-only assistant turns.
+        if (snapshot.latestAssistantHasToolCalls && !isExplicitlyDone) {
             this.pendingTerminalAssistantSignature = null;
             this.lastTrajectoryFingerprint = null;
             this.trajectoryStaleStart = null;
